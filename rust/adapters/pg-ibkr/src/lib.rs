@@ -67,7 +67,7 @@ impl IbkrAdapter {
 
 #[cfg(feature = "sdk")]
 mod live_market_data {
-    use super::{IbkrConfig, IbkrStockSpec, sdk};
+    use super::{sdk, IbkrConfig, IbkrStockSpec};
     use async_trait::async_trait;
     use futures::StreamExt;
     use pg_marketdata::{
@@ -76,10 +76,14 @@ mod live_market_data {
     };
     use pg_types::Venue;
     use rust_decimal::Decimal;
-    use std::{str::FromStr, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        str::FromStr,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use tokio::sync::mpsc;
 
-    use sdk::market_data::{SmartDepth, realtime::MarketDepths};
+    use sdk::market_data::{realtime::MarketDepths, SmartDepth};
     use sdk::prelude::*;
     use sdk::subscriptions::SubscriptionItemStreamExt;
 
@@ -148,7 +152,8 @@ mod live_market_data {
                 FeedKind::BestBidAsk => self.stream_bbo(&spec.asset, sink).await,
                 FeedKind::L2Book => self.stream_depth(&spec.asset, sink).await,
                 FeedKind::Candle { interval_ns } => {
-                    self.stream_realtime_bars(&spec.asset, interval_ns, sink).await
+                    self.stream_realtime_bars(&spec.asset, interval_ns, sink)
+                        .await
                 }
             }
         }
@@ -259,11 +264,7 @@ mod live_market_data {
                     }
                 }
                 let recv_ns = now_ns()?;
-                send(
-                    &sink,
-                    MarketEvent::L2Book(book.event(asset, recv_ns)?),
-                )
-                .await?;
+                send(&sink, MarketEvent::L2Book(book.event(asset, recv_ns)?)).await?;
             }
 
             Err(MarketDataError::Disconnected(
@@ -321,6 +322,7 @@ mod live_market_data {
 
     #[derive(Debug, Clone)]
     struct PositionBook {
+        depth: usize,
         bids: Vec<Option<(f64, f64)>>,
         asks: Vec<Option<(f64, f64)>>,
     }
@@ -328,6 +330,7 @@ mod live_market_data {
     impl PositionBook {
         fn new(depth: usize) -> Self {
             Self {
+                depth,
                 bids: vec![None; depth],
                 asks: vec![None; depth],
             }
@@ -344,6 +347,7 @@ mod live_market_data {
             let position = usize::try_from(position).map_err(|_| {
                 MarketDataError::Conversion("negative IBKR market depth position".into())
             })?;
+            let depth = self.depth;
             let levels = if side == 1 {
                 &mut self.bids
             } else {
@@ -356,7 +360,7 @@ mod live_market_data {
             match operation {
                 0 => {
                     levels.insert(position, Some((price, size)));
-                    levels.truncate(self.bids.len().max(self.asks.len()));
+                    levels.truncate(depth);
                 }
                 1 => levels[position] = Some((price, size)),
                 2 => {
