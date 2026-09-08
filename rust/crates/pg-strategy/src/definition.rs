@@ -6,10 +6,10 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::StrategyConfig;
 use crate::automation::{AutomatedStrategy, StrategyAutomationConfig};
 use crate::factors::FactorConfig;
 use crate::selector::EntryFilterConfig;
-use crate::StrategyConfig;
 
 #[derive(Debug, Error)]
 pub enum StrategyDefinitionError {
@@ -132,9 +132,10 @@ impl StrategyDefinition {
             return Ok(Vec::new());
         }
         self.validate()?;
-        let order_quantity = Decimal::from_str(self.strategy.order_quantity.trim()).map_err(|error| {
-            StrategyDefinitionError::Invalid(format!("invalid order_quantity: {error}"))
-        })?;
+        let order_quantity =
+            Decimal::from_str(self.strategy.order_quantity.trim()).map_err(|error| {
+                StrategyDefinitionError::Invalid(format!("invalid order_quantity: {error}"))
+            })?;
         let automation = self
             .resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
@@ -258,7 +259,13 @@ mod tests {
         .unwrap();
         let instances = definition.build_instances().unwrap();
         assert_eq!(instances.len(), 2);
-        assert_eq!(instances[0].machine.config.strategy_id, "momentum-volume-vwap:HYPE");
-        assert_eq!(instances[1].machine.config.strategy_id, "momentum-volume-vwap:SOL");
+        assert_eq!(
+            instances[0].machine.config.strategy_id,
+            "momentum-volume-vwap:HYPE"
+        );
+        assert_eq!(
+            instances[1].machine.config.strategy_id,
+            "momentum-volume-vwap:SOL"
+        );
     }
 }
