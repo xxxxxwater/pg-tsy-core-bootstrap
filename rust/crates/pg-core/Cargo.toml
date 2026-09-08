@@ -9,6 +9,7 @@ anyhow.workspace = true
 pg-runtime = { path = "../pg-runtime" }
 pg-types = { path = "../pg-types" }
 pg-risk = { path = "../pg-risk" }
+pg-strategy = { path = "../pg-strategy" }
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
