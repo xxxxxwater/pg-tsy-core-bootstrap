@@ -1,19 +1,16 @@
 use std::{collections::HashMap, str::FromStr};
 
-use alloy::{
-    primitives::Address,
-    signers::local::PrivateKeySigner,
-};
+use alloy::{primitives::Address, signers::local::PrivateKeySigner};
 use async_trait::async_trait;
 use pg_execution::{
     ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck, VenueOrderSnapshot,
     VenueOrderState, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
-use rust_decimal::{prelude::ToPrimitive, Decimal};
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use uuid::Uuid;
 
-use crate::{sdk, HyperliquidNetwork};
+use crate::{HyperliquidNetwork, sdk};
 
 #[derive(Debug, Clone)]
 pub struct HyperliquidExecutionConfig {
@@ -51,8 +48,8 @@ impl HyperliquidExecutionAdapter {
         config.validate()?;
         let account_address = Address::from_str(&config.account_address)
             .map_err(|error| ExecutionError::Conversion(error.to_string()))?;
-        let base_url = base_url(config.network);
-        let exchange = sdk::ExchangeClient::new(None, wallet, Some(base_url), None, None)
+        let sdk_base_url = base_url(config.network);
+        let exchange = sdk::ExchangeClient::new(None, wallet, Some(sdk_base_url), None, None)
             .await
             .map_err(map_connect_error)?;
         let info = sdk::InfoClient::new(None, Some(base_url(config.network)))
@@ -86,7 +83,10 @@ impl HyperliquidExecutionAdapter {
         Ok(())
     }
 
-    fn client_request(&self, intent: &OrderIntent) -> Result<sdk::ClientOrderRequest, ExecutionError> {
+    fn client_request(
+        &self,
+        intent: &OrderIntent,
+    ) -> Result<sdk::ClientOrderRequest, ExecutionError> {
         self.validate_intent(intent)?;
         let asset_meta = self
             .exchange
@@ -108,7 +108,7 @@ impl HyperliquidExecutionAdapter {
             .coin_to_asset
             .get(&intent.asset)
             .ok_or_else(|| ExecutionError::Rejected("asset disappeared from metadata".into()))?;
-        let max_decimals = if asset_index < 10_000 { 6 } else { 8 };
+        let max_decimals: u32 = if asset_index < 10_000 { 6 } else { 8 };
         let price_decimals = max_decimals.saturating_sub(asset_meta.sz_decimals);
 
         let (limit_px, tif) = match intent.limit_price {
@@ -174,13 +174,9 @@ impl HyperliquidExecutionAdapter {
             .coin_to_asset
             .get(&intent.asset)
             .ok_or_else(|| ExecutionError::Rejected("asset disappeared from metadata".into()))?;
-        let max_decimals = if asset_index < 10_000 { 6 } else { 8 };
+        let max_decimals: u32 = if asset_index < 10_000 { 6 } else { 8 };
         let price_decimals = max_decimals.saturating_sub(asset_meta.sz_decimals);
-        let mids = self
-            .info
-            .all_mids()
-            .await
-            .map_err(map_read_error)?;
+        let mids = self.info.all_mids().await.map_err(map_read_error)?;
         let mid = mids
             .get(&intent.asset)
             .ok_or_else(|| ExecutionError::Unknown("Hyperliquid mid price unavailable".into()))?
@@ -233,9 +229,10 @@ impl HyperliquidExecutionAdapter {
             .historical_orders(self.account_address)
             .await
             .map_err(map_read_error)?;
-        if let Some(order) = historical.into_iter().find(|entry| {
-            entry.order.cloid.as_deref() == Some(venue_cloid.as_str())
-        }) {
+        if let Some(order) = historical
+            .into_iter()
+            .find(|entry| entry.order.cloid.as_deref() == Some(venue_cloid.as_str()))
+        {
             return map_historical_order(order).map(Some);
         }
 
@@ -302,7 +299,10 @@ impl ExecutionAdapter for HyperliquidExecutionAdapter {
                 Err(reason) => Err(ExecutionError::Rejected(reason)),
             },
             Err(error) if is_definite_pre_submit_error(&error) => Err(map_pre_submit_error(error)),
-            Err(error) => self.recover_submit(&client_order_id, error.to_string()).await,
+            Err(error) => {
+                self.recover_submit(&client_order_id, error.to_string())
+                    .await
+            }
         }
     }
 
@@ -358,7 +358,10 @@ impl ExecutionAdapter for HyperliquidExecutionAdapter {
             .await
             .map_err(map_read_error)?
             .into_iter()
-            .map(|order| map_open_order(order, by_oid.get(&order.oid)))
+            .map(|order| {
+                let oid = order.oid;
+                map_open_order(order, by_oid.get(&oid))
+            })
             .collect()
     }
 
@@ -404,9 +407,12 @@ fn exact_size(quantity: Decimal, decimals: u32) -> Result<f64, ExecutionError> {
             "quantity {quantity} exceeds Hyperliquid size precision ({decimals} decimals)"
         )));
     }
-    normalized.to_f64().filter(|value| value.is_finite() && *value > 0.0).ok_or_else(|| {
-        ExecutionError::Conversion("quantity cannot be represented as a positive f64".into())
-    })
+    normalized
+        .to_f64()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .ok_or_else(|| {
+            ExecutionError::Conversion("quantity cannot be represented as a positive f64".into())
+        })
 }
 
 fn round_to_decimals(value: f64, decimals: u32) -> f64 {
@@ -622,11 +628,7 @@ mod tests {
     #[test]
     fn canceled_status_wins_over_embedded_filled_word() {
         assert_eq!(
-            map_state(
-                "siblingFilledCanceled",
-                Decimal::from(10),
-                Decimal::from(5)
-            ),
+            map_state("siblingFilledCanceled", Decimal::from(10), Decimal::from(5)),
             VenueOrderState::Canceled
         );
     }
