@@ -10,4 +10,6 @@ pg-types = { path = "../pg-types" }
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
 uuid.workspace = true
