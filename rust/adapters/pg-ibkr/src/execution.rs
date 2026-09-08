@@ -7,9 +7,9 @@ use pg_execution::{
     VenueOrderState, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
-use rust_decimal::{prelude::ToPrimitive, Decimal};
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 
-use crate::{sdk, IbkrConfig, IbkrStockSpec};
+use crate::{IbkrConfig, IbkrStockSpec, sdk};
 use sdk::accounts::PositionUpdate;
 use sdk::orders::{
     Action, CancelOrder, ExecutionFilter, ExecutionSide, Executions, OrderData, OrderStatusKind,
@@ -192,7 +192,8 @@ impl IbkrExecutionAdapter {
     async fn current_instrument_position(&self) -> Result<Decimal, ExecutionError> {
         let mut total = Decimal::ZERO;
         for position in self.position_rows().await? {
-            if self.account_matches(&position.account) && self.contract_matches(&position.contract) {
+            if self.account_matches(&position.account) && self.contract_matches(&position.contract)
+            {
                 total += decimal_from_f64(position.position, "position")?;
             }
         }
@@ -220,7 +221,11 @@ impl IbkrExecutionAdapter {
             symbol: self.config.instrument.symbol.clone(),
             ..ExecutionFilter::default()
         };
-        let subscription = self.client.executions(filter).await.map_err(map_read_error)?;
+        let subscription = self
+            .client
+            .executions(filter)
+            .await
+            .map_err(map_read_error)?;
         let mut stream = subscription.filter_data();
         let mut executions = Vec::new();
         while let Some(item) = stream.next().await {
@@ -320,7 +325,10 @@ impl IbkrExecutionAdapter {
                 client_order_id: client_order_id.to_string(),
             }),
             Ok(Err(ExecutionError::Rejected(reason))) => Err(ExecutionError::Rejected(reason)),
-            Ok(Err(error)) => self.recover_submit(client_order_id, error.to_string()).await,
+            Ok(Err(error)) => {
+                self.recover_submit(client_order_id, error.to_string())
+                    .await
+            }
             Ok(Ok(None)) => {
                 self.recover_submit(
                     client_order_id,
@@ -346,7 +354,7 @@ impl IbkrExecutionAdapter {
             while let Some(item) = subscription.next().await {
                 match item {
                     Ok(SubscriptionItem::Notice(notice)) if notice.is_cancellation() => {
-                        return Ok(true)
+                        return Ok(true);
                     }
                     Ok(SubscriptionItem::Data(CancelOrder::OrderStatus(status)))
                         if status.order_id == order_id
@@ -355,7 +363,7 @@ impl IbkrExecutionAdapter {
                                 OrderStatusKind::Cancelled | OrderStatusKind::ApiCancelled
                             ) =>
                     {
-                        return Ok(true)
+                        return Ok(true);
                     }
                     Ok(SubscriptionItem::Notice(notice)) if notice.is_order_rejection() => {
                         return Err(ExecutionError::Rejected(notice.to_string()));
@@ -379,7 +387,10 @@ impl IbkrExecutionAdapter {
                     if matches!(
                         snapshot.state,
                         VenueOrderState::Canceled | VenueOrderState::Filled
-                    ) => Ok(()),
+                    ) =>
+                {
+                    Ok(())
+                }
                 Some(snapshot) => Err(ExecutionError::Unknown(format!(
                     "IBKR cancel outcome unresolved for {client_order_id}; reconciled state is {:?}",
                     snapshot.state
@@ -413,7 +424,10 @@ impl ExecutionAdapter for IbkrExecutionAdapter {
                     .await
             }
             Err(error) if is_definite_pre_submit_error(&error) => Err(map_pre_submit_error(error)),
-            Err(error) => self.recover_submit(&client_order_id, error.to_string()).await,
+            Err(error) => {
+                self.recover_submit(&client_order_id, error.to_string())
+                    .await
+            }
         }
     }
 
@@ -529,7 +543,10 @@ fn map_order_data(order: OrderData) -> Result<VenueOrderSnapshot, ExecutionError
 fn map_execution_proof(
     execution: sdk::orders::ExecutionData,
 ) -> Result<VenueOrderSnapshot, ExecutionError> {
-    let quantity = decimal_from_f64(execution.execution.cumulative_quantity, "execution quantity")?;
+    let quantity = decimal_from_f64(
+        execution.execution.cumulative_quantity,
+        "execution quantity",
+    )?;
     Ok(VenueOrderSnapshot {
         venue_order_id: execution.execution.order_id.to_string(),
         client_order_id: (!execution.execution.order_reference.is_empty())
@@ -550,8 +567,8 @@ fn map_execution_proof(
 
 fn map_action(action: Action) -> Side {
     match action {
-        Action::Buy | Action::SellLong => Side::Buy,
-        Action::Sell | Action::SellShort => Side::Sell,
+        Action::Buy => Side::Buy,
+        Action::Sell | Action::SellShort | Action::SellLong => Side::Sell,
     }
 }
 
@@ -590,7 +607,10 @@ fn validate_software_reduce_only(
             "reduce-only rejected because the reconciled IBKR position is flat".into(),
         ));
     }
-    let valid_direction = matches!((current.is_sign_positive(), side), (true, Side::Sell) | (false, Side::Buy));
+    let valid_direction = matches!(
+        (current.is_sign_positive(), side),
+        (true, Side::Sell) | (false, Side::Buy)
+    );
     if !valid_direction {
         return Err(ExecutionError::Rejected(format!(
             "reduce-only side {side:?} would increase IBKR position {current}"
@@ -668,10 +688,10 @@ fn map_pre_submit_error(error: sdk::Error) -> ExecutionError {
 }
 
 fn map_ambiguous_submit_error(error: sdk::Error) -> ExecutionError {
-    if let sdk::Error::Notice(notice) = &error {
-        if notice.is_order_rejection() {
-            return ExecutionError::Rejected(notice.to_string());
-        }
+    if let sdk::Error::Notice(notice) = &error
+        && notice.is_order_rejection()
+    {
+        return ExecutionError::Rejected(notice.to_string());
     }
     ExecutionError::Unknown(error.to_string())
 }
@@ -703,33 +723,24 @@ mod tests {
 
     #[test]
     fn software_reduce_only_rejects_cross_through_flat() {
-        let err = validate_software_reduce_only(
-            Side::Sell,
-            Decimal::from(11),
-            Decimal::from(10),
-        )
-        .unwrap_err();
+        let err = validate_software_reduce_only(Side::Sell, Decimal::from(11), Decimal::from(10))
+            .unwrap_err();
         assert!(matches!(err, ExecutionError::Rejected(_)));
     }
 
     #[test]
     fn software_reduce_only_accepts_long_reduction() {
-        validate_software_reduce_only(
-            Side::Sell,
-            Decimal::from(4),
-            Decimal::from(10),
-        )
-        .unwrap();
+        validate_software_reduce_only(Side::Sell, Decimal::from(4), Decimal::from(10)).unwrap();
     }
 
     #[test]
     fn software_reduce_only_accepts_short_reduction() {
-        validate_software_reduce_only(
-            Side::Buy,
-            Decimal::from(3),
-            Decimal::from(-10),
-        )
-        .unwrap();
+        validate_software_reduce_only(Side::Buy, Decimal::from(3), Decimal::from(-10)).unwrap();
+    }
+
+    #[test]
+    fn sell_long_maps_to_sell_side() {
+        assert_eq!(map_action(Action::SellLong), Side::Sell);
     }
 
     #[test]
