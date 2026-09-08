@@ -3,11 +3,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use pg_marketdata::{FeedSpec, MarketEvent};
+use pg_types::AssetKey;
 use thiserror::Error;
 
 use crate::StrategyPhase;
 use crate::automation::{AutomatedStrategy, AutomationOutput};
-use crate::definition::{StrategyDefinition, StrategyDefinitionError};
+use crate::definition::{PolicyInstance, StrategyDefinition, StrategyDefinitionError};
+use crate::policy::graph::{EntryPolicyDecision, ExitPolicyDecision};
+use crate::policy::{FeatureFrame, PositionView, StrategyContext};
 
 #[derive(Debug, Error)]
 pub enum StrategyRegistryError {
@@ -26,8 +29,17 @@ pub struct RoutedAutomationOutput {
     pub output: AutomationOutput,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutedPolicyOutput {
+    pub strategy_id: String,
+    pub instrument: AssetKey,
+    pub entry: EntryPolicyDecision,
+    pub exit: ExitPolicyDecision,
+}
+
 pub struct StrategyRegistry {
     strategies: BTreeMap<String, AutomatedStrategy>,
+    policies: BTreeMap<String, PolicyInstance>,
     sources: BTreeMap<PathBuf, Vec<String>>,
 }
 
@@ -35,6 +47,7 @@ impl StrategyRegistry {
     pub fn empty() -> Self {
         Self {
             strategies: BTreeMap::new(),
+            policies: BTreeMap::new(),
             sources: BTreeMap::new(),
         }
     }
@@ -62,6 +75,7 @@ impl StrategyRegistry {
         let path = path.as_ref().to_path_buf();
         let definition = StrategyDefinition::from_toml_str(&fs::read_to_string(&path)?)?;
         let instances = definition.build_instances()?;
+        let policy_instances = definition.build_policy_instances()?;
         let mut ids = Vec::with_capacity(instances.len());
         for strategy in instances {
             let id = strategy.machine.config.strategy_id.clone();
@@ -70,6 +84,9 @@ impl StrategyRegistry {
             }
             ids.push(id.clone());
             self.strategies.insert(id, strategy);
+        }
+        for policy in policy_instances {
+            self.policies.insert(policy.strategy_id.clone(), policy);
         }
         self.sources.insert(path, ids.clone());
         Ok(ids)
@@ -96,6 +113,7 @@ impl StrategyRegistry {
 
         let definition = StrategyDefinition::from_toml_str(&fs::read_to_string(&path)?)?;
         let instances = definition.build_instances()?;
+        let policy_instances = definition.build_policy_instances()?;
         let new_ids = instances
             .iter()
             .map(|strategy| strategy.machine.config.strategy_id.clone())
@@ -109,10 +127,14 @@ impl StrategyRegistry {
 
         for id in &old_ids {
             self.strategies.remove(id);
+            self.policies.remove(id);
         }
         for strategy in instances {
             self.strategies
                 .insert(strategy.machine.config.strategy_id.clone(), strategy);
+        }
+        for policy in policy_instances {
+            self.policies.insert(policy.strategy_id.clone(), policy);
         }
         self.sources.insert(path, new_ids.clone());
         Ok(new_ids)
@@ -130,6 +152,10 @@ impl StrategyRegistry {
         self.strategies.is_empty()
     }
 
+    pub fn policy_count(&self) -> usize {
+        self.policies.len()
+    }
+
     pub fn subscriptions(&self) -> Vec<FeedSpec> {
         self.strategies
             .values()
@@ -144,6 +170,33 @@ impl StrategyRegistry {
             .map(|(id, strategy)| RoutedAutomationOutput {
                 strategy_id: id.clone(),
                 output: strategy.on_market_event(event),
+            })
+            .collect()
+    }
+
+    pub fn route_policy_frame(
+        &self,
+        instrument: &AssetKey,
+        features: &FeatureFrame,
+        position: &PositionView,
+        now_ns: u64,
+    ) -> Vec<RoutedPolicyOutput> {
+        self.policies
+            .values()
+            .filter(|policy| &policy.instrument == instrument)
+            .map(|policy| {
+                let context = StrategyContext {
+                    instrument,
+                    features,
+                    position,
+                    now_ns,
+                };
+                RoutedPolicyOutput {
+                    strategy_id: policy.strategy_id.clone(),
+                    instrument: instrument.clone(),
+                    entry: policy.engine.evaluate_entry(&context),
+                    exit: policy.engine.evaluate_exit(&context),
+                }
             })
             .collect()
     }
@@ -177,6 +230,8 @@ fn event_matches_strategy(event: &MarketEvent, strategy: &AutomatedStrategy) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::graph::EntryPolicyDecision;
+    use pg_types::Venue;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir() -> PathBuf {
@@ -206,6 +261,16 @@ mod tests {
                 enabled = true
                 min_momentum_bps = 25.0
                 min_volume_ratio = 1.25
+
+                [[policy.entries]]
+                id = "momentum"
+                side = "Buy"
+                mode = "all"
+
+                [[policy.entries.predicates]]
+                feature = "momentum_bps"
+                op = "gte"
+                value = 25.0
             "#
         )
     }
@@ -217,7 +282,22 @@ mod tests {
         fs::write(&file, definition(0.30)).unwrap();
         let mut registry = StrategyRegistry::load_dir(&dir).unwrap();
         assert_eq!(registry.len(), 2);
+        assert_eq!(registry.policy_count(), 2);
         assert_eq!(registry.subscriptions().len(), 8);
+
+        let mut features = FeatureFrame::default();
+        features.insert("momentum_bps", 30.0);
+        let routed = registry.route_policy_frame(
+            &AssetKey::new(Venue::Hyperliquid, "HYPE"),
+            &features,
+            &PositionView::default(),
+            1,
+        );
+        assert_eq!(routed.len(), 1);
+        assert!(matches!(
+            routed[0].entry,
+            EntryPolicyDecision::Matched { .. }
+        ));
 
         fs::write(&file, definition(0.40)).unwrap();
         let ids = registry.reload_file(&file).unwrap();
