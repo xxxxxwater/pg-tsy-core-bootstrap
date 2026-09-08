@@ -6,13 +6,15 @@ license.workspace = true
 
 [features]
 default = []
-sdk = ["dep:hyperliquid_rust_sdk"]
+sdk = ["dep:alloy", "dep:hyperliquid_rust_sdk"]
 
 [dependencies]
+alloy = { version = "1.0", default-features = false, features = ["signer-local"], optional = true }
 async-trait.workspace = true
 pg-execution = { path = "../../crates/pg-execution" }
 pg-marketdata = { path = "../../crates/pg-marketdata" }
 pg-types = { path = "../../crates/pg-types" }
 rust_decimal.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 hyperliquid_rust_sdk = { git = "https://github.com/hyperliquid-dex/hyperliquid-rust-sdk", rev = "aac75585daf12d0a3761126cc7da7a5e035b5853", optional = true }
