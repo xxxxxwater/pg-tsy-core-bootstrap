@@ -1,0 +1,54 @@
+# strategy.v1 example: momentum + volume screen feeding the live microstructure/VWAP engine.
+# Live routing is still disabled globally unless the pg-core live gates are explicitly enabled.
+# order_quantity is BASE asset quantity. Use separate definition files when assets need different sizing.
+
+schema_version = "strategy.v1"
+enabled = true
+
+[universe]
+venue = "HYPERLIQUID"
+assets = ["HYPE", "SOL"]
+
+[strategy]
+id = "momentum-volume-vwap"
+order_quantity = "1"
+entry_score = 0.35
+exit_score = 0.05
+
+[automation]
+# 5-minute candle stream. Tick/BBO/L2 subscriptions are also declared automatically.
+candle_interval_ns = 300000000000
+signal_horizon_ms = 5000
+signal_ttl_ms = 2000
+min_confidence = 0.45
+min_emit_interval_ns = 250000000
+alpha_id = "alpha.momentum-volume-vwap.v1"
+
+[automation.factors]
+# These override only the defaults you want to change.
+trade_window = 64
+candle_window = 24
+book_levels = 5
+min_trade_samples = 16
+min_candle_samples = 8
+max_spread_bps = 25.0
+volatility_soft_cap_bps = 150.0
+vwap_scale_bps = 20.0
+momentum_scale_bps = 50.0
+vwap_weight = 0.20
+trade_imbalance_weight = 0.20
+book_imbalance_weight = 0.20
+momentum_weight = 0.40
+
+[automation.entry_filter]
+enabled = true
+# This is a rolling close-to-close momentum gate, not Freqtrade EWO.
+min_momentum_bps = 20.0
+# Current candle volume must be at least 1.25x the mean of prior observed candles.
+volume_window = 25
+min_volume_samples = 25
+min_volume_ratio = 1.25
+# Optional microstructure confirmation.
+min_trade_imbalance = 0.0
+max_spread_bps = 20.0
+max_realized_volatility_bps = 180.0
