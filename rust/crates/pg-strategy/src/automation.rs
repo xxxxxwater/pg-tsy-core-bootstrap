@@ -469,7 +469,12 @@ mod tests {
             volume: Decimal::from(30),
             trades: 1,
         }));
-        assert!(output.entry_filter.as_ref().is_some_and(|filter| filter.allowed));
+        assert!(
+            output
+                .entry_filter
+                .as_ref()
+                .is_some_and(|filter| filter.allowed)
+        );
         assert!(matches!(output.decision, StrategyDecision::Submit(_)));
     }
 }
