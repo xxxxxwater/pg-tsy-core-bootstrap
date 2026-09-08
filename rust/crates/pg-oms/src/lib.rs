@@ -1,4 +1,4 @@
-use pg_types::OrderIntent;
+use pg_types::{OrderIntent, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -54,6 +54,8 @@ pub struct OrderRecord {
     pub intent_id: Uuid,
     pub client_order_id: String,
     pub venue_order_id: Option<String>,
+    pub venue: Venue,
+    pub asset: String,
     pub owner_strategy_id: String,
     pub requested_quantity: Decimal,
     pub filled_quantity: Decimal,
@@ -67,6 +69,8 @@ impl OrderRecord {
             intent_id: intent.intent_id,
             client_order_id: intent.client_order_id(),
             venue_order_id: None,
+            venue: intent.venue,
+            asset: intent.asset.clone(),
             owner_strategy_id: intent.strategy_id.clone(),
             requested_quantity: intent.quantity,
             filled_quantity: Decimal::ZERO,
@@ -155,7 +159,7 @@ impl OrderRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pg_types::{ExposureEffect, Side, Venue};
+    use pg_types::{ExposureEffect, Side};
 
     fn intent(quantity: i64) -> OrderIntent {
         OrderIntent {
@@ -176,6 +180,13 @@ mod tests {
         order.apply(OrderEvent::SubmitRequested).unwrap();
         order.accept("venue-1").unwrap();
         order
+    }
+
+    #[test]
+    fn record_keeps_reconcile_scope() {
+        let order = OrderRecord::from_intent(&intent(1));
+        assert_eq!(order.venue, Venue::Hyperliquid);
+        assert_eq!(order.asset, "HYPE");
     }
 
     #[test]
