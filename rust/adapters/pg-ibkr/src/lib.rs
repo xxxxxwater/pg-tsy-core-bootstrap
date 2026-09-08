@@ -67,7 +67,7 @@ impl IbkrAdapter {
 
 #[cfg(feature = "sdk")]
 mod live_market_data {
-    use super::{sdk, IbkrConfig, IbkrStockSpec};
+    use super::{IbkrConfig, IbkrStockSpec, sdk};
     use async_trait::async_trait;
     use futures::StreamExt;
     use pg_marketdata::{
@@ -83,7 +83,7 @@ mod live_market_data {
     };
     use tokio::sync::mpsc;
 
-    use sdk::market_data::{realtime::MarketDepths, SmartDepth};
+    use sdk::market_data::{SmartDepth, realtime::MarketDepths};
     use sdk::prelude::*;
     use sdk::subscriptions::SubscriptionItemStreamExt;
 
