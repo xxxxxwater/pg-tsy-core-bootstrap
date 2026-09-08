@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::StrategyConfig;
 use crate::automation::{AutomatedStrategy, StrategyAutomationConfig};
 use crate::factors::FactorConfig;
+use crate::policy::graph::{PolicyDefinition, PolicyEngine};
 use crate::selector::EntryFilterConfig;
 
 #[derive(Debug, Error)]
@@ -29,6 +30,8 @@ pub struct StrategyDefinition {
     pub strategy: StrategyTemplateDefinition,
     #[serde(default)]
     pub automation: AutomationOverrides,
+    #[serde(default)]
+    pub policy: PolicyDefinition,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -175,6 +178,9 @@ impl StrategyDefinition {
         self.universe.resolved_instruments()?;
         self.resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
+        self.policy
+            .validate()
+            .map_err(StrategyDefinitionError::Invalid)?;
         Ok(())
     }
 
@@ -225,6 +231,22 @@ impl StrategyDefinition {
             strategies.push(instance);
         }
         Ok(strategies)
+    }
+
+    pub fn build_policy_engines(
+        &self,
+    ) -> Result<Vec<(AssetKey, PolicyEngine)>, StrategyDefinitionError> {
+        self.validate()?;
+        let engine = self
+            .policy
+            .compile()
+            .map_err(StrategyDefinitionError::Invalid)?;
+        Ok(self
+            .universe
+            .resolved_instruments()?
+            .into_iter()
+            .map(|instrument| (instrument, engine.clone()))
+            .collect())
     }
 
     pub fn resolved_automation(&self) -> Result<StrategyAutomationConfig, String> {
@@ -363,6 +385,16 @@ mod tests {
                 order_quantity = "1"
                 entry_score = 0.35
                 exit_score = 0.05
+
+                [[policy.entries]]
+                id = "positive_momentum"
+                side = "Buy"
+                mode = "all"
+
+                [[policy.entries.predicates]]
+                feature = "momentum_bps"
+                op = "gte"
+                value = 20.0
             "#,
         )
         .unwrap();
@@ -380,5 +412,6 @@ mod tests {
             instances[2].machine.config.strategy_id,
             "portable-momentum:IBKR:AAPL"
         );
+        assert_eq!(definition.build_policy_engines().unwrap().len(), 3);
     }
 }
