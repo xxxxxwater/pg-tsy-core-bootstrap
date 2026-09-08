@@ -6,11 +6,14 @@ license.workspace = true
 
 [features]
 default = []
-sdk = ["dep:ibapi"]
+sdk = ["dep:ibapi", "dep:futures"]
 
 [dependencies]
 async-trait.workspace = true
 pg-execution = { path = "../../crates/pg-execution" }
 pg-marketdata = { path = "../../crates/pg-marketdata" }
 pg-types = { path = "../../crates/pg-types" }
-ibapi = { version = "3.3", optional = true }
+rust_decimal.workspace = true
+tokio.workspace = true
+futures = { version = "0.3", optional = true }
+ibapi = { version = "4.0.1", default-features = false, features = ["async"], optional = true }
