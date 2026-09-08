@@ -29,7 +29,7 @@ impl EntryRule for DeclarativeEntryRule {
     }
 
     fn evaluate(&self, context: &StrategyContext<'_>) -> RuleEvaluation {
-        evaluate_predicates(&self.predicates, self.mode, context.features)
+        evaluate_predicates(&self.predicates, self.mode, context)
     }
 }
 

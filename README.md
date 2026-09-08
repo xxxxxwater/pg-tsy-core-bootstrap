@@ -6,7 +6,7 @@ It follows three independent but composable technical paths:
 
 1. **Python factor research** — Parquet/S3 → Arrow/Polars → factor discovery, evaluation and backtests.
 2. **Local ML / LOB research** — PyTorch/JAX-oriented datasets, walk-forward validation and parameter optimization on a local GPU when available.
-3. **Rust live trading core** — tick market data, online factors, strategy/position state machines, risk, OMS, execution, reconciliation, journal/recovery and replay.
+3. **Rust live trading core** — tick market data, online factors, portable strategy policies, position state machines, risk, OMS, execution, reconciliation, journal/recovery and replay.
 
 Venue boundaries currently cover **Binance Portfolio Margin**, **Hyperliquid** and **Interactive Brokers TWS/IB Gateway**. Hyperliquid and IBKR have executable Rust adapters with explicit ambiguous-submit recovery semantics. Telegram is the operator relay/control surface.
 
@@ -35,30 +35,47 @@ Python can produce a signal, model artifact, parameter set or feature definition
 
                     AWS / LIVE RUST
 
- Trades/BBO/L2/Candles
-          |
-          v
- RollingFactorEngine
-          |
-          v
-       Signal
-          |
-          v
- StrategyMachine -> PositionTarget -> Risk -> OMS -> ExecutionAdapter
-                                                   /          \
-                                           Hyperliquid       IBKR
-                                               |              |
-                                         cloid identity   order_ref identity
-                                               \              /
-                                                venue truth
-                                                    |
-                                          Ack / Fill / Reject
-                                                    |
-                                      Journal / Reconcile / Recovery
-                                                    |
-                                      Position ownership / checkpoint
-                                                    |
-                                         Telegram control relay
+                  strategy.v1
+                       |
+                       v
+                 Rule Graph
+                       |
+                required_features
+                       |
+                       v
+             FeatureProviderRegistry
+                       |
+                minimal FeedSpec set
+                       |
+                       v
+ Binance / Hyperliquid / IBKR adapters
+                       |
+             Trades / BBO / L2 / Candles
+                       |
+                       v
+               LiveFeatureEngine
+                       |
+                 FeatureFrame
+                       |
+             portable PolicyEngine
+                       |
+              Signal / PositionTarget
+                       |
+           Risk -> OMS -> ExecutionAdapter
+                         /          \
+                 Hyperliquid       IBKR
+                     |              |
+               cloid identity   order_ref identity
+                     \              /
+                      venue truth
+                          |
+                Ack / Fill / Reject
+                          |
+            Journal / Reconcile / Recovery
+                          |
+            Position ownership / checkpoint
+                          |
+               Telegram control relay
 ```
 
 ## Repository map
@@ -72,11 +89,12 @@ research/                   Python research control plane
     ml/                      Local model training + model artifact contracts
     tuning/                  Walk-forward / robust hyperparameter search
     signal/                  Signal creation and development store
+strategies/                  Editable strategy.v1 definitions
 rust/
   crates/
     pg-types/                Shared domain types
     pg-marketdata/           Trade/BBO/L2/candle + freshness/aggregation
-    pg-strategy/             Online factors + entry/exit/position state machine
+    pg-strategy/             Feature providers + portable policy + state machine
     pg-risk/                 Pre-trade risk engine
     pg-oms/                  Order state machine and partial-fill accounting
     pg-execution/            Venue-neutral execution/recovery contract
@@ -94,9 +112,50 @@ docs/                       Architecture, ADRs, runbooks and status
 infra/                      AWS/Terraform deployment blueprint
 ```
 
-## Strategy automation
+## Portable strategy infrastructure
 
-The live Rust path computes lightweight online factors from subscribed market events. Training is not required on the production host.
+Strategies are definitions and policies, not venue adapters. The same strategy template can expand into independent instruments such as:
+
+```text
+BINANCE_PM:ETHUSDT
+HYPERLIQUID:HYPE
+IBKR:AAPL
+```
+
+A rule graph references normalized feature names. `PolicyDefinition::required_features()` collects them, `FeatureProviderRegistry` verifies that each live feature has a provider, and `FeaturePlan` derives the minimal market-data subscriptions required for each instrument.
+
+Current standard mappings include:
+
+- Trades → `last_price`, `vwap`, `vwap_deviation_bps`, `trade_imbalance`;
+- BBO → `spread_bps`;
+- L2 → `book_imbalance`;
+- Candle → `momentum_bps`, `realized_volatility_bps`, `volume_ratio`;
+- normalized `PositionView` → quantity, average entry, filled-entry count, unrealized/peak return.
+
+An unregistered live feature fails strategy loading instead of silently remaining missing. Custom strategy factors therefore become explicit providers with a stable feature name and declared normalized feed dependencies.
+
+The live and fixture paths converge on the same object:
+
+```text
+fixture JSON --------------------------+
+                                      |
+                                      v
+                                FeatureFrame
+                                      |
+                                      v
+                                 PolicyEngine
+                                      ^
+                                      |
+MarketEvent -> LiveFeatureEngine ------+
+```
+
+This allows migrated strategies to compare fixture decisions against live-style normalized market-event replay without importing Binance, Hyperliquid or IBKR SDK types into strategy code.
+
+See [`docs/STRATEGIES.md`](docs/STRATEGIES.md).
+
+## Strategy automation compatibility path
+
+The existing Rust automation path remains supported while production orchestration moves toward portable policy-driven decisions. It computes lightweight online factors from subscribed market events and does not require training on the production host.
 
 Current online factor primitives include:
 
@@ -107,7 +166,7 @@ Current online factor primitives include:
 - short-horizon momentum;
 - realized volatility.
 
-`AutomationConfig` declares the required feeds, `RollingFactorEngine` maintains rolling state, and `AutomatedStrategy` applies warmup, spread/volatility gates, confidence, TTL and throttling before producing a versioned signal. Partial fills update strategy-owned position quantity incrementally; an order is never assumed fully filled merely because submission succeeded.
+`RollingFactorEngine` maintains rolling state, and `AutomatedStrategy` applies warmup, spread/volatility gates, confidence, TTL and throttling before producing a versioned signal. Partial fills update strategy-owned position quantity incrementally; an order is never assumed fully filled merely because submission succeeded.
 
 ## Execution idempotency and ambiguous-submit recovery
 
@@ -143,9 +202,12 @@ Never fabricate sequencing information. If a venue feed exposes a trustworthy mo
 - Live trading is **off by default**.
 - Research/training code never submits exchange orders.
 - AWS live deployments do not require or install PyTorch/Optuna.
+- Strategy/policy code never imports venue SDK types.
+- Rule-graph features without a registered live provider fail at load time.
 - Every strategy-created order has explicit ownership identity.
 - Manual positions are never silently adopted by a strategy.
 - Unknown exchange/order state is fail-closed for **new strategy exposure**.
+- Entry filters do not disable exit evaluation for already-owned exposure.
 - Exit intents are explicitly `ReduceOnly` at the core contract; venue adapters must state whether that guarantee is native or software-enforced.
 - Restart/recovery reconciles venue truth before opening new exposure.
 - Signals expire and cannot be reused indefinitely.
@@ -166,6 +228,21 @@ python scripts/train_local.py --help
 ```
 
 The local trainer selects CUDA, Apple MPS or CPU at runtime. Model artifacts and frozen parameter sets are exported for deployment; the live host does not train models or run hyperparameter search.
+
+## Strategy validation and replay
+
+```bash
+# Parse definitions, compile policy graphs and validate provider/subscription plans
+make strategy-validate
+
+# Replay normalized MarketEvent JSONL through live feature generation + policy evaluation
+make strategy-replay EVENTS=data/replay/hype.jsonl
+
+# Replay fixture FeatureFrame JSONL directly through the same PolicyEngine
+make policy-replay FEATURES=data/replay/policy_features.jsonl
+```
+
+Replay never intentionally routes live orders.
 
 ## Rust / CI
 
@@ -214,8 +291,8 @@ Do not introduce EKS/Kafka until measurements justify them.
 
 ## Current maturity
 
-The repository has moved beyond a scaffold into a **P0 production slice / execution-and-recovery hardening stage**. Hyperliquid and IBKR execution adapters now implement stable client identity and ambiguous-submit reconciliation, and the core has OMS partial fills, ownership/reconcile primitives, PostgreSQL lease/fencing/checkpoint state and automated online factors.
+The repository has moved beyond a scaffold into a **P0 production slice / execution-and-recovery hardening stage**. Hyperliquid and IBKR execution adapters implement stable client identity and ambiguous-submit reconciliation. The core also has OMS partial fills, ownership/reconcile primitives, PostgreSQL lease/fencing/checkpoint state, portable multi-venue strategy definitions, graph-derived feature subscriptions and live normalized FeatureFrame generation.
 
-It is **not yet an unattended-production release**. Remaining P0 work includes wiring the continuous reconciliation loop through the live runtime, proving durable journal-before-dispatch ordering end-to-end, completing Telegram emergency flatten, health/readiness/metrics, hardened Docker/systemd EC2 deployment, Binance PM execution/recovery and kill-9/network/database failure injection before a small-capital canary.
+It is **not yet an unattended-production release**. The portable policy path can run in fixture/live-style replay, but actionable live policy decisions must still be wired through the durable production orchestration. Remaining P0 work includes continuous reconciliation, journal-before-dispatch ordering end-to-end, Telegram emergency flatten, health/readiness/metrics, hardened Docker/systemd EC2 deployment, Binance PM execution/recovery and kill-9/network/database failure injection before a small-capital canary.
 
-See [`docs/STATUS.md`](docs/STATUS.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/STORAGE_RECOVERY.md`](docs/STORAGE_RECOVERY.md), [`docs/EXCHANGES.md`](docs/EXCHANGES.md), [`docs/STRATEGY_AUTOMATION.md`](docs/STRATEGY_AUTOMATION.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [`docs/STATUS.md`](docs/STATUS.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/STORAGE_RECOVERY.md`](docs/STORAGE_RECOVERY.md), [`docs/EXCHANGES.md`](docs/EXCHANGES.md), [`docs/STRATEGIES.md`](docs/STRATEGIES.md), [`docs/STRATEGY_AUTOMATION.md`](docs/STRATEGY_AUTOMATION.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).

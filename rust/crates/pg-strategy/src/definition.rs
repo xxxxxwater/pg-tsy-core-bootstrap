@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
+use pg_marketdata::FeedSpec;
 use pg_types::{AssetKey, Venue};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -10,6 +11,7 @@ use crate::StrategyConfig;
 use crate::automation::{AutomatedStrategy, StrategyAutomationConfig};
 use crate::factors::FactorConfig;
 use crate::policy::graph::{PolicyDefinition, PolicyEngine};
+use crate::policy::providers::{FeaturePlan, FeatureProviderRegistry, LiveFeatureEngine};
 use crate::selector::EntryFilterConfig;
 
 #[derive(Debug, Error)]
@@ -91,11 +93,17 @@ pub struct FactorOverrides {
     pub momentum_weight: Option<f64>,
 }
 
-#[derive(Debug, Clone)]
 pub struct PolicyInstance {
     pub strategy_id: String,
     pub instrument: AssetKey,
     pub engine: PolicyEngine,
+    pub features: LiveFeatureEngine,
+}
+
+impl PolicyInstance {
+    pub fn subscriptions(&self) -> Vec<FeedSpec> {
+        self.features.subscriptions(&self.instrument)
+    }
 }
 
 impl UniverseDefinition {
@@ -221,6 +229,12 @@ impl StrategyDefinition {
         Ok(strategies)
     }
 
+    pub fn policy_feature_plan(&self) -> Result<FeaturePlan, StrategyDefinitionError> {
+        FeatureProviderRegistry::standard()
+            .plan(&self.policy.required_features())
+            .map_err(StrategyDefinitionError::Invalid)
+    }
+
     pub fn build_policy_instances(&self) -> Result<Vec<PolicyInstance>, StrategyDefinitionError> {
         if !self.enabled {
             return Ok(Vec::new());
@@ -230,15 +244,28 @@ impl StrategyDefinition {
             .policy
             .compile()
             .map_err(StrategyDefinitionError::Invalid)?;
-        Ok(self
-            .resolved_instance_identities()?
-            .into_iter()
-            .map(|(strategy_id, instrument)| PolicyInstance {
+        let plan = self.policy_feature_plan()?;
+        let automation = self
+            .resolved_automation()
+            .map_err(StrategyDefinitionError::Invalid)?;
+        let mut instances = Vec::new();
+        for (strategy_id, instrument) in self.resolved_instance_identities()? {
+            let features = LiveFeatureEngine::new(
+                plan.clone(),
+                automation.factors.clone(),
+                automation.candle_interval_ns,
+                automation.entry_filter.volume_window,
+                automation.entry_filter.min_volume_samples,
+            )
+            .map_err(StrategyDefinitionError::Invalid)?;
+            instances.push(PolicyInstance {
                 strategy_id,
                 instrument,
                 engine: engine.clone(),
-            })
-            .collect())
+                features,
+            });
+        }
+        Ok(instances)
     }
 
     pub fn build_policy_engines(
@@ -353,6 +380,7 @@ fn default_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::providers::FeedRequirement;
 
     #[test]
     fn legacy_definition_builds_multi_asset_instances() {
@@ -451,5 +479,8 @@ mod tests {
             instances[2].machine.config.strategy_id,
             "portable-momentum:IBKR:AAPL"
         );
+        let plan = definition.policy_feature_plan().unwrap();
+        assert_eq!(plan.feed_requirements().len(), 1);
+        assert!(plan.feed_requirements().contains(&FeedRequirement::Candle));
     }
 }

@@ -59,6 +59,7 @@ fn load_strategy_registry() -> Result<Option<StrategyRegistry>> {
         strategy_count = registry.len(),
         policy_count = registry.policy_count(),
         subscription_count = registry.subscriptions().len(),
+        policy_subscription_count = registry.policy_subscriptions().len(),
         strategies = ?registry.strategy_ids(),
         "strategy definitions loaded"
     );
@@ -72,6 +73,8 @@ fn replay_market_events(registry: &mut StrategyRegistry, path: &Path) -> Result<
     let mut event_count = 0_u64;
     let mut signal_count = 0_u64;
     let mut decision_count = 0_u64;
+    let mut policy_frame_count = 0_u64;
+    let position = PositionView::default();
 
     for (index, line) in reader.lines().enumerate() {
         let line = line.with_context(|| format!("failed to read replay line {}", index + 1))?;
@@ -108,6 +111,7 @@ fn replay_market_events(registry: &mut StrategyRegistry, path: &Path) -> Result<
                 println!(
                     "{}",
                     serde_json::to_string(&json!({
+                        "path": "legacy_automation",
                         "strategy_id": routed.strategy_id,
                         "factors": routed.output.factors,
                         "entry_filter": routed.output.entry_filter,
@@ -117,10 +121,25 @@ fn replay_market_events(registry: &mut StrategyRegistry, path: &Path) -> Result<
                 );
             }
         }
+
+        for routed in registry.route_live_policy_event(&event, &position) {
+            policy_frame_count = policy_frame_count.saturating_add(1);
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "path": "portable_policy_live",
+                    "strategy_id": routed.strategy_id,
+                    "instrument": routed.instrument,
+                    "features": routed.features,
+                    "entry": routed.entry,
+                    "exit": routed.exit,
+                }))?
+            );
+        }
     }
 
     eprintln!(
-        "replay complete: events={event_count} signals={signal_count} non_noop_decisions={decision_count}"
+        "replay complete: events={event_count} signals={signal_count} non_noop_decisions={decision_count} portable_policy_frames={policy_frame_count}"
     );
     Ok(())
 }
@@ -151,6 +170,7 @@ fn replay_policy_features(registry: &StrategyRegistry, path: &Path) -> Result<()
             println!(
                 "{}",
                 serde_json::to_string(&json!({
+                    "path": "portable_policy_fixture",
                     "strategy_id": routed.strategy_id,
                     "instrument": routed.instrument,
                     "entry": routed.entry,
@@ -200,7 +220,7 @@ fn main() -> Result<()> {
 
     let Some(path) = args.first() else {
         println!(
-            "pg-core configured in {:?} mode; strategy definitions and portable policies are validated at startup. Use --replay-market-events <events.jsonl> for online-factor replay or --replay-policy-features <features.jsonl> for venue-neutral rule parity; full live market-data/execution orchestration remains a P0 runtime milestone",
+            "pg-core configured in {:?} mode; strategy definitions, portable policies and derived feature subscriptions are validated at startup. Use --replay-market-events <events.jsonl> to build live normalized FeatureFrames or --replay-policy-features <features.jsonl> for fixture parity; full live market-data/execution orchestration remains a P0 runtime milestone",
             config.mode
         );
         return Ok(());

@@ -21,32 +21,53 @@ pub struct PolicyDefinition {
 impl PolicyDefinition {
     pub fn validate(&self) -> Result<(), String> {
         let mut ids = BTreeSet::new();
-        for (kind, id, predicate_count) in self
+        for (kind, id, predicates) in self
             .filters
             .iter()
-            .map(|rule| ("filter", rule.id.as_str(), rule.predicates.len()))
+            .map(|rule| ("filter", rule.id.as_str(), rule.predicates.as_slice()))
             .chain(
                 self.entries
                     .iter()
-                    .map(|rule| ("entry", rule.id.as_str(), rule.predicates.len())),
+                    .map(|rule| ("entry", rule.id.as_str(), rule.predicates.as_slice())),
             )
             .chain(
                 self.exits
                     .iter()
-                    .map(|rule| ("exit", rule.id.as_str(), rule.predicates.len())),
+                    .map(|rule| ("exit", rule.id.as_str(), rule.predicates.as_slice())),
             )
         {
             if id.trim().is_empty() {
                 return Err(format!("{kind} rule id must not be empty"));
             }
-            if predicate_count == 0 {
+            if predicates.is_empty() {
                 return Err(format!("{kind} rule {id} must have at least one predicate"));
             }
             if !ids.insert(id.to_owned()) {
                 return Err(format!("duplicate policy rule id {id}"));
             }
+            for predicate in predicates {
+                if predicate.feature.trim().is_empty() {
+                    return Err(format!("{kind} rule {id} has an empty feature name"));
+                }
+                if !predicate.value.is_finite() {
+                    return Err(format!(
+                        "{kind} rule {id} predicate {} has a non-finite value",
+                        predicate.feature
+                    ));
+                }
+            }
         }
         Ok(())
+    }
+
+    pub fn required_features(&self) -> BTreeSet<String> {
+        self.filters
+            .iter()
+            .flat_map(|rule| rule.predicates.iter())
+            .chain(self.entries.iter().flat_map(|rule| rule.predicates.iter()))
+            .chain(self.exits.iter().flat_map(|rule| rule.predicates.iter()))
+            .map(|predicate| predicate.feature.clone())
+            .collect()
     }
 
     pub fn compile(&self) -> Result<PolicyEngine, String> {
@@ -160,8 +181,10 @@ mod tests {
         let mut features = FeatureFrame::default();
         features.insert("spread_bps", 50.0);
         features.insert("momentum_bps", 40.0);
-        features.insert("unrealized_return", -0.15);
-        let position = PositionView::default();
+        let position = PositionView {
+            unrealized_return: Some(-0.15),
+            ..PositionView::default()
+        };
         let instrument = AssetKey::new(Venue::Hyperliquid, "HYPE");
         let context = StrategyContext {
             instrument: &instrument,
@@ -180,5 +203,35 @@ mod tests {
                 rule_id: "stop".into()
             }
         );
+    }
+
+    #[test]
+    fn required_features_are_deduplicated_across_rule_types() {
+        let definition = PolicyDefinition {
+            filters: vec![DeclarativeFilter {
+                id: "spread".into(),
+                mode: MatchMode::All,
+                predicates: vec![predicate("spread_bps", ComparisonOp::Lte, 20.0)],
+            }],
+            entries: vec![DeclarativeEntryRule {
+                id: "entry".into(),
+                side: Side::Buy,
+                mode: MatchMode::All,
+                predicates: vec![
+                    predicate("spread_bps", ComparisonOp::Lte, 20.0),
+                    predicate("momentum_bps", ComparisonOp::Gte, 20.0),
+                ],
+            }],
+            exits: vec![DeclarativeExitRule {
+                id: "exit".into(),
+                mode: MatchMode::All,
+                predicates: vec![predicate("unrealized_return", ComparisonOp::Lte, -0.10)],
+            }],
+        };
+        let features = definition.required_features();
+        assert_eq!(features.len(), 3);
+        assert!(features.contains("spread_bps"));
+        assert!(features.contains("momentum_bps"));
+        assert!(features.contains("unrealized_return"));
     }
 }

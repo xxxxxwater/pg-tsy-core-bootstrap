@@ -81,7 +81,7 @@ op = "gte"
 value = 1.25
 
 [[policy.exits]]
-id = "risk_exit"
+id = "risk_or_momentum_exit"
 mode = "any"
 
 [[policy.exits.predicates]]
@@ -90,6 +90,6 @@ op = "lte"
 value = -0.10
 
 [[policy.exits.predicates]]
-feature = "structure_score"
+feature = "momentum_bps"
 op = "lte"
-value = -0.50
+value = -50.0
