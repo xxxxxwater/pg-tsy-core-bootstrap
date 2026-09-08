@@ -81,8 +81,8 @@ pub struct RunConfig {
 impl RunConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
         let environment = env::var("PG_ENV").unwrap_or_else(|_| "dev".into());
-        let instance_id = env::var("PG_INSTANCE_ID")
-            .map_err(|_| ConfigError::Missing("PG_INSTANCE_ID"))?;
+        let instance_id =
+            env::var("PG_INSTANCE_ID").map_err(|_| ConfigError::Missing("PG_INSTANCE_ID"))?;
         if instance_id.trim().is_empty() {
             return Err(ConfigError::InvalidValue {
                 key: "PG_INSTANCE_ID",
@@ -190,7 +190,9 @@ impl StartupChecklist {
     }
 
     pub fn status(&self, gate: StartupGate) -> &GateStatus {
-        self.gates.get(&gate).expect("all startup gates are initialized")
+        self.gates
+            .get(&gate)
+            .expect("all startup gates are initialized")
     }
 
     pub fn ready_for(&self, mode: RunMode) -> bool {
