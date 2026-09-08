@@ -34,11 +34,7 @@ pub fn may_open_new_exposure(positions: &[VenuePosition]) -> bool {
 /// Production gate used by strategy/risk: unknown ownership only freezes the
 /// affected venue+asset. A known Manual position is allowed to coexist because
 /// it is not attributed to the strategy and must never be reduced implicitly.
-pub fn may_open_new_exposure_for(
-    positions: &[VenuePosition],
-    venue: Venue,
-    asset: &str,
-) -> bool {
+pub fn may_open_new_exposure_for(positions: &[VenuePosition], venue: Venue, asset: &str) -> bool {
     !positions.iter().any(|position| {
         position.venue == venue
             && position.asset == asset
