@@ -1,0 +1,53 @@
+# Same strategy template expanded across different venue adapters.
+# This file demonstrates infrastructure portability, not a recommendation to use
+# identical thresholds/sizing for crypto and equities in production.
+
+schema_version = "strategy.v1"
+enabled = true
+
+[universe]
+[[universe.instruments]]
+venue = "BINANCE_PM"
+asset = "ETHUSDT"
+
+[[universe.instruments]]
+venue = "HYPERLIQUID"
+asset = "HYPE"
+
+[[universe.instruments]]
+venue = "IBKR"
+asset = "AAPL"
+
+[strategy]
+id = "portable-momentum-volume"
+order_quantity = "1"
+entry_score = 0.35
+exit_score = 0.05
+
+[automation]
+candle_interval_ns = 300000000000
+signal_horizon_ms = 5000
+signal_ttl_ms = 2000
+min_confidence = 0.45
+alpha_id = "alpha.portable-momentum-volume.v1"
+
+[automation.factors]
+trade_window = 64
+candle_window = 24
+book_levels = 5
+min_trade_samples = 16
+min_candle_samples = 8
+max_spread_bps = 25.0
+momentum_weight = 0.40
+vwap_weight = 0.20
+trade_imbalance_weight = 0.20
+book_imbalance_weight = 0.20
+
+[automation.entry_filter]
+enabled = true
+min_momentum_bps = 20.0
+volume_window = 25
+min_volume_samples = 25
+min_volume_ratio = 1.25
+max_spread_bps = 20.0
+max_realized_volatility_bps = 180.0

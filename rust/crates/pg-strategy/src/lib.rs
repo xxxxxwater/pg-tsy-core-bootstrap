@@ -1,6 +1,7 @@
 pub mod automation;
 pub mod definition;
 pub mod factors;
+pub mod policy;
 pub mod registry;
 pub mod selector;
 

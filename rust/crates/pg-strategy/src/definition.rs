@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
-use pg_types::Venue;
+use pg_types::{AssetKey, Venue};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use thiserror::Error;
@@ -31,10 +31,22 @@ pub struct StrategyDefinition {
     pub automation: AutomationOverrides,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct UniverseDefinition {
-    pub venue: Venue,
+    /// Legacy/single-venue form. Kept for compatibility with existing definitions.
+    #[serde(default)]
+    pub venue: Option<Venue>,
+    #[serde(default)]
     pub assets: Vec<String>,
+    /// Standard multi-venue form. Each strategy instance still owns one AssetKey.
+    #[serde(default)]
+    pub instruments: Vec<InstrumentDefinition>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstrumentDefinition {
+    pub venue: Venue,
+    pub asset: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +88,63 @@ pub struct FactorOverrides {
     pub momentum_weight: Option<f64>,
 }
 
+impl UniverseDefinition {
+    pub fn resolved_instruments(&self) -> Result<Vec<AssetKey>, StrategyDefinitionError> {
+        let using_legacy = self.venue.is_some() || !self.assets.is_empty();
+        let using_standard = !self.instruments.is_empty();
+        if using_legacy && using_standard {
+            return Err(StrategyDefinitionError::Invalid(
+                "universe must use either venue+assets or instruments, not both".into(),
+            ));
+        }
+
+        let instruments = if using_standard {
+            self.instruments
+                .iter()
+                .map(|instrument| AssetKey::new(instrument.venue, instrument.asset.trim()))
+                .collect::<Vec<_>>()
+        } else {
+            let venue = self.venue.ok_or_else(|| {
+                StrategyDefinitionError::Invalid(
+                    "legacy universe requires venue when assets are used".into(),
+                )
+            })?;
+            if self.assets.is_empty() {
+                return Err(StrategyDefinitionError::Invalid(
+                    "universe.assets or universe.instruments must not be empty".into(),
+                ));
+            }
+            self.assets
+                .iter()
+                .map(|asset| AssetKey::new(venue, asset.trim()))
+                .collect::<Vec<_>>()
+        };
+
+        if instruments.is_empty() {
+            return Err(StrategyDefinitionError::Invalid(
+                "universe must contain at least one instrument".into(),
+            ));
+        }
+
+        let mut unique = BTreeSet::new();
+        for instrument in &instruments {
+            if instrument.asset.trim().is_empty() {
+                return Err(StrategyDefinitionError::Invalid(
+                    "universe instrument asset must not be empty".into(),
+                ));
+            }
+            if !unique.insert(instrument.clone()) {
+                return Err(StrategyDefinitionError::Invalid(format!(
+                    "duplicate universe instrument {}:{}",
+                    venue_label(instrument.venue),
+                    instrument.asset
+                )));
+            }
+        }
+        Ok(instruments)
+    }
+}
+
 impl StrategyDefinition {
     pub fn from_toml_str(input: &str) -> Result<Self, StrategyDefinitionError> {
         let definition: Self = toml::from_str(input)?;
@@ -103,25 +172,7 @@ impl StrategyDefinition {
                 "order_quantity must be positive".into(),
             ));
         }
-        if self.universe.assets.is_empty() {
-            return Err(StrategyDefinitionError::Invalid(
-                "universe.assets must not be empty".into(),
-            ));
-        }
-        let mut assets = BTreeSet::new();
-        for asset in &self.universe.assets {
-            let asset = asset.trim();
-            if asset.is_empty() {
-                return Err(StrategyDefinitionError::Invalid(
-                    "universe asset must not be empty".into(),
-                ));
-            }
-            if !assets.insert(asset.to_owned()) {
-                return Err(StrategyDefinitionError::Invalid(format!(
-                    "duplicate universe asset {asset}"
-                )));
-            }
-        }
+        self.universe.resolved_instruments()?;
         self.resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
         Ok(())
@@ -139,19 +190,32 @@ impl StrategyDefinition {
         let automation = self
             .resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
-        let multi_asset = self.universe.assets.len() > 1;
-        let mut strategies = Vec::with_capacity(self.universe.assets.len());
-        for asset in &self.universe.assets {
-            let asset = asset.trim();
-            let strategy_id = if multi_asset {
-                format!("{}:{}", self.strategy.id, asset)
+        let instruments = self.universe.resolved_instruments()?;
+        let multi = instruments.len() > 1;
+        let multi_venue = instruments
+            .iter()
+            .map(|instrument| instrument.venue)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1;
+        let mut strategies = Vec::with_capacity(instruments.len());
+        for instrument in instruments {
+            let strategy_id = if multi_venue {
+                format!(
+                    "{}:{}:{}",
+                    self.strategy.id,
+                    venue_label(instrument.venue),
+                    instrument.asset
+                )
+            } else if multi {
+                format!("{}:{}", self.strategy.id, instrument.asset)
             } else {
                 self.strategy.id.clone()
             };
             let config = StrategyConfig {
                 strategy_id,
-                asset: asset.to_owned(),
-                venue: self.universe.venue,
+                asset: instrument.asset,
+                venue: instrument.venue,
                 order_quantity,
                 entry_score: self.strategy.entry_score,
                 exit_score: self.strategy.exit_score,
@@ -215,6 +279,14 @@ impl FactorOverrides {
     }
 }
 
+fn venue_label(venue: Venue) -> &'static str {
+    match venue {
+        Venue::BinancePm => "BINANCE_PM",
+        Venue::Hyperliquid => "HYPERLIQUID",
+        Venue::InteractiveBrokers => "IBKR",
+    }
+}
+
 fn default_schema_version() -> String {
     "strategy.v1".into()
 }
@@ -228,7 +300,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partial_toml_definition_builds_multi_asset_instances() {
+    fn legacy_definition_builds_multi_asset_instances() {
         let definition = StrategyDefinition::from_toml_str(
             r#"
                 schema_version = "strategy.v1"
@@ -266,6 +338,47 @@ mod tests {
         assert_eq!(
             instances[1].machine.config.strategy_id,
             "momentum-volume-vwap:SOL"
+        );
+    }
+
+    #[test]
+    fn standard_universe_can_expand_one_template_across_venues() {
+        let definition = StrategyDefinition::from_toml_str(
+            r#"
+                schema_version = "strategy.v1"
+
+                [universe]
+                [[universe.instruments]]
+                venue = "BINANCE_PM"
+                asset = "ETHUSDT"
+                [[universe.instruments]]
+                venue = "HYPERLIQUID"
+                asset = "HYPE"
+                [[universe.instruments]]
+                venue = "IBKR"
+                asset = "AAPL"
+
+                [strategy]
+                id = "portable-momentum"
+                order_quantity = "1"
+                entry_score = 0.35
+                exit_score = 0.05
+            "#,
+        )
+        .unwrap();
+        let instances = definition.build_instances().unwrap();
+        assert_eq!(instances.len(), 3);
+        assert_eq!(
+            instances[0].machine.config.strategy_id,
+            "portable-momentum:BINANCE_PM:ETHUSDT"
+        );
+        assert_eq!(
+            instances[1].machine.config.strategy_id,
+            "portable-momentum:HYPERLIQUID:HYPE"
+        );
+        assert_eq!(
+            instances[2].machine.config.strategy_id,
+            "portable-momentum:IBKR:AAPL"
         );
     }
 }
