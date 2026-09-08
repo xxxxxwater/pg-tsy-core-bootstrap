@@ -129,7 +129,12 @@ impl StrategyMachine {
         side: Side,
         next_phase: StrategyPhase,
     ) -> StrategyDecision {
-        let intent = self.intent(signal, side, self.config.order_quantity, ExposureEffect::Increase);
+        let intent = self.intent(
+            signal,
+            side,
+            self.config.order_quantity,
+            ExposureEffect::Increase,
+        );
         self.state.phase = next_phase;
         self.state.active_intent_id = Some(intent.intent_id);
         StrategyDecision::Submit(intent)

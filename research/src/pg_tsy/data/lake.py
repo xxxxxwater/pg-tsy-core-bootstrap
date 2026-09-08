@@ -4,7 +4,6 @@ from pathlib import Path
 
 import polars as pl
 
-
 REQUIRED_MARKET_COLUMNS = {
     "ts_event_ns",
     "venue",

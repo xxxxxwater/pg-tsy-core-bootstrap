@@ -17,7 +17,5 @@ pub struct VenuePosition {
 }
 
 pub fn may_open_new_exposure(positions: &[VenuePosition]) -> bool {
-    !positions
-        .iter()
-        .any(|p| p.ownership == Ownership::Unknown)
+    !positions.iter().any(|p| p.ownership == Ownership::Unknown)
 }
