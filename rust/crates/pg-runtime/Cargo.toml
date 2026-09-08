@@ -1,13 +1,9 @@
 [package]
-name = "pg-marketdata"
+name = "pg-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-async-trait.workspace = true
-pg-types = { path = "../pg-types" }
-rust_decimal.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-tokio.workspace = true

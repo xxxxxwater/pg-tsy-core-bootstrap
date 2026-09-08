@@ -1,7 +1,9 @@
+use async_trait::async_trait;
 use pg_types::Venue;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SequenceError {
@@ -67,12 +69,32 @@ pub struct BestBidAsk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookLevel {
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub order_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2Book {
+    pub venue: Venue,
+    pub asset: String,
+    pub ts_event_ns: u64,
+    pub ts_recv_ns: u64,
+    pub bids: Vec<BookLevel>,
+    pub asks: Vec<BookLevel>,
+    pub sequence: Option<u64>,
+    pub is_snapshot: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candle {
     pub venue: Venue,
     pub asset: String,
     pub interval_ns: u64,
     pub start_ns: u64,
     pub end_ns: u64,
+    pub ts_recv_ns: u64,
     pub open: Decimal,
     pub high: Decimal,
     pub low: Decimal,
@@ -85,7 +107,89 @@ pub struct Candle {
 pub enum MarketEvent {
     Trade(TradeTick),
     BestBidAsk(BestBidAsk),
+    L2Book(L2Book),
     Candle(Candle),
+}
+
+impl MarketEvent {
+    pub fn ts_recv_ns(&self) -> u64 {
+        match self {
+            Self::Trade(event) => event.ts_recv_ns,
+            Self::BestBidAsk(event) => event.ts_recv_ns,
+            Self::L2Book(event) => event.ts_recv_ns,
+            Self::Candle(event) => event.ts_recv_ns,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeedKind {
+    Trades,
+    BestBidAsk,
+    L2Book,
+    Candle { interval_ns: u64 },
+}
+
+#[derive(Debug, Clone)]
+pub struct FeedSpec {
+    pub venue: Venue,
+    pub asset: String,
+    pub kind: FeedKind,
+}
+
+#[derive(Debug, Error)]
+pub enum MarketDataError {
+    #[error("subscription rejected: {0}")]
+    Subscription(String),
+    #[error("market data disconnected: {0}")]
+    Disconnected(String),
+    #[error("market data is stale: last receive {last_recv_ns}, now {now_ns}")]
+    Stale { last_recv_ns: u64, now_ns: u64 },
+    #[error("market data conversion failed: {0}")]
+    Conversion(String),
+}
+
+#[async_trait]
+pub trait MarketDataSource: Send {
+    async fn stream(
+        &mut self,
+        spec: FeedSpec,
+        sink: mpsc::Sender<MarketEvent>,
+    ) -> Result<(), MarketDataError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct FeedFreshness {
+    max_staleness_ns: u64,
+    last_recv_ns: Option<u64>,
+}
+
+impl FeedFreshness {
+    pub fn new(max_staleness_ns: u64) -> Self {
+        assert!(max_staleness_ns > 0, "max staleness must be positive");
+        Self {
+            max_staleness_ns,
+            last_recv_ns: None,
+        }
+    }
+
+    pub fn observe(&mut self, event: &MarketEvent) {
+        self.last_recv_ns = Some(event.ts_recv_ns());
+    }
+
+    pub fn ensure_fresh(&self, now_ns: u64) -> Result<(), MarketDataError> {
+        let last_recv_ns = self.last_recv_ns.ok_or(MarketDataError::Stale {
+            last_recv_ns: 0,
+            now_ns,
+        })?;
+        if now_ns.saturating_sub(last_recv_ns) > self.max_staleness_ns {
+            return Err(MarketDataError::Stale {
+                last_recv_ns,
+                now_ns,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -128,6 +232,7 @@ impl CandleAggregator {
                 current.close = trade.price;
                 current.volume += trade.quantity;
                 current.trades += 1;
+                current.ts_recv_ns = trade.ts_recv_ns;
                 return Ok(None);
             }
         }
@@ -139,6 +244,7 @@ impl CandleAggregator {
             interval_ns: self.interval_ns,
             start_ns: bucket_start,
             end_ns: bucket_start + self.interval_ns,
+            ts_recv_ns: trade.ts_recv_ns,
             open: trade.price,
             high: trade.price,
             low: trade.price,
@@ -157,7 +263,6 @@ impl CandleAggregator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal::Decimal;
 
     fn trade(ts: u64, px: i64, qty: i64) -> TradeTick {
         TradeTick {
@@ -182,5 +287,14 @@ mod tests {
         assert_eq!(completed.high, Decimal::from(12));
         assert_eq!(completed.volume, Decimal::from(5));
         assert_eq!(completed.trades, 2);
+    }
+
+    #[test]
+    fn stale_feed_fails_closed() {
+        let event = MarketEvent::Trade(trade(1_000, 10, 1));
+        let mut freshness = FeedFreshness::new(100);
+        freshness.observe(&event);
+        assert!(freshness.ensure_fresh(1_050).is_ok());
+        assert!(freshness.ensure_fresh(1_101).is_err());
     }
 }
