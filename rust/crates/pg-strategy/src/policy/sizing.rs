@@ -13,7 +13,11 @@ pub struct FixedQuantitySizing {
 }
 
 impl SizingPolicy for FixedQuantitySizing {
-    fn quantity(&self, _context: &StrategyContext<'_>, _reference_price: Decimal) -> Option<Decimal> {
+    fn quantity(
+        &self,
+        _context: &StrategyContext<'_>,
+        _reference_price: Decimal,
+    ) -> Option<Decimal> {
         (self.quantity > Decimal::ZERO).then_some(self.quantity)
     }
 }
@@ -38,7 +42,11 @@ impl DcaLadderSizing {
         if self.max_position_quote < self.initial_quote {
             return Err("DCA max_position_quote must cover initial_quote");
         }
-        if self.triggers.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+        if self
+            .triggers
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
             return Err("DCA triggers must be finite positive loss fractions");
         }
         if !self.volume_scale.is_finite() || self.volume_scale <= 0.0 {
@@ -108,7 +116,10 @@ mod tests {
                 position: &position,
                 now_ns: 1,
             };
-            assert_eq!(sizing.next_quote_amount(&context), Some(Decimal::from(1100)));
+            assert_eq!(
+                sizing.next_quote_amount(&context),
+                Some(Decimal::from(1100))
+            );
         }
     }
 }
