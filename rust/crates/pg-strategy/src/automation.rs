@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::factors::{FactorConfig, FactorSnapshot, RollingFactorEngine};
-use crate::{StrategyConfig, StrategyDecision, StrategyMachine};
+use crate::selector::{EntryFilterConfig, EntryFilterSnapshot, MomentumVolumeSelector};
+use crate::{StrategyConfig, StrategyDecision, StrategyMachine, StrategyPhase};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyAutomationConfig {
@@ -15,6 +16,8 @@ pub struct StrategyAutomationConfig {
     pub min_confidence: f64,
     pub min_emit_interval_ns: u64,
     pub alpha_id: String,
+    #[serde(default)]
+    pub entry_filter: EntryFilterConfig,
 }
 
 impl Default for StrategyAutomationConfig {
@@ -27,6 +30,7 @@ impl Default for StrategyAutomationConfig {
             min_confidence: 0.45,
             min_emit_interval_ns: 250_000_000,
             alpha_id: "alpha.live.microstructure.v1".into(),
+            entry_filter: EntryFilterConfig::default(),
         }
     }
 }
@@ -34,6 +38,7 @@ impl Default for StrategyAutomationConfig {
 impl StrategyAutomationConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.factors.validate()?;
+        self.entry_filter.validate()?;
         if self.candle_interval_ns == 0 {
             return Err("candle_interval_ns must be positive");
         }
@@ -70,14 +75,16 @@ impl StrategyAutomationConfig {
 
 pub struct AutomationOutput {
     pub factors: Option<FactorSnapshot>,
+    pub entry_filter: Option<EntryFilterSnapshot>,
     pub signal: Option<Signal>,
     pub decision: StrategyDecision,
 }
 
 impl AutomationOutput {
-    fn idle(factors: Option<FactorSnapshot>) -> Self {
+    fn idle(factors: Option<FactorSnapshot>, entry_filter: Option<EntryFilterSnapshot>) -> Self {
         Self {
             factors,
+            entry_filter,
             signal: None,
             decision: StrategyDecision::Noop,
         }
@@ -88,6 +95,7 @@ pub struct AutomatedStrategy {
     pub machine: StrategyMachine,
     config: StrategyAutomationConfig,
     factors: RollingFactorEngine,
+    selector: MomentumVolumeSelector,
     last_emit_ns: Option<u64>,
     emission_sequence: u64,
 }
@@ -99,10 +107,12 @@ impl AutomatedStrategy {
     ) -> Result<Self, &'static str> {
         config.validate()?;
         let factors = RollingFactorEngine::new(config.factors.clone())?;
+        let selector = MomentumVolumeSelector::new(config.entry_filter.clone())?;
         Ok(Self {
             machine: StrategyMachine::new(strategy)?,
             config,
             factors,
+            selector,
             last_emit_ns: None,
             emission_sequence: 0,
         })
@@ -115,20 +125,27 @@ impl AutomatedStrategy {
     pub fn on_market_event(&mut self, event: &MarketEvent) -> AutomationOutput {
         let (venue, asset, now_ns) = event_scope(event);
         if venue != self.machine.config.venue || asset != self.machine.config.asset {
-            return AutomationOutput::idle(None);
+            return AutomationOutput::idle(None, None);
         }
 
+        self.selector.observe(event);
         let snapshot = self.factors.on_event(event);
         let Some(snapshot) = snapshot else {
-            return AutomationOutput::idle(None);
+            return AutomationOutput::idle(None, None);
         };
         if snapshot.confidence < self.config.min_confidence {
-            return AutomationOutput::idle(Some(snapshot));
+            return AutomationOutput::idle(Some(snapshot), None);
         }
+
+        let entry_filter = self.selector.evaluate(&snapshot);
+        if self.machine.state.phase == StrategyPhase::Flat && !entry_filter.allowed {
+            return AutomationOutput::idle(Some(snapshot), Some(entry_filter));
+        }
+
         if let Some(last_emit_ns) = self.last_emit_ns
             && now_ns.saturating_sub(last_emit_ns) < self.config.min_emit_interval_ns
         {
-            return AutomationOutput::idle(Some(snapshot));
+            return AutomationOutput::idle(Some(snapshot), Some(entry_filter));
         }
 
         self.emission_sequence = self.emission_sequence.saturating_add(1);
@@ -161,12 +178,16 @@ impl AutomatedStrategy {
                 "momentum_bps": snapshot.momentum_bps,
                 "realized_volatility_bps": snapshot.realized_volatility_bps,
                 "warmup_ratio": snapshot.warmup_ratio,
+                "entry_filter_allowed": entry_filter.allowed,
+                "volume_ratio": entry_filter.volume_ratio,
+                "entry_filter_reasons": entry_filter.reasons,
             }),
         };
         self.last_emit_ns = Some(now_ns);
         let decision = self.machine.on_signal(&signal, now_ns);
         AutomationOutput {
             factors: Some(snapshot),
+            entry_filter: Some(entry_filter),
             signal: Some(signal),
             decision,
         }
@@ -223,6 +244,7 @@ mod tests {
             min_confidence: 0.30,
             min_emit_interval_ns: 0,
             alpha_id: "test.live".into(),
+            entry_filter: EntryFilterConfig::default(),
         }
     }
 
@@ -346,5 +368,108 @@ mod tests {
         }
         let intent = submitted.expect("expected automated entry");
         assert_eq!(intent.effect, ExposureEffect::Increase);
+    }
+
+    #[test]
+    fn entry_filter_blocks_flat_entries_until_volume_confirms() {
+        let mut config = automation();
+        config.entry_filter = EntryFilterConfig {
+            enabled: true,
+            volume_window: 3,
+            min_volume_samples: 3,
+            min_momentum_bps: Some(50.0),
+            min_volume_ratio: Some(1.5),
+            ..EntryFilterConfig::default()
+        };
+        let mut automated = AutomatedStrategy::new(strategy(), config).unwrap();
+
+        for event in [
+            MarketEvent::BestBidAsk(BestBidAsk {
+                venue: Venue::Hyperliquid,
+                asset: "HYPE".into(),
+                ts_event_ns: 1,
+                ts_recv_ns: 1,
+                bid_price: Decimal::from(100),
+                bid_quantity: Decimal::from(20),
+                ask_price: Decimal::from(101),
+                ask_quantity: Decimal::from(5),
+                sequence: None,
+            }),
+            MarketEvent::L2Book(L2Book {
+                venue: Venue::Hyperliquid,
+                asset: "HYPE".into(),
+                ts_event_ns: 2,
+                ts_recv_ns: 2,
+                bids: vec![BookLevel {
+                    price: Decimal::from(100),
+                    quantity: Decimal::from(30),
+                    order_count: None,
+                }],
+                asks: vec![BookLevel {
+                    price: Decimal::from(101),
+                    quantity: Decimal::from(5),
+                    order_count: None,
+                }],
+                sequence: None,
+                is_snapshot: true,
+            }),
+            MarketEvent::Trade(TradeTick {
+                venue: Venue::Hyperliquid,
+                asset: "HYPE".into(),
+                ts_event_ns: 3,
+                ts_recv_ns: 3,
+                price: Decimal::from(101),
+                quantity: Decimal::ONE,
+                aggressor: AggressorSide::Buy,
+                sequence: None,
+            }),
+            MarketEvent::Trade(TradeTick {
+                venue: Venue::Hyperliquid,
+                asset: "HYPE".into(),
+                ts_event_ns: 4,
+                ts_recv_ns: 4,
+                price: Decimal::from(102),
+                quantity: Decimal::ONE,
+                aggressor: AggressorSide::Buy,
+                sequence: None,
+            }),
+        ] {
+            automated.on_market_event(&event);
+        }
+
+        for (ts, close, volume) in [(5, 100, 10), (6, 101, 10)] {
+            let output = automated.on_market_event(&MarketEvent::Candle(Candle {
+                venue: Venue::Hyperliquid,
+                asset: "HYPE".into(),
+                interval_ns: 5_000_000_000,
+                start_ns: ts,
+                end_ns: ts + 1,
+                ts_recv_ns: ts,
+                open: Decimal::from(close),
+                high: Decimal::from(close),
+                low: Decimal::from(close),
+                close: Decimal::from(close),
+                volume: Decimal::from(volume),
+                trades: 1,
+            }));
+            assert!(!matches!(output.decision, StrategyDecision::Submit(_)));
+        }
+
+        let output = automated.on_market_event(&MarketEvent::Candle(Candle {
+            venue: Venue::Hyperliquid,
+            asset: "HYPE".into(),
+            interval_ns: 5_000_000_000,
+            start_ns: 7,
+            end_ns: 8,
+            ts_recv_ns: 7,
+            open: Decimal::from(103),
+            high: Decimal::from(103),
+            low: Decimal::from(103),
+            close: Decimal::from(103),
+            volume: Decimal::from(30),
+            trades: 1,
+        }));
+        assert!(output.entry_filter.as_ref().is_some_and(|filter| filter.allowed));
+        assert!(matches!(output.decision, StrategyDecision::Submit(_)));
     }
 }
