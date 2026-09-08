@@ -1,5 +1,8 @@
 pub mod automation;
+pub mod definition;
 pub mod factors;
+pub mod registry;
+pub mod selector;
 
 use pg_types::{ExposureEffect, OrderIntent, Side, Signal, Venue};
 use rust_decimal::Decimal;
