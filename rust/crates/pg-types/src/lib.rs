@@ -7,6 +7,8 @@ use uuid::Uuid;
 pub enum Venue {
     BinancePm,
     Hyperliquid,
+    #[serde(rename = "IBKR")]
+    InteractiveBrokers,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

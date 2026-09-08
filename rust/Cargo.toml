@@ -12,12 +12,13 @@ members = [
   "crates/pg-core",
   "adapters/pg-binance",
   "adapters/pg-hyperliquid",
+  "adapters/pg-ibkr",
 ]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "UNLICENSED"
+license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1"
