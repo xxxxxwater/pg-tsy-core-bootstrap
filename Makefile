@@ -1,4 +1,4 @@
-.PHONY: check python-check rust-check test docker-up docker-down strategy-validate strategy-replay
+.PHONY: check python-check rust-check test docker-up docker-down strategy-validate strategy-replay policy-replay
 
 check: python-check rust-check
 
@@ -18,6 +18,10 @@ strategy-validate:
 strategy-replay:
 	@if [ -z "$(EVENTS)" ]; then echo 'usage: make strategy-replay EVENTS=path/to/events.jsonl'; exit 2; fi
 	cd rust && PG_INSTANCE_ID=local-strategy-replay PG_STRATEGY_DIR=../strategies cargo run -p pg-core -- --replay-market-events ../$(EVENTS)
+
+policy-replay:
+	@if [ -z "$(FEATURES)" ]; then echo 'usage: make policy-replay FEATURES=path/to/features.jsonl'; exit 2; fi
+	cd rust && PG_INSTANCE_ID=local-policy-replay PG_STRATEGY_DIR=../strategies cargo run -p pg-core -- --replay-policy-features ../$(FEATURES)
 
 docker-up:
 	docker compose up -d postgres
