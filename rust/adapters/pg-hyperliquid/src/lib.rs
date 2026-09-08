@@ -47,7 +47,7 @@ impl HyperliquidAdapter {
 
 #[cfg(feature = "sdk")]
 mod live_market_data {
-    use super::{sdk, HyperliquidNetwork};
+    use super::{HyperliquidNetwork, sdk};
     use async_trait::async_trait;
     use pg_marketdata::{
         AggressorSide, BestBidAsk, BookLevel, Candle, FeedKind, FeedSpec, L2Book, MarketDataError,
