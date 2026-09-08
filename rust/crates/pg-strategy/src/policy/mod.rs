@@ -8,6 +8,7 @@ pub mod entries;
 pub mod exits;
 pub mod factors;
 pub mod filters;
+pub mod graph;
 pub mod sizing;
 
 use std::collections::BTreeMap;
