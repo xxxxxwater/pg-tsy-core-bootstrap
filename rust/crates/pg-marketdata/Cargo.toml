@@ -5,5 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pg-types = { path = "../pg-types" }
+rust_decimal.workspace = true
 serde.workspace = true
 thiserror.workspace = true
