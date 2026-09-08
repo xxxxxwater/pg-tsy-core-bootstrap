@@ -13,4 +13,6 @@ async-trait.workspace = true
 pg-execution = { path = "../../crates/pg-execution" }
 pg-marketdata = { path = "../../crates/pg-marketdata" }
 pg-types = { path = "../../crates/pg-types" }
+rust_decimal.workspace = true
+tokio.workspace = true
 hyperliquid_rust_sdk = { git = "https://github.com/hyperliquid-dex/hyperliquid-rust-sdk", rev = "aac75585daf12d0a3761126cc7da7a5e035b5853", optional = true }
