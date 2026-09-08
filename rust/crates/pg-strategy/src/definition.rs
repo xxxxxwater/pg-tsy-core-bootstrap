@@ -91,6 +91,13 @@ pub struct FactorOverrides {
     pub momentum_weight: Option<f64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PolicyInstance {
+    pub strategy_id: String,
+    pub instrument: AssetKey,
+    pub engine: PolicyEngine,
+}
+
 impl UniverseDefinition {
     pub fn resolved_instruments(&self) -> Result<Vec<AssetKey>, StrategyDefinitionError> {
         let using_legacy = self.venue.is_some() || !self.assets.is_empty();
@@ -196,28 +203,9 @@ impl StrategyDefinition {
         let automation = self
             .resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
-        let instruments = self.universe.resolved_instruments()?;
-        let multi = instruments.len() > 1;
-        let multi_venue = instruments
-            .iter()
-            .map(|instrument| instrument.venue)
-            .collect::<BTreeSet<_>>()
-            .len()
-            > 1;
-        let mut strategies = Vec::with_capacity(instruments.len());
-        for instrument in instruments {
-            let strategy_id = if multi_venue {
-                format!(
-                    "{}:{}:{}",
-                    self.strategy.id,
-                    venue_label(instrument.venue),
-                    instrument.asset
-                )
-            } else if multi {
-                format!("{}:{}", self.strategy.id, instrument.asset)
-            } else {
-                self.strategy.id.clone()
-            };
+        let identities = self.resolved_instance_identities()?;
+        let mut strategies = Vec::with_capacity(identities.len());
+        for (strategy_id, instrument) in identities {
             let config = StrategyConfig {
                 strategy_id,
                 asset: instrument.asset,
@@ -233,19 +221,33 @@ impl StrategyDefinition {
         Ok(strategies)
     }
 
-    pub fn build_policy_engines(
-        &self,
-    ) -> Result<Vec<(AssetKey, PolicyEngine)>, StrategyDefinitionError> {
+    pub fn build_policy_instances(&self) -> Result<Vec<PolicyInstance>, StrategyDefinitionError> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
         self.validate()?;
         let engine = self
             .policy
             .compile()
             .map_err(StrategyDefinitionError::Invalid)?;
         Ok(self
-            .universe
-            .resolved_instruments()?
+            .resolved_instance_identities()?
             .into_iter()
-            .map(|instrument| (instrument, engine.clone()))
+            .map(|(strategy_id, instrument)| PolicyInstance {
+                strategy_id,
+                instrument,
+                engine: engine.clone(),
+            })
+            .collect())
+    }
+
+    pub fn build_policy_engines(
+        &self,
+    ) -> Result<Vec<(AssetKey, PolicyEngine)>, StrategyDefinitionError> {
+        Ok(self
+            .build_policy_instances()?
+            .into_iter()
+            .map(|instance| (instance.instrument, instance.engine))
             .collect())
     }
 
@@ -273,6 +275,37 @@ impl StrategyDefinition {
         config.entry_filter = self.automation.entry_filter.clone();
         config.validate().map_err(str::to_owned)?;
         Ok(config)
+    }
+
+    fn resolved_instance_identities(
+        &self,
+    ) -> Result<Vec<(String, AssetKey)>, StrategyDefinitionError> {
+        let instruments = self.universe.resolved_instruments()?;
+        let multi = instruments.len() > 1;
+        let multi_venue = instruments
+            .iter()
+            .map(|instrument| instrument.venue)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1;
+        Ok(instruments
+            .into_iter()
+            .map(|instrument| {
+                let strategy_id = if multi_venue {
+                    format!(
+                        "{}:{}:{}",
+                        self.strategy.id,
+                        venue_label(instrument.venue),
+                        instrument.asset
+                    )
+                } else if multi {
+                    format!("{}:{}", self.strategy.id, instrument.asset)
+                } else {
+                    self.strategy.id.clone()
+                };
+                (strategy_id, instrument)
+            })
+            .collect())
     }
 }
 
@@ -399,9 +432,15 @@ mod tests {
         )
         .unwrap();
         let instances = definition.build_instances().unwrap();
+        let policies = definition.build_policy_instances().unwrap();
         assert_eq!(instances.len(), 3);
+        assert_eq!(policies.len(), 3);
         assert_eq!(
             instances[0].machine.config.strategy_id,
+            "portable-momentum:BINANCE_PM:ETHUSDT"
+        );
+        assert_eq!(
+            policies[0].strategy_id,
             "portable-momentum:BINANCE_PM:ETHUSDT"
         );
         assert_eq!(
@@ -412,6 +451,5 @@ mod tests {
             instances[2].machine.config.strategy_id,
             "portable-momentum:IBKR:AAPL"
         );
-        assert_eq!(definition.build_policy_engines().unwrap().len(), 3);
     }
 }
