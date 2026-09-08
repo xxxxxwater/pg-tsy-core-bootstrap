@@ -14,7 +14,7 @@ CREATE INDEX IF NOT EXISTS order_records_scope_idx
 CREATE TABLE IF NOT EXISTS position_ownership (
     venue TEXT NOT NULL,
     asset TEXT NOT NULL,
-    ownership JSONB NOT NULL,
+    position_state JSONB NOT NULL,
     observed_quantity TEXT NOT NULL,
     fencing_token BIGINT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
