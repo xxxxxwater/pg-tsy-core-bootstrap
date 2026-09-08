@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use pg_marketdata::{FeedSpec, MarketEvent};
 use thiserror::Error;
 
+use crate::StrategyPhase;
 use crate::automation::{AutomatedStrategy, AutomationOutput};
 use crate::definition::{StrategyDefinition, StrategyDefinitionError};
-use crate::StrategyPhase;
 
 #[derive(Debug, Error)]
 pub enum StrategyRegistryError {
@@ -55,7 +55,10 @@ impl StrategyRegistry {
         Ok(registry)
     }
 
-    pub fn load_file(&mut self, path: impl AsRef<Path>) -> Result<Vec<String>, StrategyRegistryError> {
+    pub fn load_file(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<String>, StrategyRegistryError> {
         let path = path.as_ref().to_path_buf();
         let definition = StrategyDefinition::from_toml_str(&fs::read_to_string(&path)?)?;
         let instances = definition.build_instances()?;
@@ -153,16 +156,20 @@ impl StrategyRegistry {
 fn event_matches_strategy(event: &MarketEvent, strategy: &AutomatedStrategy) -> bool {
     match event {
         MarketEvent::Trade(value) => {
-            value.venue == strategy.machine.config.venue && value.asset == strategy.machine.config.asset
+            value.venue == strategy.machine.config.venue
+                && value.asset == strategy.machine.config.asset
         }
         MarketEvent::BestBidAsk(value) => {
-            value.venue == strategy.machine.config.venue && value.asset == strategy.machine.config.asset
+            value.venue == strategy.machine.config.venue
+                && value.asset == strategy.machine.config.asset
         }
         MarketEvent::L2Book(value) => {
-            value.venue == strategy.machine.config.venue && value.asset == strategy.machine.config.asset
+            value.venue == strategy.machine.config.venue
+                && value.asset == strategy.machine.config.asset
         }
         MarketEvent::Candle(value) => {
-            value.venue == strategy.machine.config.venue && value.asset == strategy.machine.config.asset
+            value.venue == strategy.machine.config.venue
+                && value.asset == strategy.machine.config.asset
         }
     }
 }
@@ -215,7 +222,15 @@ mod tests {
         fs::write(&file, definition(0.40)).unwrap();
         let ids = registry.reload_file(&file).unwrap();
         assert_eq!(ids.len(), 2);
-        assert_eq!(registry.get_mut("mv:HYPE").unwrap().machine.config.entry_score, 0.40);
+        assert_eq!(
+            registry
+                .get_mut("mv:HYPE")
+                .unwrap()
+                .machine
+                .config
+                .entry_score,
+            0.40
+        );
 
         fs::remove_dir_all(dir).ok();
     }
