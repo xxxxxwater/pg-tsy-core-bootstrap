@@ -38,7 +38,9 @@ pub struct TransitionError {
 pub enum FillError {
     #[error("fill quantity must be positive")]
     NonPositive,
-    #[error("fill would overfill order: requested={requested}, already_filled={already_filled}, incoming={incoming}")]
+    #[error(
+        "fill would overfill order: requested={requested}, already_filled={already_filled}, incoming={incoming}"
+    )]
     Overfill {
         requested: Decimal,
         already_filled: Decimal,
@@ -129,10 +131,9 @@ impl OrderRecord {
             (OrderState::Created, OrderEvent::SubmitRequested) => OrderState::PendingSubmit,
             (OrderState::PendingSubmit, OrderEvent::Accepted) => OrderState::Open,
             (OrderState::PendingSubmit, OrderEvent::Rejected) => OrderState::Rejected,
-            (
-                OrderState::Open | OrderState::PartiallyFilled,
-                OrderEvent::CancelRequested,
-            ) => OrderState::PendingCancel,
+            (OrderState::Open | OrderState::PartiallyFilled, OrderEvent::CancelRequested) => {
+                OrderState::PendingCancel
+            }
             (
                 OrderState::Open | OrderState::PartiallyFilled | OrderState::PendingCancel,
                 OrderEvent::Canceled,
