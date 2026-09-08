@@ -10,6 +10,7 @@ members = [
   "crates/pg-reconcile",
   "crates/pg-journal",
   "crates/pg-replay",
+  "crates/pg-control",
   "crates/pg-core",
   "adapters/pg-binance",
   "adapters/pg-hyperliquid",
