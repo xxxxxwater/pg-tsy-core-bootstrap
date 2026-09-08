@@ -1,3 +1,6 @@
+pub mod automation;
+pub mod factors;
+
 use pg_types::{ExposureEffect, OrderIntent, Side, Signal, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -47,6 +50,7 @@ pub struct StrategyState {
     pub phase: StrategyPhase,
     pub net_quantity: Decimal,
     pub active_intent_id: Option<Uuid>,
+    pub intent_start_quantity: Option<Decimal>,
     pub last_signal_id: Option<String>,
     pub hold_reason: Option<String>,
 }
@@ -57,6 +61,7 @@ impl Default for StrategyState {
             phase: StrategyPhase::Flat,
             net_quantity: Decimal::ZERO,
             active_intent_id: None,
+            intent_start_quantity: None,
             last_signal_id: None,
             hold_reason: None,
         }
@@ -135,6 +140,7 @@ impl StrategyMachine {
             self.config.order_quantity,
             ExposureEffect::Increase,
         );
+        self.state.intent_start_quantity = Some(self.state.net_quantity);
         self.state.phase = next_phase;
         self.state.active_intent_id = Some(intent.intent_id);
         StrategyDecision::Submit(intent)
@@ -153,6 +159,7 @@ impl StrategyMachine {
             return StrategyDecision::Hold("position ownership mismatch".into());
         }
         let intent = self.intent(signal, side, quantity, ExposureEffect::ReduceOnly);
+        self.state.intent_start_quantity = Some(self.state.net_quantity);
         self.state.phase = next_phase;
         self.state.active_intent_id = Some(intent.intent_id);
         StrategyDecision::Submit(intent)
@@ -178,27 +185,74 @@ impl StrategyMachine {
         }
     }
 
-    pub fn on_intent_filled(&mut self, intent_id: Uuid) -> bool {
-        if self.state.active_intent_id != Some(intent_id) {
+    pub fn on_intent_fill_progress(
+        &mut self,
+        intent_id: Uuid,
+        cumulative_filled: Decimal,
+        fully_filled: bool,
+    ) -> bool {
+        if self.state.active_intent_id != Some(intent_id) || cumulative_filled < Decimal::ZERO {
             return false;
         }
+        let start = self
+            .state
+            .intent_start_quantity
+            .unwrap_or(self.state.net_quantity);
+        let expected = match self.state.phase {
+            StrategyPhase::EnteringLong | StrategyPhase::EnteringShort => {
+                self.config.order_quantity
+            }
+            StrategyPhase::ExitingLong | StrategyPhase::ExitingShort => start.abs(),
+            _ => return false,
+        };
+        if cumulative_filled > expected {
+            self.on_external_state_unknown(
+                "venue cumulative fill exceeds expected intent quantity",
+            );
+            return false;
+        }
+
         match self.state.phase {
-            StrategyPhase::EnteringLong => {
-                self.state.net_quantity = self.config.order_quantity;
-                self.state.phase = StrategyPhase::Long;
-            }
-            StrategyPhase::EnteringShort => {
-                self.state.net_quantity = -self.config.order_quantity;
-                self.state.phase = StrategyPhase::Short;
-            }
-            StrategyPhase::ExitingLong | StrategyPhase::ExitingShort => {
-                self.state.net_quantity = Decimal::ZERO;
-                self.state.phase = StrategyPhase::Flat;
-            }
+            StrategyPhase::EnteringLong => self.state.net_quantity = cumulative_filled,
+            StrategyPhase::EnteringShort => self.state.net_quantity = -cumulative_filled,
+            StrategyPhase::ExitingLong => self.state.net_quantity = start - cumulative_filled,
+            StrategyPhase::ExitingShort => self.state.net_quantity = start + cumulative_filled,
             _ => return false,
         }
-        self.state.active_intent_id = None;
+
+        if fully_filled {
+            if cumulative_filled != expected {
+                self.enter_safe_hold(
+                    "terminal fill quantity does not equal expected intent quantity",
+                );
+                return false;
+            }
+            self.state.phase = if self.state.net_quantity > Decimal::ZERO {
+                StrategyPhase::Long
+            } else if self.state.net_quantity < Decimal::ZERO {
+                StrategyPhase::Short
+            } else {
+                StrategyPhase::Flat
+            };
+            self.state.active_intent_id = None;
+            self.state.intent_start_quantity = None;
+        }
         true
+    }
+
+    pub fn on_intent_filled(&mut self, intent_id: Uuid) -> bool {
+        let expected = match self.state.phase {
+            StrategyPhase::EnteringLong | StrategyPhase::EnteringShort => {
+                self.config.order_quantity
+            }
+            StrategyPhase::ExitingLong | StrategyPhase::ExitingShort => self
+                .state
+                .intent_start_quantity
+                .unwrap_or(self.state.net_quantity)
+                .abs(),
+            _ => return false,
+        };
+        self.on_intent_fill_progress(intent_id, expected, true)
     }
 
     pub fn on_external_state_unknown(&mut self, reason: impl Into<String>) {
@@ -210,11 +264,13 @@ impl StrategyMachine {
         self.state.phase = StrategyPhase::SafeHold;
         self.state.hold_reason = Some(reason.into());
         self.state.active_intent_id = None;
+        self.state.intent_start_quantity = None;
     }
 
     pub fn restore_after_reconcile(&mut self, net_quantity: Decimal) {
         self.state.net_quantity = net_quantity;
         self.state.active_intent_id = None;
+        self.state.intent_start_quantity = None;
         self.state.hold_reason = None;
         self.state.phase = if net_quantity > Decimal::ZERO {
             StrategyPhase::Long
@@ -229,6 +285,7 @@ impl StrategyMachine {
         self.state.phase = StrategyPhase::Halted;
         self.state.hold_reason = Some(reason.into());
         self.state.active_intent_id = None;
+        self.state.intent_start_quantity = None;
     }
 }
 
@@ -286,6 +343,21 @@ mod tests {
         assert_eq!(exit.side, Side::Sell);
         assert!(machine.on_intent_filled(exit.intent_id));
         assert_eq!(machine.state.phase, StrategyPhase::Flat);
+    }
+
+    #[test]
+    fn partial_fill_tracks_real_owned_quantity() {
+        let mut machine = StrategyMachine::new(config()).unwrap();
+        let entry = match machine.on_signal(&signal("entry", 0.8), 100) {
+            StrategyDecision::Submit(intent) => intent,
+            _ => panic!("expected entry intent"),
+        };
+        assert!(machine.on_intent_fill_progress(entry.intent_id, Decimal::ONE, false));
+        assert_eq!(machine.state.net_quantity, Decimal::ONE);
+        assert_eq!(machine.state.phase, StrategyPhase::EnteringLong);
+        assert!(machine.on_intent_fill_progress(entry.intent_id, Decimal::from(2), true));
+        assert_eq!(machine.state.net_quantity, Decimal::from(2));
+        assert_eq!(machine.state.phase, StrategyPhase::Long);
     }
 
     #[test]

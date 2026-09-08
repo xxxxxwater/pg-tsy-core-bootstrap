@@ -34,8 +34,10 @@ fn main() -> Result<()> {
     };
 
     let signal: Signal = serde_json::from_str(&fs::read_to_string(&path)?)?;
-    let mut limits = RiskLimits::default();
-    limits.allow_new_exposure = config.routes_to_real_venue();
+    let limits = RiskLimits {
+        allow_new_exposure: config.routes_to_real_venue(),
+        ..RiskLimits::default()
+    };
     let decision = evaluate_signal(&signal, now_ns(), &limits);
     match decision {
         RiskDecision::Allow => println!(
