@@ -2,7 +2,7 @@ use pg_oms::OrderRecord;
 use pg_reconcile::{ReconcileReport, VenuePosition};
 use pg_types::Venue;
 use serde_json::Value;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::{sync::watch, task::JoinHandle, time::MissedTickBehavior};
@@ -490,10 +490,7 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_lease_ttls() {
-        assert!(matches!(
-            validate_ttl(4),
-            Err(StoreError::InvalidLeaseTtl)
-        ));
+        assert!(matches!(validate_ttl(4), Err(StoreError::InvalidLeaseTtl)));
         assert!(validate_ttl(15).is_ok());
         assert!(matches!(
             validate_ttl(301),
