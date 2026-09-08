@@ -36,15 +36,16 @@ impl SubscriptionSupervisor {
         let mut next_feeds = BTreeMap::new();
         for spec in specs {
             let key = feed_key(&spec);
-            self.statuses.entry(key.clone()).or_insert(SubscriptionStatus {
-                state: SubscriptionState::Reconnecting,
-                reconnect_count: 0,
-                last_event_ns: None,
-            });
+            self.statuses
+                .entry(key.clone())
+                .or_insert(SubscriptionStatus {
+                    state: SubscriptionState::Reconnecting,
+                    reconnect_count: 0,
+                    last_event_ns: None,
+                });
             next_feeds.insert(key, spec);
         }
-        self.statuses
-            .retain(|key, _| next_feeds.contains_key(key));
+        self.statuses.retain(|key, _| next_feeds.contains_key(key));
         self.feeds = next_feeds;
     }
 
