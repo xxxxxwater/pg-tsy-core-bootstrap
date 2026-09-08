@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-sdk = ["dep:ibapi", "dep:futures"]
+sdk = ["dep:ibapi", "dep:futures", "dep:time"]
 
 [dependencies]
 async-trait.workspace = true
@@ -16,4 +16,5 @@ pg-types = { path = "../../crates/pg-types" }
 rust_decimal.workspace = true
 tokio.workspace = true
 futures = { version = "0.3", optional = true }
+time = { version = "0.3", optional = true }
 ibapi = { version = "4.0.1", default-features = false, features = ["async"], optional = true }
