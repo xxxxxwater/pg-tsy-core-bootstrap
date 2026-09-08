@@ -24,6 +24,8 @@ order_quantity = "1"
 entry_score = 0.35
 exit_score = 0.05
 
+# Existing online score path. This remains supported while the portable policy graph
+# is integrated into the runtime decision loop.
 [automation]
 candle_interval_ns = 300000000000
 signal_horizon_ms = 5000
@@ -51,3 +53,43 @@ min_volume_samples = 25
 min_volume_ratio = 1.25
 max_spread_bps = 20.0
 max_realized_volatility_bps = 180.0
+
+# Portable rule graph. Missing features fail closed. Filters gate entries only;
+# exit rules are always evaluated independently for owned exposure.
+[[policy.filters]]
+id = "liquidity"
+mode = "all"
+
+[[policy.filters.predicates]]
+feature = "spread_bps"
+op = "lte"
+value = 20.0
+
+[[policy.entries]]
+id = "momentum_volume_long"
+side = "Buy"
+mode = "all"
+
+[[policy.entries.predicates]]
+feature = "momentum_bps"
+op = "gte"
+value = 20.0
+
+[[policy.entries.predicates]]
+feature = "volume_ratio"
+op = "gte"
+value = 1.25
+
+[[policy.exits]]
+id = "risk_exit"
+mode = "any"
+
+[[policy.exits.predicates]]
+feature = "unrealized_return"
+op = "lte"
+value = -0.10
+
+[[policy.exits.predicates]]
+feature = "structure_score"
+op = "lte"
+value = -0.50
