@@ -5,6 +5,11 @@
 #[cfg(feature = "sdk")]
 pub use hyperliquid_rust_sdk as sdk;
 
+#[cfg(feature = "sdk")]
+mod execution;
+#[cfg(feature = "sdk")]
+pub use execution::{HyperliquidExecutionAdapter, HyperliquidExecutionConfig};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HyperliquidNetwork {
     Mainnet,
