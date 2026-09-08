@@ -43,5 +43,6 @@ jobs:
         with:
           components: rustfmt,clippy
       - run: cargo test -p pg-hyperliquid --features sdk
-      - run: cargo check -p pg-ibkr --features sdk
+      - run: cargo test -p pg-ibkr --features sdk
+      - run: cargo clippy -p pg-hyperliquid -p pg-ibkr --all-targets --features sdk -- -D warnings
       - run: cargo check -p pg-control --features telegram
