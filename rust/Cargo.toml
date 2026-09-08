@@ -5,6 +5,7 @@ members = [
   "crates/pg-marketdata",
   "crates/pg-risk",
   "crates/pg-oms",
+  "crates/pg-strategy",
   "crates/pg-execution",
   "crates/pg-reconcile",
   "crates/pg-journal",
