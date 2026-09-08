@@ -188,7 +188,7 @@ mod live_market_data {
                     price: decimal(trade.price)?,
                     quantity: decimal(trade.size)?,
                     aggressor: AggressorSide::Unknown,
-                    sequence: Some(trade.exchange.to_string().bytes().fold(0_u64, |acc, b| acc.wrapping_mul(131).wrapping_add(b as u64))),
+                    sequence: None,
                 });
                 send(&sink, event).await?;
             }
