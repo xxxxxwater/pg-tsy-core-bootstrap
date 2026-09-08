@@ -2,8 +2,10 @@ use anyhow::{Context, Result, bail};
 use pg_risk::{RiskLimits, evaluate_signal};
 use pg_runtime::RunConfig;
 use pg_strategy::StrategyDecision;
+use pg_strategy::policy::{FeatureFrame, PositionView};
 use pg_strategy::registry::StrategyRegistry;
-use pg_types::{RiskDecision, Signal};
+use pg_types::{AssetKey, RiskDecision, Signal};
+use serde::Deserialize;
 use serde_json::json;
 use std::{
     env, fs,
@@ -11,6 +13,16 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[derive(Debug, Deserialize)]
+struct PolicyReplayFrame {
+    instrument: AssetKey,
+    #[serde(default)]
+    features: FeatureFrame,
+    #[serde(default)]
+    position: PositionView,
+    now_ns: u64,
+}
 
 fn now_ns() -> u64 {
     SystemTime::now()
@@ -45,6 +57,7 @@ fn load_strategy_registry() -> Result<Option<StrategyRegistry>> {
     tracing::info!(
         strategy_dir = %strategy_dir.display(),
         strategy_count = registry.len(),
+        policy_count = registry.policy_count(),
         subscription_count = registry.subscriptions().len(),
         strategies = ?registry.strategy_ids(),
         "strategy definitions loaded"
@@ -112,6 +125,45 @@ fn replay_market_events(registry: &mut StrategyRegistry, path: &Path) -> Result<
     Ok(())
 }
 
+fn replay_policy_features(registry: &StrategyRegistry, path: &Path) -> Result<()> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open policy replay {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut frame_count = 0_u64;
+    let mut routed_count = 0_u64;
+
+    for (index, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("failed to read replay line {}", index + 1))?;
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let frame: PolicyReplayFrame = serde_json::from_str(&line)
+            .with_context(|| format!("invalid PolicyReplayFrame JSON at line {}", index + 1))?;
+        frame_count = frame_count.saturating_add(1);
+
+        for routed in registry.route_policy_frame(
+            &frame.instrument,
+            &frame.features,
+            &frame.position,
+            frame.now_ns,
+        ) {
+            routed_count = routed_count.saturating_add(1);
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "strategy_id": routed.strategy_id,
+                    "instrument": routed.instrument,
+                    "entry": routed.entry,
+                    "exit": routed.exit,
+                }))?
+            );
+        }
+    }
+
+    eprintln!("policy replay complete: frames={frame_count} routed={routed_count}");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let config = RunConfig::from_env().context("invalid runtime configuration")?;
@@ -136,9 +188,19 @@ fn main() -> Result<()> {
         return replay_market_events(registry, Path::new(&args[1]));
     }
 
+    if args.first().map(String::as_str) == Some("--replay-policy-features") {
+        if args.len() != 2 {
+            bail!("usage: pg-core --replay-policy-features <features.jsonl>");
+        }
+        let registry = registry
+            .as_ref()
+            .context("policy replay requires a strategy directory")?;
+        return replay_policy_features(registry, Path::new(&args[1]));
+    }
+
     let Some(path) = args.first() else {
         println!(
-            "pg-core configured in {:?} mode; strategy definitions are validated at startup. Use --replay-market-events <events.jsonl> for a no-order local strategy run; full live market-data/execution orchestration remains a P0 runtime milestone",
+            "pg-core configured in {:?} mode; strategy definitions and portable policies are validated at startup. Use --replay-market-events <events.jsonl> for online-factor replay or --replay-policy-features <features.jsonl> for venue-neutral rule parity; full live market-data/execution orchestration remains a P0 runtime milestone",
             config.mode
         );
         return Ok(());
