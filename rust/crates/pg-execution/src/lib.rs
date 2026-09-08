@@ -40,6 +40,9 @@ pub struct VenuePositionSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct OrderLocator<'a> {
+    /// Venue-native cancel APIs frequently require the instrument as well as an
+    /// oid/client id. Keep it explicit so adapters never guess the symbol.
+    pub asset: &'a str,
     pub venue_order_id: Option<&'a str>,
     pub client_order_id: &'a str,
 }
