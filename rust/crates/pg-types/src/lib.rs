@@ -34,10 +34,16 @@ impl Signal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Side { Buy, Sell }
+pub enum Side {
+    Buy,
+    Sell,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ExposureEffect { Increase, ReduceOnly }
+pub enum ExposureEffect {
+    Increase,
+    ReduceOnly,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderIntent {

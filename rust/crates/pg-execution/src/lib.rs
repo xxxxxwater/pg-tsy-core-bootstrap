@@ -3,13 +3,18 @@ use pg_types::OrderIntent;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
-pub struct VenueOrderAck { pub venue_order_id: String }
+pub struct VenueOrderAck {
+    pub venue_order_id: String,
+}
 
 #[derive(Debug, Error)]
 pub enum ExecutionError {
-    #[error("venue rejected order: {0}")] Rejected(String),
-    #[error("venue outcome is unknown: {0}")] Unknown(String),
-    #[error("transport error: {0}")] Transport(String),
+    #[error("venue rejected order: {0}")]
+    Rejected(String),
+    #[error("venue outcome is unknown: {0}")]
+    Unknown(String),
+    #[error("transport error: {0}")]
+    Transport(String),
 }
 
 #[async_trait]

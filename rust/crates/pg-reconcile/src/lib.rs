@@ -2,7 +2,11 @@ use pg_types::Venue;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Ownership { Strategy(String), Manual, Unknown }
+pub enum Ownership {
+    Strategy(String),
+    Manual,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VenuePosition {
@@ -13,5 +17,7 @@ pub struct VenuePosition {
 }
 
 pub fn may_open_new_exposure(positions: &[VenuePosition]) -> bool {
-    !positions.iter().any(|p| p.ownership == Ownership::Unknown)
+    !positions
+        .iter()
+        .any(|p| p.ownership == Ownership::Unknown)
 }

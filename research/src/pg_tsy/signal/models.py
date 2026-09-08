@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import json
 import time
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -50,7 +50,7 @@ class Signal:
         model_version: str | None = None,
         feature_set: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> "Signal":
+    ) -> Signal:
         created = time.time_ns()
         return cls(
             alpha_id=alpha_id,

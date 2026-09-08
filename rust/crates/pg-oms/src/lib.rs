@@ -3,14 +3,36 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OrderState { Created, PendingSubmit, Open, PartiallyFilled, PendingCancel, Filled, Canceled, Rejected, Unknown }
+pub enum OrderState {
+    Created,
+    PendingSubmit,
+    Open,
+    PartiallyFilled,
+    PendingCancel,
+    Filled,
+    Canceled,
+    Rejected,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderEvent { SubmitRequested, Accepted, PartialFill, Fill, CancelRequested, Canceled, Rejected, LostState }
+pub enum OrderEvent {
+    SubmitRequested,
+    Accepted,
+    PartialFill,
+    Fill,
+    CancelRequested,
+    Canceled,
+    Rejected,
+    LostState,
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("illegal order transition from {from:?} on {event:?}")]
-pub struct TransitionError { pub from: OrderState, pub event: OrderEvent }
+pub struct TransitionError {
+    pub from: OrderState,
+    pub event: OrderEvent,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderRecord {
@@ -32,7 +54,12 @@ impl OrderRecord {
             (Open | PartiallyFilled, CancelRequested) => PendingCancel,
             (PendingCancel, Canceled) => Canceled,
             (PendingSubmit | Open | PartiallyFilled | PendingCancel, LostState) => Unknown,
-            _ => return Err(TransitionError { from: self.state, event }),
+            _ => {
+                return Err(TransitionError {
+                    from: self.state,
+                    event,
+                });
+            }
         };
         Ok(())
     }
