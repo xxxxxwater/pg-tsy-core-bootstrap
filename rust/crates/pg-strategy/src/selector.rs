@@ -186,7 +186,12 @@ impl MomentumVolumeSelector {
     }
 }
 
-fn require_min(name: &str, actual: Option<f64>, threshold: Option<f64>, reasons: &mut Vec<String>) {
+fn require_min(
+    name: &str,
+    actual: Option<f64>,
+    threshold: Option<f64>,
+    reasons: &mut Vec<String>,
+) {
     let Some(threshold) = threshold else {
         return;
     };
@@ -197,7 +202,12 @@ fn require_min(name: &str, actual: Option<f64>, threshold: Option<f64>, reasons:
     }
 }
 
-fn require_max(name: &str, actual: Option<f64>, threshold: Option<f64>, reasons: &mut Vec<String>) {
+fn require_max(
+    name: &str,
+    actual: Option<f64>,
+    threshold: Option<f64>,
+    reasons: &mut Vec<String>,
+) {
     let Some(threshold) = threshold else {
         return;
     };
@@ -264,7 +274,12 @@ mod tests {
         selector.observe(&candle(2, 101, 10));
         let warmup = selector.evaluate(&factors());
         assert!(!warmup.allowed);
-        assert!(warmup.reasons.iter().any(|reason| reason.contains("volume_ratio unavailable")));
+        assert!(
+            warmup
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("volume_ratio unavailable"))
+        );
 
         selector.observe(&candle(3, 102, 30));
         let selected = selector.evaluate(&factors());
