@@ -186,12 +186,7 @@ impl MomentumVolumeSelector {
     }
 }
 
-fn require_min(
-    name: &str,
-    actual: Option<f64>,
-    threshold: Option<f64>,
-    reasons: &mut Vec<String>,
-) {
+fn require_min(name: &str, actual: Option<f64>, threshold: Option<f64>, reasons: &mut Vec<String>) {
     let Some(threshold) = threshold else {
         return;
     };
@@ -202,12 +197,7 @@ fn require_min(
     }
 }
 
-fn require_max(
-    name: &str,
-    actual: Option<f64>,
-    threshold: Option<f64>,
-    reasons: &mut Vec<String>,
-) {
+fn require_max(name: &str, actual: Option<f64>, threshold: Option<f64>, reasons: &mut Vec<String>) {
     let Some(threshold) = threshold else {
         return;
     };
