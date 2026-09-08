@@ -1,0 +1,9 @@
+[package]
+name = "pg-reconcile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pg-types = { path = "../pg-types" }
+serde.workspace = true

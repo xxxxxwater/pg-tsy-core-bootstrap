@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/pg-types",
+  "crates/pg-marketdata",
+  "crates/pg-risk",
+  "crates/pg-oms",
+  "crates/pg-execution",
+  "crates/pg-reconcile",
+  "crates/pg-journal",
+  "crates/pg-replay",
+  "crates/pg-core",
+  "adapters/pg-binance",
+  "adapters/pg-hyperliquid",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+rust_decimal = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["serde", "v4"] }

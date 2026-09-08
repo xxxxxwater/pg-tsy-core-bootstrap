@@ -1,0 +1,10 @@
+[package]
+name = "pg-risk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pg-types = { path = "../pg-types" }
+rust_decimal.workspace = true
+serde_json.workspace = true

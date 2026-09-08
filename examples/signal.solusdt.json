@@ -1,0 +1,15 @@
+{
+  "schema_version": "signal.v1",
+  "signal_id": "demo-sol-001",
+  "alpha_id": "factor.vwap_deviation.v1",
+  "asset": "SOLUSDT",
+  "venue": "BINANCE_PM",
+  "score": 0.42,
+  "confidence": 0.71,
+  "horizon_ms": 60000,
+  "created_at_ns": 1893456000000000000,
+  "expires_at_ns": 1893456060000000000,
+  "model_version": null,
+  "feature_set": "microstructure.v1",
+  "metadata": {"mode": "example"}
+}

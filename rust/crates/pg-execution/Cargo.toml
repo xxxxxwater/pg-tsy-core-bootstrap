@@ -1,0 +1,10 @@
+[package]
+name = "pg-execution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+pg-types = { path = "../pg-types" }
+thiserror.workspace = true

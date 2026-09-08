@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: pgtsy
+      POSTGRES_PASSWORD: pgtsy
+      POSTGRES_DB: pgtsy
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgtsy -d pgtsy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgtsy-postgres:/var/lib/postgresql/data
+
+volumes:
+  pgtsy-postgres:

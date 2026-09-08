@@ -1,0 +1,13 @@
+[package]
+name = "pg-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+pg-types = { path = "../pg-types" }
+pg-risk = { path = "../pg-risk" }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

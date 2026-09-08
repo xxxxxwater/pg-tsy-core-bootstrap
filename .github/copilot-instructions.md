@@ -1,0 +1,1 @@
+Follow the repository-level `AGENTS.md` and architecture decision records in `docs/adr/`. Keep changes small, preserve fail-closed behavior for new strategy exposure, and never blur manual-position ownership with strategy ownership.
