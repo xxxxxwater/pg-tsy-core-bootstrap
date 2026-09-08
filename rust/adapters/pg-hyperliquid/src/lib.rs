@@ -47,7 +47,7 @@ impl HyperliquidAdapter {
 
 #[cfg(feature = "sdk")]
 mod live_market_data {
-    use super::{HyperliquidNetwork, sdk};
+    use super::{sdk, HyperliquidNetwork};
     use async_trait::async_trait;
     use pg_marketdata::{
         AggressorSide, BestBidAsk, BookLevel, Candle, FeedKind, FeedSpec, L2Book, MarketDataError,
@@ -55,7 +55,10 @@ mod live_market_data {
     };
     use pg_types::Venue;
     use rust_decimal::Decimal;
-    use std::{str::FromStr, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        str::FromStr,
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use tokio::sync::mpsc;
 
     pub struct HyperliquidMarketDataSource {
@@ -98,9 +101,9 @@ mod live_market_data {
             while let Some(message) = sdk_rx.recv().await {
                 let recv_ns = now_ns()?;
                 for event in map_message(message, recv_ns)? {
-                    sink.send(event)
-                        .await
-                        .map_err(|_| MarketDataError::Disconnected("market event sink closed".into()))?;
+                    sink.send(event).await.map_err(|_| {
+                        MarketDataError::Disconnected("market event sink closed".into())
+                    })?;
                 }
             }
 
@@ -123,7 +126,10 @@ mod live_market_data {
         }
     }
 
-    fn map_message(message: sdk::Message, recv_ns: u64) -> Result<Vec<MarketEvent>, MarketDataError> {
+    fn map_message(
+        message: sdk::Message,
+        recv_ns: u64,
+    ) -> Result<Vec<MarketEvent>, MarketDataError> {
         match message {
             sdk::Message::Trades(trades) => trades
                 .data
