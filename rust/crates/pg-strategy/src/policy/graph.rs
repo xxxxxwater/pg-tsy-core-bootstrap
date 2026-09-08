@@ -62,7 +62,8 @@ pub struct PolicyEngine {
     definition: PolicyDefinition,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EntryPolicyDecision {
     NoMatch,
     Blocked {
@@ -75,7 +76,8 @@ pub enum EntryPolicyDecision {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExitPolicyDecision {
     NoMatch,
     Matched { rule_id: String },
