@@ -18,6 +18,21 @@ jobs:
       - run: ruff check .
       - run: pytest -q
 
+  rust-lockfile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo generate-lockfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-cargo-lock
+          path: rust/Cargo.lock
+          if-no-files-found: error
+
   rust-core:
     runs-on: ubuntu-latest
     defaults:
