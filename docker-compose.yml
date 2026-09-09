@@ -21,14 +21,24 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
+      PG_ENV: ${PG_ENV:-dev}
+      PG_INSTANCE_ID: ${PG_INSTANCE_ID:-pg-core-docker-1}
+      # The quick-start is deliberately locked to shadow. Real-money live is not
+      # enabled by docker-compose.yml and requires a separate reviewed deployment.
       PG_RUN_MODE: shadow
       PG_LIVE_TRADING: "false"
+      PG_SHUTDOWN_POLICY: ${PG_SHUTDOWN_POLICY:-cancel_resting}
       PG_DATABASE_URL: postgresql://${POSTGRES_USER:-pgtsy}:${POSTGRES_PASSWORD:-pgtsy}@postgres:5432/${POSTGRES_DB:-pgtsy}
       PG_STRATEGY_DIR: /app/strategies
+      PG_DATA_ROOT: /app/data
       PG_HEALTH_ADDR: 0.0.0.0:8080
+      PG_MAX_MARKET_STALENESS_MS: ${PG_MAX_MARKET_STALENESS_MS:-10000}
+      PG_LEASE_TTL_SECONDS: ${PG_LEASE_TTL_SECONDS:-15}
+      PG_LEASE_KEY: ${PG_LEASE_KEY:-pg-core:docker:shadow}
+      PG_HYPERLIQUID_NETWORK: ${PG_HYPERLIQUID_NETWORK:-mainnet}
+      PG_MARKET_MAX_RECONNECTS: ${PG_MARKET_MAX_RECONNECTS:-50}
+      RUST_LOG: ${RUST_LOG:-info}
     command: ["/usr/local/bin/pg-core", "--serve"]
     depends_on:
       postgres:
