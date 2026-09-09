@@ -762,8 +762,7 @@ mod tests {
 
     #[test]
     fn startup_is_fail_closed_instead_of_faking_health() {
-        let observatory =
-            RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
+        let observatory = RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
         let snapshot = observatory.snapshot();
         assert_eq!(snapshot.safety.state, RuntimeSafetyState::SafeHold);
         assert!(!snapshot.safety.allow_new_exposure);
@@ -842,8 +841,7 @@ mod tests {
 
     #[test]
     fn serialized_contract_matches_console_schema() {
-        let observatory =
-            RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
+        let observatory = RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
         let value = serde_json::to_value(observatory.snapshot()).expect("serialize snapshot");
         assert_eq!(value["schema_version"], SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(value["runtime"]["mode"], "live");
