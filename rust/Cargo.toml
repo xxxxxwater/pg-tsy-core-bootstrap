@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/pg-types",
   "crates/pg-runtime",
+  "crates/pg-observability",
   "crates/pg-store",
   "crates/pg-marketdata",
   "crates/pg-risk",
@@ -27,12 +28,14 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+axum = "0.8"
 rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json", "uuid"] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "net"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
