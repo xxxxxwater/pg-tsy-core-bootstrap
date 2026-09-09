@@ -1,0 +1,20 @@
+[package]
+name = "pg-orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+pg-execution = { path = "../pg-execution" }
+pg-oms = { path = "../pg-oms" }
+pg-reconcile = { path = "../pg-reconcile" }
+pg-store = { path = "../pg-store" }
+pg-types = { path = "../pg-types" }
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
