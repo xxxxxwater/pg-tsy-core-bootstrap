@@ -1,0 +1,14 @@
+schema_version = "control-script.v1"
+name = "status-snapshot"
+description = "Read-only status, latency and bounded recent logs."
+enabled = true
+
+[[actions]]
+type = "status"
+
+[[actions]]
+type = "latency"
+
+[[actions]]
+type = "logs"
+lines = 80
