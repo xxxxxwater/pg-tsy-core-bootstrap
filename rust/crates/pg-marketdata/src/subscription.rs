@@ -69,9 +69,9 @@ impl SubscriptionSupervisor {
     }
 
     pub fn statuses(&self) -> impl Iterator<Item = (&FeedSpec, &SubscriptionStatus)> {
-        self.feeds.iter().filter_map(|(key, spec)| {
-            self.statuses.get(key).map(|status| (spec, status))
-        })
+        self.feeds
+            .iter()
+            .filter_map(|(key, spec)| self.statuses.get(key).map(|status| (spec, status)))
     }
 
     pub fn status(&self, spec: &FeedSpec) -> Option<&SubscriptionStatus> {
