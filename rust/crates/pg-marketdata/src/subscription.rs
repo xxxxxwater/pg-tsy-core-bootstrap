@@ -53,8 +53,25 @@ impl SubscriptionSupervisor {
         self.feeds.len()
     }
 
+    pub fn connected_count(&self) -> usize {
+        self.statuses
+            .values()
+            .filter(|status| status.state == SubscriptionState::Connected)
+            .count()
+    }
+
+    pub fn all_connected(&self) -> bool {
+        !self.feeds.is_empty() && self.connected_count() == self.feeds.len()
+    }
+
     pub fn feeds(&self) -> impl Iterator<Item = &FeedSpec> {
         self.feeds.values()
+    }
+
+    pub fn statuses(&self) -> impl Iterator<Item = (&FeedSpec, &SubscriptionStatus)> {
+        self.feeds.iter().filter_map(|(key, spec)| {
+            self.statuses.get(key).map(|status| (spec, status))
+        })
     }
 
     pub fn status(&self, spec: &FeedSpec) -> Option<&SubscriptionStatus> {
@@ -182,6 +199,11 @@ mod tests {
             SubscriptionState::Reconnecting
         );
         assert_eq!(supervisor.status(&sol).unwrap().last_event_ns, None);
+        assert_eq!(supervisor.connected_count(), 1);
+        assert!(!supervisor.all_connected());
+
+        supervisor.observe(&trade_event("SOL", 101));
+        assert!(supervisor.all_connected());
     }
 
     #[test]
@@ -220,5 +242,6 @@ mod tests {
             supervisor.status(&hype).unwrap().state,
             SubscriptionState::Stale
         );
+        assert!(!supervisor.all_connected());
     }
 }
