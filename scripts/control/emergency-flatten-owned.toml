@@ -1,0 +1,11 @@
+schema_version = "control-script.v1"
+name = "emergency-flatten-owned"
+description = "Fail-closed emergency action: flatten strategy-owned exposure only, then halt. Never targets Manual/Unknown ownership."
+enabled = true
+
+[[actions]]
+type = "emergency_flatten_owned"
+venue = "HYPERLIQUID"
+
+[[actions]]
+type = "halt"
