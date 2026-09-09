@@ -341,9 +341,10 @@ impl<S: RuntimeStore> DurableExecution<S> {
             items: Vec::new(),
         };
 
-        for order in orders.iter_mut().filter(|order| {
-            matches!(order.state, OrderState::PendingSubmit | OrderState::Unknown)
-        }) {
+        for order in orders
+            .iter_mut()
+            .filter(|order| matches!(order.state, OrderState::PendingSubmit | OrderState::Unknown))
+        {
             let stream_id = format!("order:{}", order.client_order_id);
             let remote = adapter
                 .find_order_by_client_id(&order.client_order_id)
@@ -391,10 +392,7 @@ impl<S: RuntimeStore> DurableExecution<S> {
         Ok(report)
     }
 
-    pub async fn reconcile_once(
-        &self,
-        venue: Venue,
-    ) -> Result<ReconcileCycle, OrchestratorError> {
+    pub async fn reconcile_once(&self, venue: Venue) -> Result<ReconcileCycle, OrchestratorError> {
         self.store.assert_lease(&self.lease).await?;
         let adapter = self
             .adapters
@@ -565,20 +563,14 @@ mod tests {
             };
             match self.mode {
                 SubmitMode::Ack => {
-                    self.orders
-                        .lock()
-                        .unwrap()
-                        .insert(client.clone(), snapshot);
+                    self.orders.lock().unwrap().insert(client.clone(), snapshot);
                     Ok(VenueOrderAck {
                         venue_order_id: "venue-1".into(),
                         client_order_id: client,
                     })
                 }
                 SubmitMode::PublishThenUnknown => {
-                    self.orders
-                        .lock()
-                        .unwrap()
-                        .insert(client, snapshot);
+                    self.orders.lock().unwrap().insert(client, snapshot);
                     Err(ExecutionError::Unknown("ack lost".into()))
                 }
                 SubmitMode::UnknownWithoutPublish => {
