@@ -1,0 +1,8 @@
+schema_version = "control-script.v1"
+name = "reconcile-hyperliquid"
+description = "Run an explicit Hyperliquid order/position reconciliation cycle."
+enabled = true
+
+[[actions]]
+type = "reconcile"
+venue = "HYPERLIQUID"
