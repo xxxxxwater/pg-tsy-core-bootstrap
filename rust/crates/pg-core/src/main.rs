@@ -1,3 +1,6 @@
+mod daemon;
+mod health;
+
 use anyhow::{Context, Result, bail};
 use pg_risk::{RiskLimits, evaluate_signal};
 use pg_runtime::RunConfig;
@@ -184,7 +187,8 @@ fn replay_policy_features(registry: &StrategyRegistry, path: &Path) -> Result<()
     Ok(())
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let config = RunConfig::from_env().context("invalid runtime configuration")?;
     tracing::info!(
@@ -197,6 +201,16 @@ fn main() -> Result<()> {
 
     let mut registry = load_strategy_registry()?;
     let args = env::args().skip(1).collect::<Vec<_>>();
+
+    if args.first().map(String::as_str) == Some("--serve") {
+        if args.len() != 1 {
+            bail!("usage: pg-core --serve");
+        }
+        let registry = registry
+            .take()
+            .context("--serve requires a strategy directory")?;
+        return daemon::serve(config, registry).await;
+    }
 
     if args.first().map(String::as_str) == Some("--replay-market-events") {
         if args.len() != 2 {
@@ -220,7 +234,7 @@ fn main() -> Result<()> {
 
     let Some(path) = args.first() else {
         println!(
-            "pg-core configured in {:?} mode; strategy definitions, portable policies and derived feature subscriptions are validated at startup. Use --replay-market-events <events.jsonl> to build live normalized FeatureFrames or --replay-policy-features <features.jsonl> for fixture parity; full live market-data/execution orchestration remains a P0 runtime milestone",
+            "pg-core configured in {:?} mode. Use --serve for the fail-closed shadow daemon, --replay-market-events <events.jsonl> for normalized live-feature replay, or --replay-policy-features <features.jsonl> for fixture parity. Real-money live orchestration remains disabled until release gates are complete.",
             config.mode
         );
         return Ok(());
