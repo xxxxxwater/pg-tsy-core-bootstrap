@@ -1,0 +1,7 @@
+schema_version = "control-script.v1"
+name = "reload-strategies"
+description = "Validate and atomically reload strategy definitions when runtime state permits it."
+enabled = true
+
+[[actions]]
+type = "reload_strategies"
