@@ -90,12 +90,20 @@ async fn handle(mut stream: TcpStream, state: HealthState) -> Result<()> {
 
     let (status, content_type, body) = match path {
         "/healthz" => (
-            if snapshot.process_healthy { "200 OK" } else { "503 Service Unavailable" },
+            if snapshot.process_healthy {
+                "200 OK"
+            } else {
+                "503 Service Unavailable"
+            },
             "application/json",
             serde_json::to_string(&snapshot)?,
         ),
         "/readyz" => (
-            if snapshot.ready { "200 OK" } else { "503 Service Unavailable" },
+            if snapshot.ready {
+                "200 OK"
+            } else {
+                "503 Service Unavailable"
+            },
             "application/json",
             serde_json::to_string(&snapshot)?,
         ),
