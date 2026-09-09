@@ -1,4 +1,4 @@
-.PHONY: check python-check rust-check test docker-up docker-down strategy-validate strategy-replay policy-replay
+.PHONY: check python-check rust-check test docker-up docker-down docker-status docker-logs health ready metrics strategy-validate strategy-replay policy-replay
 
 check: python-check rust-check
 
@@ -24,7 +24,22 @@ policy-replay:
 	cd rust && PG_INSTANCE_ID=local-policy-replay PG_STRATEGY_DIR=../strategies cargo run -p pg-core -- --replay-policy-features ../$(FEATURES)
 
 docker-up:
-	docker compose up -d postgres
+	docker compose up -d --build
+
+docker-status:
+	docker compose ps
+
+docker-logs:
+	docker compose logs -f --tail=200 pg-core
+
+health:
+	curl --fail --silent http://127.0.0.1:$${PG_HEALTH_PORT:-8080}/healthz; echo
+
+ready:
+	curl --fail --silent http://127.0.0.1:$${PG_HEALTH_PORT:-8080}/readyz; echo
+
+metrics:
+	curl --fail --silent http://127.0.0.1:$${PG_HEALTH_PORT:-8080}/metrics
 
 docker-down:
 	docker compose down
