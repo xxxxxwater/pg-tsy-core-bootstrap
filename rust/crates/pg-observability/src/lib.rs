@@ -360,7 +360,12 @@ impl RuntimeObservatory {
 
     pub fn set_startup_gate(&self, gate: StartupGate, status: GateStatus) {
         self.update_snapshot(|snapshot| {
-            if let Some(entry) = snapshot.startup.gates.iter_mut().find(|entry| entry.gate == gate) {
+            if let Some(entry) = snapshot
+                .startup
+                .gates
+                .iter_mut()
+                .find(|entry| entry.gate == gate)
+            {
                 entry.status = status;
             }
             snapshot.startup.ready = snapshot
@@ -499,7 +504,10 @@ fn recompute_safety(snapshot: &mut RuntimeSnapshot) {
         blockers.push("durable journal health is not proven".to_string());
     }
     if snapshot.orders.unknown > 0 {
-        blockers.push(format!("{} order outcome(s) are unknown", snapshot.orders.unknown));
+        blockers.push(format!(
+            "{} order outcome(s) are unknown",
+            snapshot.orders.unknown
+        ));
     }
     if snapshot.reconcile.mismatch_count > 0 || snapshot.reconcile.ownership_unknown_count > 0 {
         blockers.push("reconciliation or position ownership is unresolved".to_string());
@@ -515,9 +523,12 @@ fn recompute_safety(snapshot: &mut RuntimeSnapshot) {
         if !is_healthy(&snapshot.reconcile.status) {
             blockers.push("live reconciliation health is not proven".to_string());
         }
-        if snapshot.venues.iter().filter(|venue| venue.enabled).any(|venue| {
-            !is_healthy(&venue.execution) || !is_healthy(&venue.reconcile)
-        }) {
+        if snapshot
+            .venues
+            .iter()
+            .filter(|venue| venue.enabled)
+            .any(|venue| !is_healthy(&venue.execution) || !is_healthy(&venue.reconcile))
+        {
             blockers.push("live venue execution/reconciliation health is not proven".to_string());
         }
     }
@@ -566,7 +577,9 @@ pub enum ObservabilityConfigError {
     InvalidBind(String),
     #[error("invalid numeric environment variable {key}: {value}")]
     InvalidNumber { key: &'static str, value: String },
-    #[error("PG_OBSERVABILITY_TOKEN is required when binding observability to a non-loopback address")]
+    #[error(
+        "PG_OBSERVABILITY_TOKEN is required when binding observability to a non-loopback address"
+    )]
     TokenRequiredForNonLoopback,
 }
 
@@ -580,7 +593,8 @@ pub struct ObservabilityConfig {
 
 impl ObservabilityConfig {
     pub fn from_env() -> Result<Self, ObservabilityConfigError> {
-        let bind_text = env::var("PG_OBSERVABILITY_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
+        let bind_text =
+            env::var("PG_OBSERVABILITY_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
         let bind = bind_text
             .parse::<SocketAddr>()
             .map_err(|_| ObservabilityConfigError::InvalidBind(bind_text.clone()))?;
@@ -628,10 +642,13 @@ impl ApiState {
         let Some(token) = self.token.as_deref() else {
             return true;
         };
-        let Some(value) = headers.get("authorization").and_then(|value| value.to_str().ok()) else {
+        let Some(value) = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+        else {
             return false;
         };
-        value == format!("Bearer {token}")
+        value.strip_prefix("Bearer ") == Some(token)
     }
 }
 
@@ -745,7 +762,8 @@ mod tests {
 
     #[test]
     fn startup_is_fail_closed_instead_of_faking_health() {
-        let observatory = RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
+        let observatory =
+            RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
         let snapshot = observatory.snapshot();
         assert_eq!(snapshot.safety.state, RuntimeSafetyState::SafeHold);
         assert!(!snapshot.safety.allow_new_exposure);
@@ -803,12 +821,16 @@ mod tests {
             unknown: 1,
             ..OrdersSnapshot::default()
         });
-        assert_eq!(observatory.snapshot().safety.state, RuntimeSafetyState::SafeHold);
+        assert_eq!(
+            observatory.snapshot().safety.state,
+            RuntimeSafetyState::SafeHold
+        );
     }
 
     #[test]
     fn event_buffer_is_bounded_and_cursor_filtered() {
-        let observatory = RuntimeObservatory::new(&config(RunMode::Shadow), "test-build", 10_000, 2);
+        let observatory =
+            RuntimeObservatory::new(&config(RunMode::Shadow), "test-build", 10_000, 2);
         observatory.record_event("one", "info", "one", None, None);
         observatory.record_event("two", "info", "two", None, None);
         observatory.record_event("three", "warning", "three", None, None);
@@ -820,7 +842,8 @@ mod tests {
 
     #[test]
     fn serialized_contract_matches_console_schema() {
-        let observatory = RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
+        let observatory =
+            RuntimeObservatory::new(&config(RunMode::Live), "test-build", 10_000, 16);
         let value = serde_json::to_value(observatory.snapshot()).expect("serialize snapshot");
         assert_eq!(value["schema_version"], SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(value["runtime"]["mode"], "live");
