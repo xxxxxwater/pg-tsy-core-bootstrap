@@ -1,9 +1,14 @@
 # Same strategy template expanded across different venue adapters.
 # This file demonstrates infrastructure portability, not a recommendation to use
 # identical thresholds/sizing for crypto and equities in production.
+#
+# It is intentionally disabled in the default Docker quick-start because the
+# shadow daemon currently wires public Hyperliquid market data only. Enable it
+# only after the corresponding Binance/IBKR runtime market-data sources are
+# registered for the deployment.
 
 schema_version = "strategy.v1"
-enabled = true
+enabled = false
 
 [universe]
 [[universe.instruments]]
@@ -24,8 +29,6 @@ order_quantity = "1"
 entry_score = 0.35
 exit_score = 0.05
 
-# Existing online score path. This remains supported while the portable policy graph
-# is integrated into the runtime decision loop.
 [automation]
 candle_interval_ns = 300000000000
 signal_horizon_ms = 5000
@@ -54,8 +57,6 @@ min_volume_ratio = 1.25
 max_spread_bps = 20.0
 max_realized_volatility_bps = 180.0
 
-# Portable rule graph. Missing features fail closed. Filters gate entries only;
-# exit rules are always evaluated independently for owned exposure.
 [[policy.filters]]
 id = "liquidity"
 mode = "all"
