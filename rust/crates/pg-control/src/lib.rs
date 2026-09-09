@@ -1,3 +1,9 @@
+pub mod script;
+
+pub use script::{
+    ControlAction, ControlScriptDefinition, ControlScriptRegistry, ScriptError, valid_script_name,
+};
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
@@ -13,6 +19,7 @@ pub enum ControlCommand {
     Logs { lines: u16 },
     EmergencyExit,
     Scripts,
+    RunScript { name: String },
     ReloadScript { name: String },
     Latency,
 }
@@ -45,6 +52,13 @@ impl ControlCommand {
             }
             "/emergency_exit" => Ok(Self::EmergencyExit),
             "/scripts" => Ok(Self::Scripts),
+            "/script" => {
+                let name = parts.next().ok_or(CommandParseError::InvalidArgument)?;
+                if !valid_script_name(name) || parts.next().is_some() {
+                    return Err(CommandParseError::InvalidArgument);
+                }
+                Ok(Self::RunScript { name: name.into() })
+            }
             "/reload_script" => {
                 let name = parts.next().ok_or(CommandParseError::InvalidArgument)?;
                 if !valid_script_name(name) || parts.next().is_some() {
@@ -60,17 +74,12 @@ impl ControlCommand {
     pub fn mutates_runtime(&self) -> bool {
         matches!(
             self,
-            Self::Start | Self::EmergencyExit | Self::ReloadScript { .. }
+            Self::Start
+                | Self::EmergencyExit
+                | Self::RunScript { .. }
+                | Self::ReloadScript { .. }
         )
     }
-}
-
-fn valid_script_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 #[derive(Debug, Clone)]
@@ -126,7 +135,9 @@ mod tests {
 
     #[test]
     fn script_name_cannot_be_shell_expression() {
+        assert!(ControlCommand::parse("/script status-snapshot").is_ok());
         assert!(ControlCommand::parse("/reload_script vwap_v4").is_ok());
+        assert!(ControlCommand::parse("/script 'x;rm'").is_err());
         assert!(ControlCommand::parse("/reload_script 'x;rm'").is_err());
     }
 
