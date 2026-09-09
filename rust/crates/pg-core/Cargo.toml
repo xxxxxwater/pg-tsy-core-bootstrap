@@ -4,14 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["hyperliquid-marketdata"]
+hyperliquid-marketdata = ["dep:pg-hyperliquid", "pg-hyperliquid/sdk"]
+
 [dependencies]
 anyhow.workspace = true
+pg-hyperliquid = { path = "../../adapters/pg-hyperliquid", optional = true }
 pg-marketdata = { path = "../pg-marketdata" }
+pg-orchestrator = { path = "../pg-orchestrator" }
 pg-runtime = { path = "../pg-runtime" }
+pg-store = { path = "../pg-store" }
 pg-types = { path = "../pg-types" }
 pg-risk = { path = "../pg-risk" }
 pg-strategy = { path = "../pg-strategy" }
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
