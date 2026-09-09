@@ -11,4 +11,5 @@ telegram = ["dep:teloxide"]
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 teloxide = { version = "0.17", default-features = false, features = ["rustls"], optional = true }
