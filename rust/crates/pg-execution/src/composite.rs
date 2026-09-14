@@ -6,8 +6,8 @@
 //! to - submit and cancel are routed by the explicit asset carried on the intent or
 //! the locator, and an unknown asset is an error rather than a default.
 //!
-//! Read-side calls aggregate across children. A child error is propagated, never
-//! swallowed: a partial venue snapshot must not be mistaken for a complete one.
+//! The instrument map uses interior synchronization so a live universe refresh can
+//! add/remove contracts without replacing the venue adapter held by DurableExecution.
 
 use crate::{
     AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck,
@@ -15,19 +15,22 @@ use crate::{
 };
 use async_trait::async_trait;
 use pg_types::{OrderIntent, Venue};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
 
 #[derive(Clone, Default)]
 pub struct CompositeExecutionAdapter {
     venue: Option<Venue>,
-    per_asset: BTreeMap<String, Arc<dyn ExecutionAdapter>>,
+    per_asset: Arc<RwLock<BTreeMap<String, Arc<dyn ExecutionAdapter>>>>,
 }
 
 impl CompositeExecutionAdapter {
     pub fn new(venue: Venue) -> Self {
         Self {
             venue: Some(venue),
-            per_asset: BTreeMap::new(),
+            per_asset: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -35,35 +38,74 @@ impl CompositeExecutionAdapter {
         self.venue
     }
 
-    /// Register the adapter that owns one instrument.
     pub fn with_instrument(
-        mut self,
+        self,
         asset: impl Into<String>,
         adapter: Arc<dyn ExecutionAdapter>,
     ) -> Self {
-        self.per_asset.insert(asset.into(), adapter);
+        self.register_instrument(asset, adapter);
         self
     }
 
+    pub fn register_instrument(
+        &self,
+        asset: impl Into<String>,
+        adapter: Arc<dyn ExecutionAdapter>,
+    ) {
+        self.per_asset
+            .write()
+            .expect("composite execution lock poisoned")
+            .insert(asset.into(), adapter);
+    }
+
+    pub fn remove_instrument(&self, asset: &str) -> Option<Arc<dyn ExecutionAdapter>> {
+        self.per_asset
+            .write()
+            .expect("composite execution lock poisoned")
+            .remove(asset)
+    }
+
     pub fn assets(&self) -> Vec<String> {
-        self.per_asset.keys().cloned().collect()
+        self.per_asset
+            .read()
+            .expect("composite execution lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn len(&self) -> usize {
-        self.per_asset.len()
+        self.per_asset
+            .read()
+            .expect("composite execution lock poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.per_asset.is_empty()
+        self.len() == 0
     }
 
-    fn for_asset(&self, asset: &str) -> Result<&Arc<dyn ExecutionAdapter>, ExecutionError> {
-        self.per_asset.get(asset).ok_or_else(|| {
-            ExecutionError::Unsupported(format!(
-                "no execution adapter is registered for asset {asset} on venue {:?}",
-                self.venue
-            ))
-        })
+    fn for_asset(&self, asset: &str) -> Result<Arc<dyn ExecutionAdapter>, ExecutionError> {
+        self.per_asset
+            .read()
+            .expect("composite execution lock poisoned")
+            .get(asset)
+            .cloned()
+            .ok_or_else(|| {
+                ExecutionError::Unsupported(format!(
+                    "no execution adapter is registered for asset {asset} on venue {:?}",
+                    self.venue
+                ))
+            })
+    }
+
+    fn children(&self) -> Vec<Arc<dyn ExecutionAdapter>> {
+        self.per_asset
+            .read()
+            .expect("composite execution lock poisoned")
+            .values()
+            .cloned()
+            .collect()
     }
 }
 
@@ -86,38 +128,62 @@ impl ExecutionAdapter for CompositeExecutionAdapter {
     }
 
     async fn open_orders(&self) -> Result<Vec<VenueOrderSnapshot>, ExecutionError> {
-        let mut orders = Vec::new();
-        for adapter in self.per_asset.values() {
-            orders.extend(adapter.open_orders().await?);
+        let mut unique = BTreeMap::<String, VenueOrderSnapshot>::new();
+        for adapter in self.children() {
+            for order in adapter.open_orders().await? {
+                let key = order
+                    .client_order_id
+                    .clone()
+                    .unwrap_or_else(|| format!("venue:{}", order.venue_order_id));
+                if let Some(existing) = unique.get(&key) {
+                    if existing.asset != order.asset
+                        || existing.requested_quantity != order.requested_quantity
+                        || existing.filled_quantity != order.filled_quantity
+                        || existing.state != order.state
+                    {
+                        return Err(ExecutionError::Unknown(format!(
+                            "conflicting composite order snapshots for {key}"
+                        )));
+                    }
+                } else {
+                    unique.insert(key, order);
+                }
+            }
         }
-        Ok(orders)
+        Ok(unique.into_values().collect())
     }
 
     async fn positions(&self) -> Result<Vec<VenuePositionSnapshot>, ExecutionError> {
-        let mut positions = Vec::new();
-        for adapter in self.per_asset.values() {
-            positions.extend(adapter.positions().await?);
+        let mut unique = BTreeMap::<String, VenuePositionSnapshot>::new();
+        for adapter in self.children() {
+            for position in adapter.positions().await? {
+                if let Some(existing) = unique.get(&position.asset) {
+                    if existing.quantity != position.quantity {
+                        return Err(ExecutionError::Unknown(format!(
+                            "conflicting composite position snapshots for {}: {} != {}",
+                            position.asset, existing.quantity, position.quantity
+                        )));
+                    }
+                } else {
+                    unique.insert(position.asset.clone(), position);
+                }
+            }
         }
-        Ok(positions)
+        Ok(unique.into_values().collect())
     }
 
     async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
-        let adapter = self.per_asset.values().next().ok_or_else(|| {
+        let adapter = self.children().into_iter().next().ok_or_else(|| {
             ExecutionError::Unsupported("composite has no instrument adapters".into())
         })?;
-        // Per-instrument IBKR children point at the same brokerage account. Read one
-        // authoritative account summary instead of summing duplicate NetLiq/margin values.
         adapter.account_snapshot().await
     }
 
-    /// The client id alone does not say which instrument an order belongs to, so
-    /// every child is searched. This is the recovery path for a fill that already
-    /// left the open-order set, so returning None must mean genuinely not found.
     async fn find_order_by_client_id(
         &self,
         client_order_id: &str,
     ) -> Result<Option<VenueOrderSnapshot>, ExecutionError> {
-        for adapter in self.per_asset.values() {
+        for adapter in self.children() {
             if let Some(order) = adapter.find_order_by_client_id(client_order_id).await? {
                 return Ok(Some(order));
             }
@@ -132,7 +198,6 @@ mod tests {
     use rust_decimal::Decimal;
     use std::sync::Mutex;
 
-    /// Minimal recording adapter: proves routing, not venue semantics.
     #[derive(Default)]
     struct FakeAdapter {
         submitted: Mutex<Vec<String>>,
@@ -209,12 +274,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_routes_by_asset() {
+    async fn submit_routes_by_asset_and_runtime_registration_works() {
         let apple = Arc::new(FakeAdapter::default());
         let msft = Arc::new(FakeAdapter::default());
         let composite = CompositeExecutionAdapter::new(Venue::InteractiveBrokers)
-            .with_instrument("AAPL", apple.clone())
-            .with_instrument("MSFT", msft.clone());
+            .with_instrument("AAPL", apple.clone());
+        composite.register_instrument("MSFT", msft.clone());
 
         composite
             .submit(&intent("MSFT", Venue::InteractiveBrokers))
@@ -224,6 +289,8 @@ mod tests {
         assert!(apple.submitted.lock().unwrap().is_empty());
         assert_eq!(msft.submitted.lock().unwrap().as_slice(), ["MSFT"]);
         assert_eq!(composite.assets(), vec!["AAPL", "MSFT"]);
+        assert!(composite.remove_instrument("MSFT").is_some());
+        assert_eq!(composite.assets(), vec!["AAPL"]);
     }
 
     #[tokio::test]
@@ -249,9 +316,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_side_aggregates_and_propagates_errors() {
+    async fn read_side_deduplicates_shared_account_snapshots_and_propagates_errors() {
         let composite = CompositeExecutionAdapter::new(Venue::InteractiveBrokers)
-            .with_instrument("AAPL", Arc::new(FakeAdapter::default()));
+            .with_instrument("AAPL", Arc::new(FakeAdapter::default()))
+            .with_instrument("MSFT", Arc::new(FakeAdapter::default()));
         assert_eq!(composite.positions().await.unwrap().len(), 1);
         assert_eq!(
             composite.account_snapshot().await.unwrap().account_value,
@@ -265,7 +333,6 @@ mod tests {
                 fail_reads: true,
             }),
         );
-        // A partial snapshot must never be reported as a complete one.
         assert!(failing.positions().await.is_err());
         assert!(failing.account_snapshot().await.is_err());
     }
