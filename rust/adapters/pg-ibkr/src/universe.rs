@@ -214,13 +214,18 @@ mod tests {
 
     #[test]
     fn scanner_config_rejects_invalid_row_counts() {
-        let mut config = IbkrScannerConfig::default();
-        config.number_of_rows = 0;
-        assert!(validate_scanner_config(&config).is_err());
-        config.number_of_rows = IBKR_SCANNER_MAX_ROWS + 1;
-        assert!(validate_scanner_config(&config).is_err());
-        config.number_of_rows = IBKR_SCANNER_MAX_ROWS;
-        assert!(validate_scanner_config(&config).is_ok());
+        let zero = IbkrScannerConfig {
+            number_of_rows: 0,
+            ..Default::default()
+        };
+        assert!(validate_scanner_config(&zero).is_err());
+        let too_many = IbkrScannerConfig {
+            number_of_rows: IBKR_SCANNER_MAX_ROWS + 1,
+            ..Default::default()
+        };
+        assert!(validate_scanner_config(&too_many).is_err());
+        let maximum = IbkrScannerConfig::default();
+        assert!(validate_scanner_config(&maximum).is_ok());
     }
 
     #[test]
