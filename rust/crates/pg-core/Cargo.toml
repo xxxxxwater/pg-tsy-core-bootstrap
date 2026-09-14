@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = ["hyperliquid-marketdata"]
 hyperliquid-marketdata = ["dep:pg-hyperliquid", "pg-hyperliquid/sdk"]
-# Interactive Brokers market data via TWS / IB Gateway. Opt-in because it pulls
+# Interactive Brokers market data and execution via TWS / IB Gateway. Opt-in because it pulls
 # the community ibapi crate; the Dockerfile enables it for the shipped image.
 ibkr-marketdata = ["dep:pg-ibkr", "pg-ibkr/sdk"]
 
@@ -19,6 +19,7 @@ pg-ibkr = { path = "../../adapters/pg-ibkr", optional = true }
 pg-marketdata = { path = "../pg-marketdata" }
 pg-oms = { path = "../pg-oms" }
 pg-orchestrator = { path = "../pg-orchestrator" }
+pg-reconcile = { path = "../pg-reconcile" }
 pg-runtime = { path = "../pg-runtime" }
 pg-store = { path = "../pg-store" }
 pg-types = { path = "../pg-types" }
