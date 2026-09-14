@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use pg_marketdata::{
-    FeedSpec, candle_interval_supported, default_candle_interval, describe_candle_interval,
-    describe_candle_intervals,
+    FeedSpec, UniverseFilter, candle_interval_supported, default_candle_interval,
+    describe_candle_interval, describe_candle_intervals,
 };
 use pg_types::{AssetKey, Venue};
 use rust_decimal::Decimal;
@@ -46,15 +46,67 @@ pub struct UniverseDefinition {
     pub venue: Option<Venue>,
     #[serde(default)]
     pub assets: Vec<String>,
-    /// Standard multi-venue form. Each strategy instance still owns one AssetKey.
+    /// Standard multi-venue static form. Each strategy instance owns one AssetKey.
     #[serde(default)]
     pub instruments: Vec<InstrumentDefinition>,
+    /// Production discovery form. A dynamic template contains no hard-coded assets;
+    /// runtime discovery resolves these sources into concrete strategy instances.
+    #[serde(default)]
+    pub dynamic: Vec<DynamicUniverseDefinition>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct InstrumentDefinition {
     pub venue: Venue,
     pub asset: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DynamicUniverseDefinition {
+    pub venue: Venue,
+    #[serde(default = "default_dynamic_top_n")]
+    pub top_n: usize,
+    pub min_day_notional_volume: Option<String>,
+    pub min_open_interest: Option<String>,
+    pub max_spread_bps: Option<String>,
+    pub min_price: Option<String>,
+    pub max_price: Option<String>,
+    #[serde(default)]
+    pub include_symbols: Vec<String>,
+    #[serde(default)]
+    pub exclude_symbols: Vec<String>,
+}
+
+impl DynamicUniverseDefinition {
+    pub fn filter(&self) -> Result<UniverseFilter, StrategyDefinitionError> {
+        if self.top_n == 0 || self.top_n > 500 {
+            return Err(StrategyDefinitionError::Invalid(format!(
+                "dynamic universe top_n for {:?} must be in [1, 500]",
+                self.venue
+            )));
+        }
+        if self.venue == Venue::InteractiveBrokers && self.top_n > 50 {
+            return Err(StrategyDefinitionError::Invalid(
+                "IBKR TWS scanner-backed dynamic universe top_n must be <= 50".into(),
+            ));
+        }
+        Ok(UniverseFilter {
+            min_day_notional_volume: decimal_option(
+                "min_day_notional_volume",
+                self.min_day_notional_volume.as_deref(),
+            )?,
+            min_open_interest: decimal_option(
+                "min_open_interest",
+                self.min_open_interest.as_deref(),
+            )?,
+            max_spread_bps: decimal_option("max_spread_bps", self.max_spread_bps.as_deref())?,
+            min_price: decimal_option("min_price", self.min_price.as_deref())?,
+            max_price: decimal_option("max_price", self.max_price.as_deref())?,
+            include_symbols: normalized_symbols(&self.include_symbols)?,
+            exclude_symbols: normalized_symbols(&self.exclude_symbols)?,
+            top_n: Some(self.top_n),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,16 +176,46 @@ impl PolicyInstance {
 }
 
 impl UniverseDefinition {
-    pub fn resolved_instruments(&self) -> Result<Vec<AssetKey>, StrategyDefinitionError> {
+    pub fn is_dynamic(&self) -> bool {
+        !self.dynamic.is_empty()
+    }
+
+    pub fn dynamic_sources(&self) -> &[DynamicUniverseDefinition] {
+        &self.dynamic
+    }
+
+    fn validate_shape(&self) -> Result<(), StrategyDefinitionError> {
         let using_legacy = self.venue.is_some() || !self.assets.is_empty();
         let using_standard = !self.instruments.is_empty();
-        if using_legacy && using_standard {
+        let using_dynamic = self.is_dynamic();
+        let modes = usize::from(using_legacy) + usize::from(using_standard) + usize::from(using_dynamic);
+        if modes != 1 {
             return Err(StrategyDefinitionError::Invalid(
-                "universe must use either venue+assets or instruments, not both".into(),
+                "universe must use exactly one of venue+assets, instruments, or dynamic sources"
+                    .into(),
             ));
         }
+        if using_dynamic {
+            let mut venues = BTreeSet::new();
+            for source in &self.dynamic {
+                source.filter()?;
+                if !venues.insert(source.venue) {
+                    return Err(StrategyDefinitionError::Invalid(format!(
+                        "duplicate dynamic universe source for {:?}",
+                        source.venue
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
 
-        let instruments = if using_standard {
+    pub fn resolved_instruments(&self) -> Result<Vec<AssetKey>, StrategyDefinitionError> {
+        self.validate_shape()?;
+        if self.is_dynamic() {
+            return Ok(Vec::new());
+        }
+        let instruments = if !self.instruments.is_empty() {
             self.instruments
                 .iter()
                 .map(|instrument| AssetKey::new(instrument.venue, instrument.asset.trim()))
@@ -146,7 +228,7 @@ impl UniverseDefinition {
             })?;
             if self.assets.is_empty() {
                 return Err(StrategyDefinitionError::Invalid(
-                    "universe.assets or universe.instruments must not be empty".into(),
+                    "universe.assets must not be empty".into(),
                 ));
             }
             self.assets
@@ -154,28 +236,7 @@ impl UniverseDefinition {
                 .map(|asset| AssetKey::new(venue, asset.trim()))
                 .collect::<Vec<_>>()
         };
-
-        if instruments.is_empty() {
-            return Err(StrategyDefinitionError::Invalid(
-                "universe must contain at least one instrument".into(),
-            ));
-        }
-
-        let mut unique = BTreeSet::new();
-        for instrument in &instruments {
-            if instrument.asset.trim().is_empty() {
-                return Err(StrategyDefinitionError::Invalid(
-                    "universe instrument asset must not be empty".into(),
-                ));
-            }
-            if !unique.insert(instrument.clone()) {
-                return Err(StrategyDefinitionError::Invalid(format!(
-                    "duplicate universe instrument {}:{}",
-                    venue_label(instrument.venue),
-                    instrument.asset
-                )));
-            }
-        }
+        validate_instruments(&instruments)?;
         Ok(instruments)
     }
 }
@@ -207,28 +268,29 @@ impl StrategyDefinition {
                 "order_quantity must be positive".into(),
             ));
         }
-        self.universe.resolved_instruments()?;
+        self.universe.validate_shape()?;
+        if !self.universe.is_dynamic() {
+            self.universe.resolved_instruments()?;
+        }
         self.policy
             .validate()
             .map_err(StrategyDefinitionError::Invalid)?;
         Ok(())
     }
 
-    /// Reject a candle resolution the venue cannot serve.
-    ///
-    /// This is checked when a definition is actually instantiated rather than at
-    /// parse time, because a disabled example may legitimately span venues with
-    /// different candle contracts. A live subscription that can never be accepted
-    /// would otherwise be retried forever, leaving the runtime permanently un-ready
-    /// with no obvious cause.
-    ///
-    /// Only an explicitly configured interval can be wrong: when it is omitted each
-    /// instrument falls back to its own venue default.
-    fn validate_candle_contract(&self) -> Result<(), StrategyDefinitionError> {
+    pub fn is_dynamic(&self) -> bool {
+        self.universe.is_dynamic()
+    }
+
+    /// Reject a candle resolution the selected venues cannot serve.
+    fn validate_candle_contract_for(
+        &self,
+        instruments: &[AssetKey],
+    ) -> Result<(), StrategyDefinitionError> {
         let Some(configured) = self.automation.candle_interval_ns else {
             return Ok(());
         };
-        for instrument in self.universe.resolved_instruments()? {
+        for instrument in instruments {
             if !candle_interval_supported(instrument.venue, configured) {
                 return Err(StrategyDefinitionError::Invalid(format!(
                     "venue {:?} cannot serve candle interval {} ({} ns); supported: {}",
@@ -243,11 +305,37 @@ impl StrategyDefinition {
     }
 
     pub fn build_instances(&self) -> Result<Vec<AutomatedStrategy>, StrategyDefinitionError> {
+        if !self.enabled || self.is_dynamic() {
+            return Ok(Vec::new());
+        }
+        let instruments = self.universe.resolved_instruments()?;
+        self.build_instances_from(&instruments, false)
+    }
+
+    pub fn build_instances_for(
+        &self,
+        instruments: &[AssetKey],
+    ) -> Result<Vec<AutomatedStrategy>, StrategyDefinitionError> {
         if !self.enabled {
             return Ok(Vec::new());
         }
+        if !self.is_dynamic() {
+            return Err(StrategyDefinitionError::Invalid(
+                "build_instances_for requires a dynamic universe template".into(),
+            ));
+        }
+        self.validate_dynamic_selection(instruments)?;
+        self.build_instances_from(instruments, true)
+    }
+
+    fn build_instances_from(
+        &self,
+        instruments: &[AssetKey],
+        force_scoped_identity: bool,
+    ) -> Result<Vec<AutomatedStrategy>, StrategyDefinitionError> {
         self.validate()?;
-        self.validate_candle_contract()?;
+        validate_instruments(instruments)?;
+        self.validate_candle_contract_for(instruments)?;
         let order_quantity =
             Decimal::from_str(self.strategy.order_quantity.trim()).map_err(|error| {
                 StrategyDefinitionError::Invalid(format!("invalid order_quantity: {error}"))
@@ -255,7 +343,7 @@ impl StrategyDefinition {
         let automation = self
             .resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
-        let identities = self.resolved_instance_identities()?;
+        let identities = self.instance_identities(instruments, force_scoped_identity);
         let mut strategies = Vec::with_capacity(identities.len());
         for (strategy_id, instrument) in identities {
             let venue = instrument.venue;
@@ -277,12 +365,6 @@ impl StrategyDefinition {
         Ok(strategies)
     }
 
-    /// Candle resolution to use for one instrument of this definition.
-    ///
-    /// An explicit `[automation] candle_interval_ns` is honoured for every
-    /// instrument (and validated against the venue at load time). When it is
-    /// omitted each instrument uses its own venue default, so one template can
-    /// still expand across venues with different candle contracts.
     fn resolved_candle_interval(&self, venue: Venue) -> u64 {
         self.automation
             .candle_interval_ns
@@ -296,11 +378,37 @@ impl StrategyDefinition {
     }
 
     pub fn build_policy_instances(&self) -> Result<Vec<PolicyInstance>, StrategyDefinitionError> {
+        if !self.enabled || self.is_dynamic() {
+            return Ok(Vec::new());
+        }
+        let instruments = self.universe.resolved_instruments()?;
+        self.build_policy_instances_from(&instruments, false)
+    }
+
+    pub fn build_policy_instances_for(
+        &self,
+        instruments: &[AssetKey],
+    ) -> Result<Vec<PolicyInstance>, StrategyDefinitionError> {
         if !self.enabled {
             return Ok(Vec::new());
         }
+        if !self.is_dynamic() {
+            return Err(StrategyDefinitionError::Invalid(
+                "build_policy_instances_for requires a dynamic universe template".into(),
+            ));
+        }
+        self.validate_dynamic_selection(instruments)?;
+        self.build_policy_instances_from(instruments, true)
+    }
+
+    fn build_policy_instances_from(
+        &self,
+        instruments: &[AssetKey],
+        force_scoped_identity: bool,
+    ) -> Result<Vec<PolicyInstance>, StrategyDefinitionError> {
         self.validate()?;
-        self.validate_candle_contract()?;
+        validate_instruments(instruments)?;
+        self.validate_candle_contract_for(instruments)?;
         let engine = self
             .policy
             .compile()
@@ -310,16 +418,12 @@ impl StrategyDefinition {
             Decimal::from_str(self.strategy.order_quantity.trim()).map_err(|error| {
                 StrategyDefinitionError::Invalid(format!("invalid order_quantity: {error}"))
             })?;
-        if order_quantity <= Decimal::ZERO {
-            return Err(StrategyDefinitionError::Invalid(
-                "order_quantity must be positive".into(),
-            ));
-        }
         let automation = self
             .resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
-        let mut instances = Vec::new();
-        for (strategy_id, instrument) in self.resolved_instance_identities()? {
+        let identities = self.instance_identities(instruments, force_scoped_identity);
+        let mut instances = Vec::with_capacity(identities.len());
+        for (strategy_id, instrument) in identities {
             let candle_interval_ns = self.resolved_candle_interval(instrument.venue);
             let features = LiveFeatureEngine::new(
                 plan.clone(),
@@ -377,10 +481,33 @@ impl StrategyDefinition {
         Ok(config)
     }
 
-    fn resolved_instance_identities(
+    fn validate_dynamic_selection(
         &self,
-    ) -> Result<Vec<(String, AssetKey)>, StrategyDefinitionError> {
-        let instruments = self.universe.resolved_instruments()?;
+        instruments: &[AssetKey],
+    ) -> Result<(), StrategyDefinitionError> {
+        validate_instruments(instruments)?;
+        let allowed = self
+            .universe
+            .dynamic_sources()
+            .iter()
+            .map(|source| source.venue)
+            .collect::<BTreeSet<_>>();
+        for instrument in instruments {
+            if !allowed.contains(&instrument.venue) {
+                return Err(StrategyDefinitionError::Invalid(format!(
+                    "dynamic selection contains venue {:?} not declared by template",
+                    instrument.venue
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn instance_identities(
+        &self,
+        instruments: &[AssetKey],
+        force_scoped_identity: bool,
+    ) -> Vec<(String, AssetKey)> {
         let multi = instruments.len() > 1;
         let multi_venue = instruments
             .iter()
@@ -388,10 +515,11 @@ impl StrategyDefinition {
             .collect::<BTreeSet<_>>()
             .len()
             > 1;
-        Ok(instruments
-            .into_iter()
+        instruments
+            .iter()
+            .cloned()
             .map(|instrument| {
-                let strategy_id = if multi_venue {
+                let strategy_id = if force_scoped_identity || multi_venue {
                     format!(
                         "{}:{}:{}",
                         self.strategy.id,
@@ -405,7 +533,7 @@ impl StrategyDefinition {
                 };
                 (strategy_id, instrument)
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -434,12 +562,69 @@ impl FactorOverrides {
     }
 }
 
+fn validate_instruments(instruments: &[AssetKey]) -> Result<(), StrategyDefinitionError> {
+    if instruments.is_empty() {
+        return Err(StrategyDefinitionError::Invalid(
+            "universe must contain at least one instrument".into(),
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for instrument in instruments {
+        if instrument.asset.trim().is_empty() {
+            return Err(StrategyDefinitionError::Invalid(
+                "universe instrument asset must not be empty".into(),
+            ));
+        }
+        if !unique.insert(instrument.clone()) {
+            return Err(StrategyDefinitionError::Invalid(format!(
+                "duplicate universe instrument {}:{}",
+                venue_label(instrument.venue),
+                instrument.asset
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn normalized_symbols(values: &[String]) -> Result<BTreeSet<String>, StrategyDefinitionError> {
+    let mut symbols = BTreeSet::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(StrategyDefinitionError::Invalid(
+                "dynamic universe symbol filters cannot contain empty values".into(),
+            ));
+        }
+        symbols.insert(value.to_owned());
+    }
+    Ok(symbols)
+}
+
+fn decimal_option(
+    field: &str,
+    value: Option<&str>,
+) -> Result<Option<Decimal>, StrategyDefinitionError> {
+    value
+        .map(|value| {
+            Decimal::from_str(value.trim()).map_err(|error| {
+                StrategyDefinitionError::Invalid(format!(
+                    "invalid dynamic universe {field}={value}: {error}"
+                ))
+            })
+        })
+        .transpose()
+}
+
 fn venue_label(venue: Venue) -> &'static str {
     match venue {
         Venue::BinancePm => "BINANCE_PM",
         Venue::Hyperliquid => "HYPERLIQUID",
         Venue::InteractiveBrokers => "IBKR",
     }
+}
+
+fn default_dynamic_top_n() -> usize {
+    20
 }
 
 fn default_schema_version() -> String {
@@ -495,6 +680,77 @@ mod tests {
             instances[1].machine.config.strategy_id,
             "momentum-volume-vwap:SOL"
         );
+    }
+
+    #[test]
+    fn dynamic_definition_needs_no_static_asset_and_builds_stable_scoped_ids() {
+        let definition = StrategyDefinition::from_toml_str(
+            r#"
+                schema_version = "strategy.v1"
+                enabled = true
+
+                [universe]
+                [[universe.dynamic]]
+                venue = "HYPERLIQUID"
+                top_n = 10
+                min_day_notional_volume = "1000000"
+
+                [[universe.dynamic]]
+                venue = "IBKR"
+                top_n = 5
+                min_price = "5"
+
+                [strategy]
+                id = "dynamic-momentum"
+                order_quantity = "1"
+                entry_score = 0.35
+                exit_score = 0.05
+            "#,
+        )
+        .unwrap();
+        assert!(definition.is_dynamic());
+        assert!(definition.build_instances().unwrap().is_empty());
+        let instances = definition
+            .build_instances_for(&[
+                AssetKey::new(Venue::Hyperliquid, "SOL"),
+                AssetKey::new(Venue::InteractiveBrokers, "NVDA"),
+            ])
+            .unwrap();
+        assert_eq!(instances.len(), 2);
+        assert_eq!(
+            instances[0].machine.config.strategy_id,
+            "dynamic-momentum:HYPERLIQUID:SOL"
+        );
+        assert_eq!(
+            instances[1].machine.config.strategy_id,
+            "dynamic-momentum:IBKR:NVDA"
+        );
+        assert_eq!(
+            definition.universe.dynamic_sources()[0].filter().unwrap().top_n,
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn dynamic_and_static_universe_cannot_be_mixed() {
+        let error = StrategyDefinition::from_toml_str(
+            r#"
+                [universe]
+                venue = "HYPERLIQUID"
+                assets = ["HYPE"]
+                [[universe.dynamic]]
+                venue = "HYPERLIQUID"
+                top_n = 5
+
+                [strategy]
+                id = "bad"
+                order_quantity = "1"
+                entry_score = 0.35
+                exit_score = 0.05
+            "#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exactly one"));
     }
 
     #[test]
