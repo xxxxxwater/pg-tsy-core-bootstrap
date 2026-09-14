@@ -6,10 +6,13 @@ use pg_marketdata::{
 };
 use pg_types::Venue;
 use rust_decimal::Decimal;
+use sdk::accounts::PositionUpdate;
 use sdk::contracts::SecurityType;
+use sdk::orders::Orders;
 use sdk::scanner::ScannerSubscription;
 use sdk::subscriptions::SubscriptionItemStreamExt;
 use std::{
+    collections::BTreeSet,
     str::FromStr,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -64,6 +67,69 @@ impl IbkrUniverseProvider {
             client: Arc::new(client),
             scanner,
         })
+    }
+
+    /// Read account-wide non-flat positions and open-order symbols before the
+    /// dynamic top-N is materialized. These symbols must be pinned even when they
+    /// are absent from the current scanner ranking.
+    pub async fn account_assets(
+        &self,
+        account: Option<&str>,
+    ) -> Result<BTreeSet<String>, UniverseError> {
+        let account_matches = |candidate: &str| account.is_none_or(|expected| expected == candidate);
+        let mut assets = BTreeSet::new();
+
+        let positions = self
+            .client
+            .positions()
+            .await
+            .map_err(|error| UniverseError::Transport(error.to_string()))?;
+        let mut position_stream = positions.filter_data();
+        tokio::time::timeout(self.scanner.timeout, async {
+            while let Some(item) = position_stream.next().await {
+                match item.map_err(|error| UniverseError::Transport(error.to_string()))? {
+                    PositionUpdate::Position(position) => {
+                        if account_matches(&position.account) && position.position != 0.0 {
+                            let symbol = position.contract.symbol.to_string();
+                            if !symbol.trim().is_empty() {
+                                assets.insert(symbol);
+                            }
+                        }
+                    }
+                    PositionUpdate::PositionEnd => break,
+                }
+            }
+            Ok::<(), UniverseError>(())
+        })
+        .await
+        .map_err(|_| UniverseError::Transport("IBKR positions snapshot timed out".into()))??;
+
+        let orders = self
+            .client
+            .open_orders()
+            .await
+            .map_err(|error| UniverseError::Transport(error.to_string()))?;
+        let mut order_stream = orders.filter_data();
+        tokio::time::timeout(self.scanner.timeout, async {
+            while let Some(item) = order_stream.next().await {
+                match item.map_err(|error| UniverseError::Transport(error.to_string()))? {
+                    Orders::OrderData(order) => {
+                        if account_matches(&order.order.account) {
+                            let symbol = order.contract.symbol.to_string();
+                            if !symbol.trim().is_empty() {
+                                assets.insert(symbol);
+                            }
+                        }
+                    }
+                    Orders::OrderStatus(_) => {}
+                }
+            }
+            Ok::<(), UniverseError>(())
+        })
+        .await
+        .map_err(|_| UniverseError::Transport("IBKR open-orders snapshot timed out".into()))??;
+
+        Ok(assets)
     }
 
     async fn snapshot(&self) -> Result<UniverseSnapshot, UniverseError> {
