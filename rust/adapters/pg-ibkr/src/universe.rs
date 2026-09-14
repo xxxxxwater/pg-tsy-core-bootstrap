@@ -226,10 +226,7 @@ mod tests {
     #[test]
     fn optional_size_metadata_stays_optional() {
         assert_eq!(optional_positive_decimal(None).unwrap(), None);
-        assert_eq!(
-            optional_positive_decimal(Some(0.0)).unwrap(),
-            None,
-        );
+        assert_eq!(optional_positive_decimal(Some(0.0)).unwrap(), None,);
         assert_eq!(
             optional_positive_decimal(Some(100.0)).unwrap(),
             Some(Decimal::from(100)),
