@@ -17,4 +17,4 @@ rust_decimal.workspace = true
 tokio.workspace = true
 futures = { version = "0.3", optional = true }
 time = { version = "0.3", optional = true }
-ibapi = { version = "4.0.1", default-features = false, features = ["async"], optional = true }
+ibapi = { version = "=4.1.0", default-features = false, features = ["async"], optional = true }
