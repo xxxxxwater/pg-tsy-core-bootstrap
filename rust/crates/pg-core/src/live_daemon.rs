@@ -1,11 +1,16 @@
 use crate::{
+    dynamic_universe::{DynamicUniverseResolution, refresh_dynamic_universe},
     health::{ControlCommand, HealthSnapshot, HealthState},
     secrets::{bool_env, optional_secret, required_secret, required_value},
 };
 use anyhow::{Context, Result, bail};
-use pg_execution::{CompositeExecutionAdapter, ExecutionAdapter, OrderLocator};
-use pg_marketdata::{FeedSpec, MarketDataSource, MarketEvent, SubscriptionSupervisor};
+use pg_execution::{CompositeExecutionAdapter, ExecutionAdapter};
+use pg_marketdata::{
+    FeedSpec, InstrumentDescriptor, MarketDataSource, MarketEvent, SubscriptionSupervisor,
+};
+use pg_oms::OrderRecord;
 use pg_orchestrator::{AdapterRegistry, DurableExecution};
+use pg_reconcile::{Ownership, VenuePosition};
 use pg_risk::{RiskLimits, evaluate_order};
 use pg_runtime::{RunConfig, RunMode, ShutdownPolicy, StartupChecklist, StartupGate};
 use pg_store::{LeaseHealth, PostgresStore};
@@ -29,7 +34,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{sync::mpsc, time::MissedTickBehavior};
+use tokio::{
+    sync::mpsc,
+    task::JoinHandle,
+    time::MissedTickBehavior,
+};
 
 #[cfg(feature = "hyperliquid-marketdata")]
 use pg_hyperliquid::{
@@ -47,21 +56,174 @@ struct FeedFatal {
     reason: String,
 }
 
-/// Production/paper runtime. Unlike `daemon::serve`, this function never constructs
-/// a ShadowExecutionAdapter. If a configured real adapter cannot be built, startup
-/// fails closed instead of silently falling back to an in-process venue.
+#[derive(Default)]
+struct FeedTaskManager {
+    tasks: BTreeMap<String, JoinHandle<()>>,
+    next_sequence: usize,
+}
+
+impl FeedTaskManager {
+    fn sync(
+        &mut self,
+        feeds: Vec<FeedSpec>,
+        supervisor: &mut SubscriptionSupervisor,
+        sink: &mpsc::Sender<MarketEvent>,
+        fatal: &mpsc::Sender<FeedFatal>,
+    ) -> Result<()> {
+        let desired = feeds
+            .iter()
+            .cloned()
+            .map(|spec| (feed_key(&spec), spec))
+            .collect::<BTreeMap<_, _>>();
+
+        let removed = self
+            .tasks
+            .keys()
+            .filter(|key| !desired.contains_key(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in removed {
+            if let Some(task) = self.tasks.remove(&key) {
+                task.abort();
+            }
+        }
+
+        supervisor.apply_derived_feeds(feeds);
+        for (key, spec) in desired {
+            if self.tasks.contains_key(&key) {
+                continue;
+            }
+            let sequence = self.next_sequence;
+            self.next_sequence = self.next_sequence.saturating_add(1);
+            let task = spawn_live_feed(sequence, spec, sink.clone(), fatal.clone())?;
+            self.tasks.insert(key, task);
+        }
+        Ok(())
+    }
+
+    fn restart_failed(
+        &mut self,
+        spec: FeedSpec,
+        supervisor: &mut SubscriptionSupervisor,
+        sink: &mpsc::Sender<MarketEvent>,
+        fatal: &mpsc::Sender<FeedFatal>,
+    ) -> Result<()> {
+        let key = feed_key(&spec);
+        self.tasks.remove(&key);
+        if supervisor.status(&spec).is_none() {
+            return Ok(());
+        }
+        supervisor.mark_reconnecting(&spec);
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        let task = spawn_live_feed(sequence, spec, sink.clone(), fatal.clone())?;
+        self.tasks.insert(key, task);
+        Ok(())
+    }
+
+    fn stop_all(&mut self) {
+        for (_, task) in std::mem::take(&mut self.tasks) {
+            task.abort();
+        }
+    }
+}
+
+#[cfg(feature = "ibkr-marketdata")]
+struct DynamicIbkrExecution {
+    composite: Arc<CompositeExecutionAdapter>,
+    base: IbkrConfig,
+    next_client_id: i32,
+    allow_software_reduce_only: bool,
+}
+
+#[cfg(feature = "ibkr-marketdata")]
+impl DynamicIbkrExecution {
+    async fn sync_assets(
+        &mut self,
+        desired: &BTreeSet<String>,
+        descriptors: &BTreeMap<AssetKey, InstrumentDescriptor>,
+    ) -> Result<()> {
+        let existing = self.composite.assets().into_iter().collect::<BTreeSet<_>>();
+        for asset in desired.difference(&existing) {
+            let mut config = self.base.clone();
+            config.client_id = self.next_client_id;
+            self.next_client_id = self
+                .next_client_id
+                .checked_add(1)
+                .context("IBKR execution client id overflow")?;
+            let spec = ibkr_stock_spec_with_descriptor(asset, descriptors);
+            let adapter = IbkrExecutionAdapter::connect(IbkrExecutionConfig {
+                ibkr: config,
+                instrument: spec,
+                submit_ack_timeout_ms: env_u64("IBKR_SUBMIT_ACK_TIMEOUT_MS", 5_000)?,
+                cancel_ack_timeout_ms: env_u64("IBKR_CANCEL_ACK_TIMEOUT_MS", 5_000)?,
+                allow_software_reduce_only: self.allow_software_reduce_only,
+            })
+            .await
+            .with_context(|| format!("failed to initialize IBKR execution adapter for {asset}"))?;
+            self.composite
+                .register_instrument(asset.clone(), Arc::new(adapter));
+        }
+
+        // Keep one account-capable child alive even when the scanner temporarily
+        // yields no strategy assets. It is read-only unless its symbol is desired.
+        let current = self.composite.assets();
+        let removable = current
+            .iter()
+            .filter(|asset| !desired.contains(*asset))
+            .cloned()
+            .collect::<Vec<_>>();
+        for asset in removable {
+            if self.composite.len() <= 1 {
+                break;
+            }
+            self.composite.remove_instrument(&asset);
+        }
+        Ok(())
+    }
+}
+
+struct BuiltAdapters {
+    registry: AdapterRegistry,
+    #[cfg(feature = "ibkr-marketdata")]
+    ibkr_dynamic: Option<DynamicIbkrExecution>,
+}
+
+#[derive(Default)]
+struct RuntimePins {
+    strategy: BTreeSet<AssetKey>,
+    operational: BTreeSet<AssetKey>,
+    safe_hold: BTreeSet<AssetKey>,
+    strategy_positions: BTreeMap<AssetKey, Decimal>,
+}
+
+/// Production/paper runtime. No production path constructs or falls back to a
+/// simulated execution adapter.
 pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<()> {
     if config.mode == RunMode::Shadow {
         bail!("live_daemon refuses PG_RUN_MODE=shadow");
     }
-    if registry.is_empty() {
+    if registry.is_empty() && !registry.has_dynamic_templates() {
         bail!("real-venue daemon requires at least one enabled strategy definition");
     }
     if config.mode == RunMode::Live && !config.live_trading_enabled {
         bail!("live mode requires PG_LIVE_TRADING=true");
     }
 
-    let feeds = registry.subscriptions();
+    let dynamic_enabled = registry.has_dynamic_templates();
+    let empty_pins = BTreeSet::new();
+    let mut dynamic_resolution = if dynamic_enabled {
+        refresh_dynamic_universe(&mut registry, &empty_pins, &empty_pins)
+            .await
+            .context("initial dynamic universe discovery failed")?
+    } else {
+        DynamicUniverseResolution::default()
+    };
+    if registry.is_empty() {
+        bail!("real-venue daemon has no strategy instances after universe discovery");
+    }
+
+    let mut feeds = registry.subscriptions();
     if feeds.is_empty() {
         bail!("enabled strategies derived zero market-data subscriptions");
     }
@@ -94,7 +256,19 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         .await?;
     checklist.pass(StartupGate::RuntimeLeaseAcquired);
 
-    let adapters = build_real_adapter_registry(&feeds, &config).await?;
+    let configured_venues = configured_live_venues(&registry, &feeds, &dynamic_resolution.operational_pins);
+    let BuiltAdapters {
+        registry: adapters,
+        #[cfg(feature = "ibkr-marketdata")]
+        mut ibkr_dynamic,
+    } = build_real_adapter_registry(
+        &feeds,
+        &dynamic_resolution.operational_pins,
+        &dynamic_resolution.descriptors,
+        &configured_venues,
+        &config,
+    )
+    .await?;
     let venues = adapters.venues();
     if venues.is_empty() {
         bail!("no real execution adapters were registered for the enabled strategies");
@@ -116,6 +290,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 "mode": mode_name,
                 "execution": "real_venue",
                 "venues": &venues,
+                "dynamic_universe": dynamic_enabled,
                 "fencing_token": lease.fencing_token,
             }),
             lease.fencing_token,
@@ -134,24 +309,57 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         checklist.pass(StartupGate::LiveTradingExplicitlyEnabled);
     }
 
-    let mut safe_hold_assets = BTreeSet::new();
-    let mut position_cache = BTreeMap::<AssetKey, Decimal>::new();
+    let mut latest_positions = BTreeMap::<AssetKey, VenuePosition>::new();
+    let mut latest_orders = BTreeMap::<String, OrderRecord>::new();
+    let mut reconcile_safe_hold = BTreeSet::new();
     let mut startup_clean = true;
     let mut ambiguous_clean = true;
     for venue in venues.iter().copied() {
         let recovery = execution.recover_ambiguous(venue).await?;
-        if recovery.items.iter().any(|item| !item.resolved) {
-            ambiguous_clean = false;
+        for item in &recovery.items {
+            if !item.resolved {
+                ambiguous_clean = false;
+                reconcile_safe_hold.insert(AssetKey::new(item.venue, item.asset.clone()));
+            }
         }
         let cycle = execution.reconcile_once(venue).await?;
         if !cycle.report.clean() {
             startup_clean = false;
-            safe_hold_assets.extend(cycle.report.safe_hold_assets.iter().cloned());
+            reconcile_safe_hold.extend(cycle.report.safe_hold_assets.iter().cloned());
         }
-        for position in &cycle.positions {
-            position_cache.insert(position.key(), position.quantity);
+        for order in cycle.orders {
+            latest_orders.insert(order.client_order_id.clone(), order);
+        }
+        for position in cycle.positions {
+            latest_positions.insert(position.key(), position);
         }
     }
+    let mut runtime_pins = derive_runtime_pins(
+        &latest_positions,
+        &latest_orders,
+        &reconcile_safe_hold,
+    );
+
+    if dynamic_enabled {
+        dynamic_resolution = refresh_dynamic_universe(
+            &mut registry,
+            &runtime_pins.strategy,
+            &runtime_pins.operational,
+        )
+        .await
+        .context("post-reconcile dynamic universe pinning failed")?;
+        feeds = registry.subscriptions();
+        validate_live_feeds(&feeds)?;
+        ensure_venues_registered(&feeds, &venues)?;
+        #[cfg(feature = "ibkr-marketdata")]
+        if let Some(dynamic) = ibkr_dynamic.as_mut() {
+            let desired = desired_ibkr_assets(&feeds, &dynamic_resolution.operational_pins);
+            dynamic
+                .sync_assets(&desired, &dynamic_resolution.descriptors)
+                .await?;
+        }
+    }
+
     checklist.pass(StartupGate::OpenOrdersLoaded);
     checklist.pass(StartupGate::PositionsLoaded);
     if startup_clean {
@@ -200,24 +408,30 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let heartbeat = store.spawn_lease_heartbeat(lease.clone());
     let mut lease_health = heartbeat.health();
     let (event_tx, mut event_rx) = mpsc::channel(16_384);
-    let (fatal_tx, mut fatal_rx) = mpsc::channel::<FeedFatal>(feeds.len().max(1));
-    for (index, spec) in feeds.iter().cloned().enumerate() {
-        spawn_live_feed(index, spec, event_tx.clone(), fatal_tx.clone())?;
-    }
-    drop(fatal_tx);
-
+    let (fatal_tx, mut fatal_rx) = mpsc::channel::<FeedFatal>(256);
     let mut supervisor = SubscriptionSupervisor::new();
-    supervisor.apply_derived_feeds(feeds);
+    let mut feed_tasks = FeedTaskManager::default();
+    feed_tasks.sync(
+        feeds.clone(),
+        &mut supervisor,
+        &event_tx,
+        &fatal_tx,
+    )?;
+
     let max_staleness_ns = config.max_market_staleness_ms.saturating_mul(1_000_000);
-    let reconcile_interval_ms = env::var("PG_RECONCILE_INTERVAL_MS")
-        .unwrap_or_else(|_| "2000".into())
-        .parse::<u64>()
-        .context("invalid PG_RECONCILE_INTERVAL_MS")?;
+    let reconcile_interval_ms = env_u64("PG_RECONCILE_INTERVAL_MS", 2_000)?;
     if !(250..=60_000).contains(&reconcile_interval_ms) {
         bail!("PG_RECONCILE_INTERVAL_MS must be in [250, 60000]");
     }
+    let universe_refresh_seconds = env_u64("PG_UNIVERSE_REFRESH_SECONDS", 300)?;
+    if !(15..=86_400).contains(&universe_refresh_seconds) {
+        bail!("PG_UNIVERSE_REFRESH_SECONDS must be in [15, 86400]");
+    }
     let mut reconcile_tick = tokio::time::interval(Duration::from_millis(reconcile_interval_ms));
     reconcile_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut universe_tick = tokio::time::interval(Duration::from_secs(universe_refresh_seconds));
+    universe_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    universe_tick.tick().await;
     let mut health_tick = tokio::time::interval(Duration::from_secs(1));
     health_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -228,6 +442,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         feeds = supervisor.feed_count(),
         strategies = registry.len(),
         policies = registry.policy_count(),
+        dynamic_assets = dynamic_resolution.strategy_assets.len(),
+        operational_pins = dynamic_resolution.operational_pins.len(),
         fencing_token = lease.fencing_token,
         trading_started,
         "real-venue strategy daemon started"
@@ -246,7 +462,11 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 supervisor.observe(&event);
                 let key = event_asset_key(&event);
                 let position = position_view(
-                    position_cache.get(&key).copied().unwrap_or(Decimal::ZERO),
+                    runtime_pins
+                        .strategy_positions
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(Decimal::ZERO),
                 );
                 let mut decisions = 0_u64;
 
@@ -264,7 +484,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                             if submit_intent(
                                 execution.as_ref(),
                                 &risk_limits,
-                                &safe_hold_assets,
+                                &runtime_pins.safe_hold,
                                 &strategy_id,
                                 &intent,
                             )
@@ -299,7 +519,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     if let Some(client_order_id) = submit_intent(
                         execution.as_ref(),
                         &risk_limits,
-                        &safe_hold_assets,
+                        &runtime_pins.safe_hold,
                         &strategy_id,
                         &intent,
                     )
@@ -321,7 +541,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             }
             _ = reconcile_tick.tick() => {
                 let mut cycle_safe_hold = BTreeSet::new();
-                let mut positions = BTreeMap::new();
+                let mut next_positions = BTreeMap::new();
+                let mut next_orders = BTreeMap::new();
                 let mut open_orders = 0_usize;
                 let mut clean = true;
                 for venue in venues.iter().copied() {
@@ -330,14 +551,15 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                             if !cycle.report.clean() {
                                 clean = false;
                             }
-                            cycle_safe_hold.extend(
-                                cycle.report.safe_hold_assets.iter().cloned(),
-                            );
-                            open_orders = open_orders.saturating_add(
-                                cycle.orders.iter().filter(|order| !order.is_terminal()).count(),
-                            );
+                            cycle_safe_hold.extend(cycle.report.safe_hold_assets.iter().cloned());
+                            for order in cycle.orders {
+                                if !order.is_terminal() {
+                                    open_orders = open_orders.saturating_add(1);
+                                }
+                                next_orders.insert(order.client_order_id.clone(), order);
+                            }
                             for position in cycle.positions {
-                                positions.insert(position.key(), position.quantity);
+                                next_positions.insert(position.key(), position);
                             }
                         }
                         Err(error) => {
@@ -350,27 +572,96 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         }
                     }
                 }
-                position_cache = positions;
-                safe_hold_assets = cycle_safe_hold;
                 if clean {
+                    latest_positions = next_positions;
+                    latest_orders = next_orders;
+                    reconcile_safe_hold = cycle_safe_hold;
+                    runtime_pins = derive_runtime_pins(
+                        &latest_positions,
+                        &latest_orders,
+                        &reconcile_safe_hold,
+                    );
                     checklist.pass(StartupGate::OwnershipReconciled);
                     checklist.pass(StartupGate::UnknownStateClear);
                 } else {
+                    runtime_pins.safe_hold.extend(cycle_safe_hold);
                     checklist.fail(
                         StartupGate::OwnershipReconciled,
                         "continuous reconcile is not clean",
                     );
                 }
-                risk_limits.allow_new_exposure = trading_started && clean;
+                risk_limits.allow_new_exposure =
+                    trading_started && clean && supervisor.all_connected();
                 health.mutate(|snapshot| {
                     snapshot.open_orders = open_orders;
                     if !clean {
                         snapshot.ready = false;
-                        snapshot.last_error = Some(
-                            "continuous reconcile entered SAFE_HOLD".into(),
-                        );
+                        snapshot.last_error = Some("continuous reconcile entered SAFE_HOLD".into());
                     }
                 }).await;
+            }
+            _ = universe_tick.tick(), if dynamic_enabled => {
+                risk_limits.allow_new_exposure = false;
+                match refresh_dynamic_universe(
+                    &mut registry,
+                    &runtime_pins.strategy,
+                    &runtime_pins.operational,
+                ).await {
+                    Ok(next_resolution) => {
+                        let next_feeds = registry.subscriptions();
+                        let topology_result: Result<()> = async {
+                            validate_live_feeds(&next_feeds)?;
+                            ensure_venues_registered(&next_feeds, &venues)?;
+                            #[cfg(feature = "ibkr-marketdata")]
+                            if let Some(dynamic) = ibkr_dynamic.as_mut() {
+                                let desired = desired_ibkr_assets(
+                                    &next_feeds,
+                                    &next_resolution.operational_pins,
+                                );
+                                dynamic
+                                    .sync_assets(&desired, &next_resolution.descriptors)
+                                    .await?;
+                            }
+                            feed_tasks.sync(
+                                next_feeds.clone(),
+                                &mut supervisor,
+                                &event_tx,
+                                &fatal_tx,
+                            )?;
+                            Ok(())
+                        }.await;
+                        match topology_result {
+                            Ok(()) => {
+                                feeds = next_feeds;
+                                dynamic_resolution = next_resolution;
+                                health.mutate(|snapshot| {
+                                    snapshot.feeds_total = feeds.len();
+                                }).await;
+                                tracing::info!(
+                                    strategies = registry.len(),
+                                    feeds = feeds.len(),
+                                    strategy_assets = dynamic_resolution.strategy_assets.len(),
+                                    operational_pins = dynamic_resolution.operational_pins.len(),
+                                    "dynamic universe refresh applied"
+                                );
+                            }
+                            Err(error) => {
+                                tracing::error!(%error, "dynamic topology apply failed; exposure remains frozen");
+                                health.mutate(|snapshot| {
+                                    snapshot.ready = false;
+                                    snapshot.last_error = Some(error.to_string());
+                                }).await;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "dynamic universe refresh failed; exposure remains frozen");
+                        health.mutate(|snapshot| {
+                            snapshot.ready = false;
+                            snapshot.last_error = Some(error.to_string());
+                        }).await;
+                    }
+                }
             }
             maybe_fatal = fatal_rx.recv() => {
                 let Some(fatal) = maybe_fatal else {
@@ -378,17 +669,26 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 };
                 supervisor.mark_failed(&fatal.spec);
                 risk_limits.allow_new_exposure = false;
+                let reason = fatal.reason.clone();
+                tracing::error!(
+                    venue = ?fatal.spec.venue,
+                    asset = %fatal.spec.asset,
+                    %reason,
+                    "market-data feed exhausted reconnect budget; restarting fail-closed"
+                );
+                if let Err(error) = feed_tasks.restart_failed(
+                    fatal.spec,
+                    &mut supervisor,
+                    &event_tx,
+                    &fatal_tx,
+                ) {
+                    tracing::error!(%error, "failed to restart exhausted market-data feed");
+                }
                 health.mutate(|snapshot| {
                     snapshot.ready = false;
-                    snapshot.process_healthy = false;
-                    snapshot.last_error = Some(fatal.reason.clone());
+                    snapshot.last_error = Some(reason);
                     snapshot.feeds_connected = supervisor.connected_count();
                 }).await;
-                break Err(anyhow::anyhow!(
-                    "market-data feed {:?} failed permanently: {}",
-                    fatal.spec,
-                    fatal.reason
-                ));
             }
             changed = lease_health.changed() => {
                 if changed.is_err() {
@@ -441,22 +741,15 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             Some(command) = control_rx.recv() => {
                 match command {
                     ControlCommand::ReloadStrategies => {
-                        match reload_strategies(
-                            &mut registry,
-                            strategy_dir.as_deref(),
-                        ) {
+                        match reload_strategies(&mut registry, strategy_dir.as_deref()) {
                             Ok(ids) => {
-                                tracing::info!(
-                                    strategies = ?ids,
-                                    "strategy definitions reloaded"
-                                );
+                                risk_limits.allow_new_exposure = false;
+                                tracing::info!(strategies = ?ids, "strategy definitions reloaded; waiting for topology refresh");
                             }
                             Err(error) => {
                                 let reason = error.to_string();
                                 tracing::warn!(%reason, "strategy reload rejected");
-                                health.mutate(|snapshot| {
-                                    snapshot.last_error = Some(reason);
-                                }).await;
+                                health.mutate(|snapshot| snapshot.last_error = Some(reason)).await;
                             }
                         }
                     }
@@ -472,6 +765,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
 
     trading_started = false;
     risk_limits.allow_new_exposure = false;
+    feed_tasks.stop_all();
     if let Err(error) = apply_shutdown_policy(
         config.shutdown_policy,
         execution.as_ref(),
@@ -491,12 +785,71 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     result
 }
 
+fn derive_runtime_pins(
+    positions: &BTreeMap<AssetKey, VenuePosition>,
+    orders: &BTreeMap<String, OrderRecord>,
+    reconcile_safe_hold: &BTreeSet<AssetKey>,
+) -> RuntimePins {
+    let mut pins = RuntimePins {
+        safe_hold: reconcile_safe_hold.clone(),
+        ..RuntimePins::default()
+    };
+    for (key, position) in positions {
+        if position.quantity.is_zero() {
+            continue;
+        }
+        pins.operational.insert(key.clone());
+        match &position.ownership {
+            Ownership::Strategy(_) => {
+                pins.strategy.insert(key.clone());
+                pins.strategy_positions.insert(key.clone(), position.quantity);
+            }
+            Ownership::Manual | Ownership::Unknown => {
+                // Never allow automation to merge into a position that emergency
+                // exit is forbidden to touch.
+                pins.safe_hold.insert(key.clone());
+            }
+        }
+    }
+    for order in orders.values().filter(|order| !order.is_terminal()) {
+        let key = AssetKey::new(order.venue, order.asset.clone());
+        pins.operational.insert(key.clone());
+        pins.strategy.insert(key.clone());
+        if matches!(order.state, pg_oms::OrderState::Unknown | pg_oms::OrderState::PendingSubmit) {
+            pins.safe_hold.insert(key);
+        }
+    }
+    pins
+}
+
+fn configured_live_venues(
+    registry: &StrategyRegistry,
+    feeds: &[FeedSpec],
+    operational_pins: &BTreeSet<AssetKey>,
+) -> BTreeSet<Venue> {
+    let mut venues = feeds.iter().map(|feed| feed.venue).collect::<BTreeSet<_>>();
+    venues.extend(operational_pins.iter().map(|key| key.venue));
+    for template in registry.dynamic_templates() {
+        venues.extend(
+            template
+                .definition
+                .universe
+                .dynamic_sources()
+                .iter()
+                .map(|source| source.venue),
+        );
+    }
+    venues
+}
+
 async fn build_real_adapter_registry(
     feeds: &[FeedSpec],
+    operational_pins: &BTreeSet<AssetKey>,
+    descriptors: &BTreeMap<AssetKey, InstrumentDescriptor>,
+    venues: &BTreeSet<Venue>,
     config: &RunConfig,
-) -> Result<AdapterRegistry> {
+) -> Result<BuiltAdapters> {
     let mut registry = AdapterRegistry::default();
-    let venues = feeds.iter().map(|feed| feed.venue).collect::<BTreeSet<_>>();
 
     if venues.contains(&Venue::Hyperliquid) {
         #[cfg(feature = "hyperliquid-marketdata")]
@@ -524,20 +877,17 @@ async fn build_real_adapter_registry(
             )
             .await
             .context("failed to initialize Hyperliquid real execution adapter")?;
-            adapter
-                .positions()
-                .await
-                .context("Hyperliquid positions read failed")?;
-            adapter
-                .open_orders()
-                .await
-                .context("Hyperliquid open-orders read failed")?;
+            adapter.positions().await.context("Hyperliquid positions read failed")?;
+            adapter.open_orders().await.context("Hyperliquid open-orders read failed")?;
+            adapter.account_snapshot().await.context("Hyperliquid account snapshot failed")?;
             registry.register(Venue::Hyperliquid, Arc::new(adapter));
         }
         #[cfg(not(feature = "hyperliquid-marketdata"))]
         bail!("Hyperliquid strategy enabled but pg-core was built without Hyperliquid SDK support");
     }
 
+    #[cfg(feature = "ibkr-marketdata")]
+    let mut ibkr_dynamic = None;
     if venues.contains(&Venue::InteractiveBrokers) {
         #[cfg(feature = "ibkr-marketdata")]
         {
@@ -547,14 +897,6 @@ async fn build_real_adapter_registry(
                     "IBKR live execution requires IBKR_ALLOW_SOFTWARE_REDUCE_ONLY=true; ordinary stock orders have no native atomic reduce-only flag"
                 );
             }
-            let mut assets = feeds
-                .iter()
-                .filter(|feed| feed.venue == Venue::InteractiveBrokers)
-                .map(|feed| feed.asset.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            assets.sort();
             let base = ibkr_config_from_env()?;
             let execution_client_base = env::var("IBKR_EXECUTION_CLIENT_ID_BASE")
                 .ok()
@@ -565,49 +907,70 @@ async fn build_real_adapter_registry(
                 })
                 .transpose()?
                 .unwrap_or_else(|| base.client_id.saturating_add(100));
-            let mut composite = CompositeExecutionAdapter::new(Venue::InteractiveBrokers);
-            for (index, asset) in assets.iter().enumerate() {
-                let mut ibkr = base.clone();
-                ibkr.client_id = execution_client_base
-                    .checked_add(i32::try_from(index).context("too many IBKR instruments")?)
-                    .context("IBKR execution client id overflow")?;
-                let adapter = IbkrExecutionAdapter::connect(IbkrExecutionConfig {
-                    ibkr,
-                    instrument: ibkr_stock_spec(asset),
-                    submit_ack_timeout_ms: env_u64("IBKR_SUBMIT_ACK_TIMEOUT_MS", 5_000)?,
-                    cancel_ack_timeout_ms: env_u64("IBKR_CANCEL_ACK_TIMEOUT_MS", 5_000)?,
-                    allow_software_reduce_only,
-                })
-                .await
-                .with_context(|| {
-                    format!("failed to initialize IBKR execution adapter for {asset}")
-                })?;
-                composite = composite.with_instrument(asset.clone(), Arc::new(adapter));
+            let composite = Arc::new(CompositeExecutionAdapter::new(Venue::InteractiveBrokers));
+            let mut dynamic = DynamicIbkrExecution {
+                composite: composite.clone(),
+                base,
+                next_client_id: execution_client_base,
+                allow_software_reduce_only,
+            };
+            let mut assets = desired_ibkr_assets(feeds, operational_pins);
+            if assets.is_empty()
+                && let Some(key) = descriptors
+                    .keys()
+                    .find(|key| key.venue == Venue::InteractiveBrokers)
+            {
+                assets.insert(key.asset.clone());
             }
-            if composite.is_empty() {
-                bail!("IBKR venue enabled without any IBKR instruments");
+            if assets.is_empty() {
+                bail!("IBKR venue enabled but discovery produced no account-capable instrument");
             }
-            composite
-                .positions()
-                .await
-                .context("IBKR positions read failed")?;
-            composite
-                .open_orders()
-                .await
-                .context("IBKR open-orders read failed")?;
-            registry.register(Venue::InteractiveBrokers, Arc::new(composite));
+            dynamic.sync_assets(&assets, descriptors).await?;
+            composite.positions().await.context("IBKR positions read failed")?;
+            composite.open_orders().await.context("IBKR open-orders read failed")?;
+            composite.account_snapshot().await.context("IBKR account snapshot failed")?;
+            registry.register(Venue::InteractiveBrokers, composite);
+            ibkr_dynamic = Some(dynamic);
         }
         #[cfg(not(feature = "ibkr-marketdata"))]
         bail!("IBKR strategy enabled but pg-core was built without ibkr-marketdata/SDK support");
     }
 
     if venues.contains(&Venue::BinancePm) {
-        bail!(
-            "BINANCE_PM remains fail-closed: no production execution/recovery adapter is registered"
-        );
+        bail!("BINANCE_PM remains fail-closed: no production execution/recovery adapter is registered");
     }
 
-    Ok(registry)
+    Ok(BuiltAdapters {
+        registry,
+        #[cfg(feature = "ibkr-marketdata")]
+        ibkr_dynamic,
+    })
+}
+
+#[cfg(feature = "ibkr-marketdata")]
+fn desired_ibkr_assets(feeds: &[FeedSpec], pins: &BTreeSet<AssetKey>) -> BTreeSet<String> {
+    feeds
+        .iter()
+        .filter(|feed| feed.venue == Venue::InteractiveBrokers)
+        .map(|feed| feed.asset.clone())
+        .chain(
+            pins.iter()
+                .filter(|key| key.venue == Venue::InteractiveBrokers)
+                .map(|key| key.asset.clone()),
+        )
+        .collect()
+}
+
+fn ensure_venues_registered(feeds: &[FeedSpec], venues: &[Venue]) -> Result<()> {
+    let missing = feeds
+        .iter()
+        .map(|feed| feed.venue)
+        .filter(|venue| !venues.contains(venue))
+        .collect::<BTreeSet<_>>();
+    if !missing.is_empty() {
+        bail!("universe refresh introduced unregistered live venues: {missing:?}");
+    }
+    Ok(())
 }
 
 async fn submit_intent(
@@ -792,29 +1155,18 @@ async fn apply_shutdown_policy(
     }
 
     for venue in venues.iter().copied() {
-        let Some(adapter) = execution.adapters().get(venue) else {
-            continue;
-        };
         for order in store
             .load_orders_for_venue(venue)
             .await?
             .into_iter()
             .filter(|order| !order.is_terminal())
         {
-            if let Some(venue_order_id) = order.venue_order_id.as_deref()
-                && let Err(error) = adapter
-                    .cancel(OrderLocator {
-                        asset: &order.asset,
-                        venue_order_id: Some(venue_order_id),
-                        client_order_id: &order.client_order_id,
-                    })
-                    .await
-            {
+            if let Err(error) = execution.cancel_order(&order).await {
                 tracing::warn!(
                     ?venue,
                     client_order_id = %order.client_order_id,
                     %error,
-                    "shutdown cancel failed"
+                    "shutdown durable cancel failed"
                 );
             }
         }
@@ -827,10 +1179,7 @@ async fn apply_shutdown_policy(
     for venue in venues.iter().copied() {
         let cycle = execution.reconcile_once(venue).await?;
         for position in cycle.positions {
-            let ownership = serde_json::to_value(&position.ownership)
-                .context("failed to serialize position ownership")?;
-            let Some(strategy_id) = ownership.get("Strategy").and_then(|value| value.as_str())
-            else {
+            let Ownership::Strategy(strategy_id) = position.ownership else {
                 continue;
             };
             if position.quantity.is_zero() {
@@ -843,7 +1192,7 @@ async fn apply_shutdown_policy(
             };
             let intent = OrderIntent {
                 intent_id: uuid::Uuid::new_v4(),
-                strategy_id: strategy_id.to_owned(),
+                strategy_id,
                 asset: position.asset,
                 venue,
                 side,
@@ -937,7 +1286,7 @@ enum FeedEndpoint {
     },
 }
 
-fn feed_endpoint(index: usize, spec: &FeedSpec) -> Result<FeedEndpoint> {
+fn feed_endpoint(sequence: usize, spec: &FeedSpec) -> Result<FeedEndpoint> {
     match spec.venue {
         #[cfg(feature = "hyperliquid-marketdata")]
         Venue::Hyperliquid => Ok(FeedEndpoint::Hyperliquid(hyperliquid_network()?)),
@@ -954,7 +1303,7 @@ fn feed_endpoint(index: usize, spec: &FeedSpec) -> Result<FeedEndpoint> {
                 .transpose()?
                 .unwrap_or_else(|| config.client_id.saturating_add(1_000));
             config.client_id = market_data_base
-                .checked_add(i32::try_from(index).context("too many IBKR feeds")?)
+                .checked_add(i32::try_from(sequence).context("too many IBKR feed generations")?)
                 .context("IBKR market-data client id overflow")?;
             Ok(FeedEndpoint::Ibkr {
                 config,
@@ -989,12 +1338,12 @@ async fn open_feed_stream(
 }
 
 fn spawn_live_feed(
-    index: usize,
+    sequence: usize,
     spec: FeedSpec,
     sink: mpsc::Sender<MarketEvent>,
     fatal: mpsc::Sender<FeedFatal>,
-) -> Result<()> {
-    let endpoint = feed_endpoint(index, &spec)?;
+) -> Result<JoinHandle<()>> {
+    let endpoint = feed_endpoint(sequence, &spec)?;
     let max_reconnects = env::var("PG_MARKET_MAX_RECONNECTS")
         .unwrap_or_else(|_| "50".into())
         .parse::<u32>()
@@ -1002,7 +1351,7 @@ fn spawn_live_feed(
     if max_reconnects == 0 {
         bail!("PG_MARKET_MAX_RECONNECTS must be positive");
     }
-    tokio::spawn(async move {
+    Ok(tokio::spawn(async move {
         let mut failures = 0_u32;
         let mut backoff = Duration::from_secs(1);
         loop {
@@ -1032,8 +1381,11 @@ fn spawn_live_feed(
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(30));
         }
-    });
-    Ok(())
+    }))
+}
+
+fn feed_key(spec: &FeedSpec) -> String {
+    format!("{:?}:{}:{:?}", spec.venue, spec.asset, spec.kind)
 }
 
 #[cfg(feature = "ibkr-marketdata")]
@@ -1067,6 +1419,38 @@ fn ibkr_stock_spec(asset: &str) -> IbkrStockSpec {
     {
         spec.currency = currency;
     }
+    spec
+}
+
+#[cfg(feature = "ibkr-marketdata")]
+fn ibkr_stock_spec_with_descriptor(
+    asset: &str,
+    descriptors: &BTreeMap<AssetKey, InstrumentDescriptor>,
+) -> IbkrStockSpec {
+    let mut spec = ibkr_stock_spec(asset);
+    let key = AssetKey::new(Venue::InteractiveBrokers, asset.to_owned());
+    let Some(descriptor) = descriptors.get(&key) else {
+        return spec;
+    };
+    if let Some(exchange) = descriptor.exchange.as_deref()
+        && !exchange.trim().is_empty()
+    {
+        spec.exchange = exchange.to_owned();
+    }
+    if let Some(primary) = descriptor.primary_exchange.as_deref()
+        && !primary.trim().is_empty()
+    {
+        spec.primary_exchange = Some(primary.to_owned());
+    }
+    if let Some(currency) = descriptor.currency.as_deref()
+        && !currency.trim().is_empty()
+    {
+        spec.currency = currency.to_owned();
+    }
+    spec.con_id = descriptor
+        .venue_instrument_id
+        .as_deref()
+        .and_then(|value| value.parse::<i32>().ok());
     spec
 }
 
