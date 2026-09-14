@@ -4,9 +4,8 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use pg_execution::{CompositeExecutionAdapter, ExecutionAdapter, OrderLocator};
-use pg_marketdata::{FeedKind, FeedSpec, MarketDataSource, MarketEvent, SubscriptionSupervisor};
+use pg_marketdata::{FeedSpec, MarketDataSource, MarketEvent, SubscriptionSupervisor};
 use pg_orchestrator::{AdapterRegistry, DurableExecution};
-use pg_reconcile::Ownership;
 use pg_risk::{RiskLimits, evaluate_order};
 use pg_runtime::{RunConfig, RunMode, ShutdownPolicy, StartupChecklist, StartupGate};
 use pg_store::{LeaseHealth, PostgresStore};
@@ -108,11 +107,11 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             &format!("runtime:{}", config.instance_id),
             "runtime.boot",
             &json!({
-                "environment": config.environment,
-                "instance_id": config.instance_id,
+                "environment": &config.environment,
+                "instance_id": &config.instance_id,
                 "mode": mode_name,
                 "execution": "real_venue",
-                "venues": venues,
+                "venues": &venues,
                 "fencing_token": lease.fencing_token,
             }),
             lease.fencing_token,
@@ -128,8 +127,6 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             "PG_LIVE_TRADING is false",
         );
     } else {
-        // Paper does not require this gate, but marking it passed keeps diagnostics
-        // unambiguous when a snapshot is inspected manually.
         checklist.pass(StartupGate::LiveTradingExplicitlyEnabled);
     }
 
@@ -244,7 +241,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 };
                 supervisor.observe(&event);
                 let key = event_asset_key(&event);
-                let position = position_view(position_cache.get(&key).copied().unwrap_or(Decimal::ZERO));
+                let position = position_view(
+                    position_cache.get(&key).copied().unwrap_or(Decimal::ZERO),
+                );
                 let mut decisions = 0_u64;
 
                 for routed in registry.route_event(&event) {
@@ -309,7 +308,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
 
                 health.mutate(|snapshot| {
                     snapshot.events_total = snapshot.events_total.saturating_add(1);
-                    snapshot.policy_decisions_total = snapshot.policy_decisions_total.saturating_add(decisions);
+                    snapshot.policy_decisions_total = snapshot
+                        .policy_decisions_total
+                        .saturating_add(decisions);
                     snapshot.feeds_connected = supervisor.connected_count();
                     snapshot.orders_journaled_total = orders_journaled;
                 }).await;
@@ -325,7 +326,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                             if !cycle.report.clean() {
                                 clean = false;
                             }
-                            cycle_safe_hold.extend(cycle.report.safe_hold_assets.iter().cloned());
+                            cycle_safe_hold.extend(
+                                cycle.report.safe_hold_assets.iter().cloned(),
+                            );
                             open_orders = open_orders.saturating_add(
                                 cycle.orders.iter().filter(|order| !order.is_terminal()).count(),
                             );
@@ -335,7 +338,11 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         }
                         Err(error) => {
                             clean = false;
-                            tracing::error!(?venue, %error, "continuous reconcile failed; freezing new exposure");
+                            tracing::error!(
+                                ?venue,
+                                %error,
+                                "continuous reconcile failed; freezing new exposure"
+                            );
                         }
                     }
                 }
@@ -355,12 +362,16 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     snapshot.open_orders = open_orders;
                     if !clean {
                         snapshot.ready = false;
-                        snapshot.last_error = Some("continuous reconcile entered SAFE_HOLD".into());
+                        snapshot.last_error = Some(
+                            "continuous reconcile entered SAFE_HOLD".into(),
+                        );
                     }
                 }).await;
             }
             maybe_fatal = fatal_rx.recv() => {
-                let Some(fatal) = maybe_fatal else { continue; };
+                let Some(fatal) = maybe_fatal else {
+                    continue;
+                };
                 supervisor.mark_failed(&fatal.spec);
                 risk_limits.allow_new_exposure = false;
                 health.mutate(|snapshot| {
@@ -369,7 +380,11 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     snapshot.last_error = Some(fatal.reason.clone());
                     snapshot.feeds_connected = supervisor.connected_count();
                 }).await;
-                break Err(anyhow::anyhow!("market-data feed {:?} failed permanently: {}", fatal.spec, fatal.reason));
+                break Err(anyhow::anyhow!(
+                    "market-data feed {:?} failed permanently: {}",
+                    fatal.spec,
+                    fatal.reason
+                ));
             }
             changed = lease_health.changed() => {
                 if changed.is_err() {
@@ -387,7 +402,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         break Err(anyhow::anyhow!("runtime lease lost: {reason}"));
                     }
                     LeaseHealth::Stopped => {
-                        break Err(anyhow::anyhow!("runtime lease heartbeat stopped unexpectedly"));
+                        break Err(anyhow::anyhow!(
+                            "runtime lease heartbeat stopped unexpectedly"
+                        ));
                     }
                 }
             }
@@ -398,7 +415,11 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 } else {
                     checklist.fail(
                         StartupGate::MarketDataSynchronized,
-                        format!("{}/{} derived feeds connected", supervisor.connected_count(), supervisor.feed_count()),
+                        format!(
+                            "{}/{} derived feeds connected",
+                            supervisor.connected_count(),
+                            supervisor.feed_count()
+                        ),
                     );
                     risk_limits.allow_new_exposure = false;
                 }
@@ -416,12 +437,22 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             Some(command) = control_rx.recv() => {
                 match command {
                     ControlCommand::ReloadStrategies => {
-                        match reload_strategies(&mut registry, strategy_dir.as_deref()) {
-                            Ok(ids) => tracing::info!(strategies=?ids, "strategy definitions reloaded"),
+                        match reload_strategies(
+                            &mut registry,
+                            strategy_dir.as_deref(),
+                        ) {
+                            Ok(ids) => {
+                                tracing::info!(
+                                    strategies = ?ids,
+                                    "strategy definitions reloaded"
+                                );
+                            }
                             Err(error) => {
                                 let reason = error.to_string();
                                 tracing::warn!(%reason, "strategy reload rejected");
-                                health.mutate(|snapshot| snapshot.last_error = Some(reason)).await;
+                                health.mutate(|snapshot| {
+                                    snapshot.last_error = Some(reason);
+                                }).await;
                             }
                         }
                     }
@@ -437,7 +468,14 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
 
     trading_started = false;
     risk_limits.allow_new_exposure = false;
-    if let Err(error) = apply_shutdown_policy(config.shutdown_policy, execution.as_ref(), store.as_ref(), &venues).await {
+    if let Err(error) = apply_shutdown_policy(
+        config.shutdown_policy,
+        execution.as_ref(),
+        store.as_ref(),
+        &venues,
+    )
+    .await
+    {
         tracing::warn!(%error, "shutdown policy could not be completed cleanly");
     }
     let _ = trading_started;
@@ -449,13 +487,25 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     result
 }
 
-async fn build_real_adapter_registry(feeds: &[FeedSpec], config: &RunConfig) -> Result<AdapterRegistry> {
+async fn build_real_adapter_registry(
+    feeds: &[FeedSpec],
+    config: &RunConfig,
+) -> Result<AdapterRegistry> {
     let mut registry = AdapterRegistry::default();
-    let venues = feeds.iter().map(|feed| feed.venue).collect::<BTreeSet<_>>();
+    let venues = feeds
+        .iter()
+        .map(|feed| feed.venue)
+        .collect::<BTreeSet<_>>();
 
     if venues.contains(&Venue::Hyperliquid) {
         #[cfg(feature = "hyperliquid-marketdata")]
         {
+            let network = hyperliquid_network()?;
+            if config.mode == RunMode::Paper && network != HyperliquidNetwork::Testnet {
+                bail!(
+                    "Hyperliquid PG_RUN_MODE=paper requires HYPERLIQUID_NETWORK=testnet"
+                );
+            }
             let account_address = required_value("HYPERLIQUID_ACCOUNT_ADDRESS")?;
             let private_key = match optional_secret("HYPERLIQUID_AGENT_PRIVATE_KEY")? {
                 Some(value) => value,
@@ -467,7 +517,7 @@ async fn build_real_adapter_registry(feeds: &[FeedSpec], config: &RunConfig) -> 
                 .context("invalid HYPERLIQUID_MAX_MARKET_SLIPPAGE")?;
             let adapter = HyperliquidExecutionAdapter::connect_with_private_key(
                 HyperliquidExecutionConfig {
-                    network: hyperliquid_network()?,
+                    network,
                     account_address,
                     max_market_slippage,
                 },
@@ -475,20 +525,27 @@ async fn build_real_adapter_registry(feeds: &[FeedSpec], config: &RunConfig) -> 
             )
             .await
             .context("failed to initialize Hyperliquid real execution adapter")?;
-            // Read-side proof is part of authentication/readiness; an adapter that can
-            // sign but cannot read account truth is not production-ready.
-            adapter.positions().await.context("Hyperliquid positions read failed")?;
-            adapter.open_orders().await.context("Hyperliquid open-orders read failed")?;
+            adapter
+                .positions()
+                .await
+                .context("Hyperliquid positions read failed")?;
+            adapter
+                .open_orders()
+                .await
+                .context("Hyperliquid open-orders read failed")?;
             registry.register(Venue::Hyperliquid, Arc::new(adapter));
         }
         #[cfg(not(feature = "hyperliquid-marketdata"))]
-        bail!("Hyperliquid strategy enabled but pg-core was built without Hyperliquid SDK support");
+        bail!(
+            "Hyperliquid strategy enabled but pg-core was built without Hyperliquid SDK support"
+        );
     }
 
     if venues.contains(&Venue::InteractiveBrokers) {
         #[cfg(feature = "ibkr-marketdata")]
         {
-            let allow_software_reduce_only = bool_env("IBKR_ALLOW_SOFTWARE_REDUCE_ONLY", false)?;
+            let allow_software_reduce_only =
+                bool_env("IBKR_ALLOW_SOFTWARE_REDUCE_ONLY", false)?;
             if config.mode == RunMode::Live && !allow_software_reduce_only {
                 bail!(
                     "IBKR live execution requires IBKR_ALLOW_SOFTWARE_REDUCE_ONLY=true; ordinary stock orders have no native atomic reduce-only flag"
@@ -505,7 +562,11 @@ async fn build_real_adapter_registry(feeds: &[FeedSpec], config: &RunConfig) -> 
             let base = ibkr_config_from_env()?;
             let execution_client_base = env::var("IBKR_EXECUTION_CLIENT_ID_BASE")
                 .ok()
-                .map(|value| value.parse::<i32>().context("invalid IBKR_EXECUTION_CLIENT_ID_BASE"))
+                .map(|value| {
+                    value
+                        .parse::<i32>()
+                        .context("invalid IBKR_EXECUTION_CLIENT_ID_BASE")
+                })
                 .transpose()?
                 .unwrap_or_else(|| base.client_id.saturating_add(100));
             let mut composite = CompositeExecutionAdapter::new(Venue::InteractiveBrokers);
@@ -522,22 +583,34 @@ async fn build_real_adapter_registry(feeds: &[FeedSpec], config: &RunConfig) -> 
                     allow_software_reduce_only,
                 })
                 .await
-                .with_context(|| format!("failed to initialize IBKR execution adapter for {asset}"))?;
+                .with_context(|| {
+                    format!("failed to initialize IBKR execution adapter for {asset}")
+                })?;
                 composite = composite.with_instrument(asset.clone(), Arc::new(adapter));
             }
             if composite.is_empty() {
                 bail!("IBKR venue enabled without any IBKR instruments");
             }
-            composite.positions().await.context("IBKR positions read failed")?;
-            composite.open_orders().await.context("IBKR open-orders read failed")?;
+            composite
+                .positions()
+                .await
+                .context("IBKR positions read failed")?;
+            composite
+                .open_orders()
+                .await
+                .context("IBKR open-orders read failed")?;
             registry.register(Venue::InteractiveBrokers, Arc::new(composite));
         }
         #[cfg(not(feature = "ibkr-marketdata"))]
-        bail!("IBKR strategy enabled but pg-core was built without ibkr-marketdata/SDK support");
+        bail!(
+            "IBKR strategy enabled but pg-core was built without ibkr-marketdata/SDK support"
+        );
     }
 
     if venues.contains(&Venue::BinancePm) {
-        bail!("BINANCE_PM remains fail-closed: no production execution/recovery adapter is registered");
+        bail!(
+            "BINANCE_PM remains fail-closed: no production execution/recovery adapter is registered"
+        );
     }
 
     Ok(registry)
@@ -554,11 +627,23 @@ async fn submit_intent(
     if intent.effect == ExposureEffect::Increase
         && safe_hold_assets.contains(&AssetKey::new(intent.venue, intent.asset.clone()))
     {
-        tracing::warn!(%strategy_id, %client_order_id, asset=%intent.asset, venue=?intent.venue, "SAFE_HOLD blocks new exposure");
+        tracing::warn!(
+            %strategy_id,
+            %client_order_id,
+            asset = %intent.asset,
+            venue = ?intent.venue,
+            "SAFE_HOLD blocks new exposure"
+        );
         return None;
     }
     if let RiskDecision::Reject { code, reason } = evaluate_order(intent, limits) {
-        tracing::warn!(%strategy_id, %client_order_id, %code, %reason, "order intent rejected by risk gate");
+        tracing::warn!(
+            %strategy_id,
+            %client_order_id,
+            %code,
+            %reason,
+            "order intent rejected by risk gate"
+        );
         return None;
     }
     match execution.dispatch(intent).await {
@@ -566,18 +651,23 @@ async fn submit_intent(
             tracing::info!(
                 %strategy_id,
                 %client_order_id,
-                venue=?intent.venue,
-                asset=%intent.asset,
-                side=?intent.side,
-                quantity=%intent.quantity,
-                effect=?intent.effect,
-                state=?record.state,
+                venue = ?intent.venue,
+                asset = %intent.asset,
+                side = ?intent.side,
+                quantity = %intent.quantity,
+                effect = ?intent.effect,
+                state = ?record.state,
                 "order journaled and acknowledged by real venue"
             );
             Some(client_order_id)
         }
         Err(error) => {
-            tracing::error!(%strategy_id, %client_order_id, %error, "real-venue dispatch failed; durable intent retained for reconciliation");
+            tracing::error!(
+                %strategy_id,
+                %client_order_id,
+                %error,
+                "real-venue dispatch failed; durable intent retained for reconciliation"
+            );
             None
         }
     }
@@ -595,18 +685,27 @@ async fn strategy_is_busy(
         return true;
     };
     match adapter.find_order_by_client_id(&client_order_id).await {
-        Ok(Some(order)) if !matches!(
-            order.state,
-            pg_execution::VenueOrderState::Filled
-                | pg_execution::VenueOrderState::Canceled
-                | pg_execution::VenueOrderState::Rejected
-        ) => true,
+        Ok(Some(order))
+            if !matches!(
+                order.state,
+                pg_execution::VenueOrderState::Filled
+                    | pg_execution::VenueOrderState::Canceled
+                    | pg_execution::VenueOrderState::Rejected
+            ) =>
+        {
+            true
+        }
         Ok(_) => {
             live.remove(strategy_id);
             false
         }
         Err(error) => {
-            tracing::warn!(%strategy_id, %client_order_id, %error, "cannot prove prior order is terminal; keeping strategy busy");
+            tracing::warn!(
+                %strategy_id,
+                %client_order_id,
+                %error,
+                "cannot prove prior order is terminal; keeping strategy busy"
+            );
             true
         }
     }
@@ -620,14 +719,30 @@ fn policy_intent(
     let policy = registry.policy(&routed.strategy_id)?;
     match (&routed.entry, &routed.exit) {
         (_, ExitPolicyDecision::Matched { rule_id }) if !position.net_quantity.is_zero() => {
-            let side = if position.net_quantity > Decimal::ZERO { Side::Sell } else { Side::Buy };
-            Some(build_intent(policy, side, position.net_quantity.abs(), ExposureEffect::ReduceOnly, rule_id))
+            let side = if position.net_quantity > Decimal::ZERO {
+                Side::Sell
+            } else {
+                Side::Buy
+            };
+            Some(build_intent(
+                policy,
+                side,
+                position.net_quantity.abs(),
+                ExposureEffect::ReduceOnly,
+                rule_id,
+            ))
         }
         (EntryPolicyDecision::Matched { rule_id, side }, _) if position.net_quantity.is_zero() => {
             if *side == Side::Sell && !policy.allow_short {
                 return None;
             }
-            Some(build_intent(policy, *side, policy.order_quantity, ExposureEffect::Increase, rule_id))
+            Some(build_intent(
+                policy,
+                *side,
+                policy.order_quantity,
+                ExposureEffect::Increase,
+                rule_id,
+            ))
         }
         _ => None,
     }
@@ -682,19 +797,31 @@ async fn apply_shutdown_policy(
         return Ok(());
     }
 
-    // Only cancel locally journaled, non-terminal orders. Never sweep arbitrary
-    // manual venue orders during a runtime shutdown.
     for venue in venues.iter().copied() {
-        let Some(adapter) = execution.adapters().get(venue) else { continue; };
-        for order in store.load_orders_for_venue(venue).await?.into_iter().filter(|order| !order.is_terminal()) {
+        let Some(adapter) = execution.adapters().get(venue) else {
+            continue;
+        };
+        for order in store
+            .load_orders_for_venue(venue)
+            .await?
+            .into_iter()
+            .filter(|order| !order.is_terminal())
+        {
             if let Some(venue_order_id) = order.venue_order_id.as_deref()
-                && let Err(error) = adapter.cancel(OrderLocator {
-                    asset: &order.asset,
-                    venue_order_id: Some(venue_order_id),
-                    client_order_id: &order.client_order_id,
-                }).await
+                && let Err(error) = adapter
+                    .cancel(OrderLocator {
+                        asset: &order.asset,
+                        venue_order_id: Some(venue_order_id),
+                        client_order_id: &order.client_order_id,
+                    })
+                    .await
             {
-                tracing::warn!(?venue, client_order_id=%order.client_order_id, %error, "shutdown cancel failed");
+                tracing::warn!(
+                    ?venue,
+                    client_order_id = %order.client_order_id,
+                    %error,
+                    "shutdown cancel failed"
+                );
             }
         }
     }
@@ -705,17 +832,24 @@ async fn apply_shutdown_policy(
 
     for venue in venues.iter().copied() {
         let cycle = execution.reconcile_once(venue).await?;
-        for position in cycle.positions.into_iter().filter(|position| {
-            matches!(position.ownership, Ownership::Strategy(_)) && !position.quantity.is_zero()
-        }) {
-            let side = if position.quantity > Decimal::ZERO { Side::Sell } else { Side::Buy };
-            let strategy_id = match &position.ownership {
-                Ownership::Strategy(id) => id.clone(),
-                _ => continue,
+        for position in cycle.positions {
+            let ownership = serde_json::to_value(&position.ownership)
+                .context("failed to serialize position ownership")?;
+            let Some(strategy_id) = ownership.get("Strategy").and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            if position.quantity.is_zero() {
+                continue;
+            }
+            let side = if position.quantity > Decimal::ZERO {
+                Side::Sell
+            } else {
+                Side::Buy
             };
             let intent = OrderIntent {
                 intent_id: uuid::Uuid::new_v4(),
-                strategy_id,
+                strategy_id: strategy_id.to_owned(),
                 asset: position.asset,
                 venue,
                 side,
@@ -724,14 +858,27 @@ async fn apply_shutdown_policy(
                 effect: ExposureEffect::ReduceOnly,
                 source_signal_id: Some("shutdown:flatten_owned".into()),
             };
-            let limits = RiskLimits { allow_new_exposure: false, ..RiskLimits::default() };
-            let _ = submit_intent(execution, &limits, &BTreeSet::new(), "shutdown:flatten_owned", &intent).await;
+            let limits = RiskLimits {
+                allow_new_exposure: false,
+                ..RiskLimits::default()
+            };
+            let _ = submit_intent(
+                execution,
+                &limits,
+                &BTreeSet::new(),
+                "shutdown:flatten_owned",
+                &intent,
+            )
+            .await;
         }
     }
     Ok(())
 }
 
-fn reload_strategies(registry: &mut StrategyRegistry, strategy_dir: Option<&Path>) -> Result<Vec<String>> {
+fn reload_strategies(
+    registry: &mut StrategyRegistry,
+    strategy_dir: Option<&Path>,
+) -> Result<Vec<String>> {
     let dir = strategy_dir.context("no strategy directory is configured for reload")?;
     let mut entries = std::fs::read_dir(dir)
         .with_context(|| format!("failed to read {}", dir.display()))?
@@ -745,8 +892,11 @@ fn reload_strategies(registry: &mut StrategyRegistry, strategy_dir: Option<&Path
     }
     let mut reloaded = Vec::new();
     for entry in entries {
-        reloaded.extend(registry.reload_file(&entry)
-            .with_context(|| format!("reload rejected for {}", entry.display()))?);
+        reloaded.extend(
+            registry
+                .reload_file(&entry)
+                .with_context(|| format!("reload rejected for {}", entry.display()))?,
+        );
     }
     Ok(reloaded)
 }
@@ -771,9 +921,14 @@ fn supported_live_venues() -> Vec<Venue> {
 
 fn validate_live_feeds(feeds: &[FeedSpec]) -> Result<()> {
     let supported = supported_live_venues();
-    let unsupported = feeds.iter().filter(|feed| !supported.contains(&feed.venue)).collect::<Vec<_>>();
+    let unsupported = feeds
+        .iter()
+        .filter(|feed| !supported.contains(&feed.venue))
+        .collect::<Vec<_>>();
     if !unsupported.is_empty() {
-        bail!("no real runtime venue is compiled for feeds {unsupported:?}; available: {supported:?}");
+        bail!(
+            "no real runtime venue is compiled for feeds {unsupported:?}; available: {supported:?}"
+        );
     }
     Ok(())
 }
@@ -782,7 +937,10 @@ enum FeedEndpoint {
     #[cfg(feature = "hyperliquid-marketdata")]
     Hyperliquid(HyperliquidNetwork),
     #[cfg(feature = "ibkr-marketdata")]
-    Ibkr { config: IbkrConfig, instrument: IbkrStockSpec },
+    Ibkr {
+        config: IbkrConfig,
+        instrument: IbkrStockSpec,
+    },
 }
 
 fn feed_endpoint(index: usize, spec: &FeedSpec) -> Result<FeedEndpoint> {
@@ -794,19 +952,30 @@ fn feed_endpoint(index: usize, spec: &FeedSpec) -> Result<FeedEndpoint> {
             let mut config = ibkr_config_from_env()?;
             let market_data_base = env::var("IBKR_MARKETDATA_CLIENT_ID_BASE")
                 .ok()
-                .map(|value| value.parse::<i32>().context("invalid IBKR_MARKETDATA_CLIENT_ID_BASE"))
+                .map(|value| {
+                    value
+                        .parse::<i32>()
+                        .context("invalid IBKR_MARKETDATA_CLIENT_ID_BASE")
+                })
                 .transpose()?
                 .unwrap_or_else(|| config.client_id.saturating_add(1_000));
             config.client_id = market_data_base
                 .checked_add(i32::try_from(index).context("too many IBKR feeds")?)
                 .context("IBKR market-data client id overflow")?;
-            Ok(FeedEndpoint::Ibkr { config, instrument: ibkr_stock_spec(&spec.asset) })
+            Ok(FeedEndpoint::Ibkr {
+                config,
+                instrument: ibkr_stock_spec(&spec.asset),
+            })
         }
         other => bail!("no real market-data endpoint for venue {other:?}"),
     }
 }
 
-async fn open_feed_stream(endpoint: &FeedEndpoint, spec: &FeedSpec, sink: &mpsc::Sender<MarketEvent>) -> Result<(), pg_marketdata::MarketDataError> {
+async fn open_feed_stream(
+    endpoint: &FeedEndpoint,
+    spec: &FeedSpec,
+    sink: &mpsc::Sender<MarketEvent>,
+) -> Result<(), pg_marketdata::MarketDataError> {
     match endpoint {
         #[cfg(feature = "hyperliquid-marketdata")]
         FeedEndpoint::Hyperliquid(network) => {
@@ -819,11 +988,18 @@ async fn open_feed_stream(endpoint: &FeedEndpoint, spec: &FeedSpec, sink: &mpsc:
             source.stream(spec.clone(), sink.clone()).await
         }
         #[allow(unreachable_patterns)]
-        _ => Err(pg_marketdata::MarketDataError::Subscription("no compiled live market-data source".into())),
+        _ => Err(pg_marketdata::MarketDataError::Subscription(
+            "no compiled live market-data source".into(),
+        )),
     }
 }
 
-fn spawn_live_feed(index: usize, spec: FeedSpec, sink: mpsc::Sender<MarketEvent>, fatal: mpsc::Sender<FeedFatal>) -> Result<()> {
+fn spawn_live_feed(
+    index: usize,
+    spec: FeedSpec,
+    sink: mpsc::Sender<MarketEvent>,
+    fatal: mpsc::Sender<FeedFatal>,
+) -> Result<()> {
     let endpoint = feed_endpoint(index, &spec)?;
     let max_reconnects = env::var("PG_MARKET_MAX_RECONNECTS")
         .unwrap_or_else(|_| "50".into())
@@ -838,10 +1014,25 @@ fn spawn_live_feed(index: usize, spec: FeedSpec, sink: mpsc::Sender<MarketEvent>
         loop {
             let outcome = open_feed_stream(&endpoint, &spec, &sink).await;
             failures = failures.saturating_add(1);
-            let reason = outcome.err().map(|error| error.to_string()).unwrap_or_else(|| "market-data stream ended".into());
-            tracing::warn!(venue=?spec.venue, asset=%spec.asset, kind=?spec.kind, failures, %reason, "market-data subscription reconnecting");
+            let reason = outcome
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "market-data stream ended".into());
+            tracing::warn!(
+                venue = ?spec.venue,
+                asset = %spec.asset,
+                kind = ?spec.kind,
+                failures,
+                %reason,
+                "market-data subscription reconnecting"
+            );
             if failures >= max_reconnects {
-                let _ = fatal.send(FeedFatal { spec: spec.clone(), reason }).await;
+                let _ = fatal
+                    .send(FeedFatal {
+                        spec: spec.clone(),
+                        reason,
+                    })
+                    .await;
                 return;
             }
             tokio::time::sleep(backoff).await;
@@ -854,10 +1045,19 @@ fn spawn_live_feed(index: usize, spec: FeedSpec, sink: mpsc::Sender<MarketEvent>
 #[cfg(feature = "ibkr-marketdata")]
 fn ibkr_config_from_env() -> Result<IbkrConfig> {
     Ok(IbkrConfig {
-        gateway_addr: env::var("IBKR_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:4002".into()),
-        client_id: env::var("IBKR_CLIENT_ID").unwrap_or_else(|_| "17".into()).parse().context("invalid IBKR_CLIENT_ID")?,
-        account: env::var("IBKR_ACCOUNT").ok().filter(|value| !value.trim().is_empty()),
-        market_depth_rows: env::var("IBKR_MARKET_DEPTH_ROWS").unwrap_or_else(|_| "5".into()).parse().context("invalid IBKR_MARKET_DEPTH_ROWS")?,
+        gateway_addr: env::var("IBKR_GATEWAY_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:4002".into()),
+        client_id: env::var("IBKR_CLIENT_ID")
+            .unwrap_or_else(|_| "17".into())
+            .parse()
+            .context("invalid IBKR_CLIENT_ID")?,
+        account: env::var("IBKR_ACCOUNT")
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
+        market_depth_rows: env::var("IBKR_MARKET_DEPTH_ROWS")
+            .unwrap_or_else(|_| "5".into())
+            .parse()
+            .context("invalid IBKR_MARKET_DEPTH_ROWS")?,
     })
 }
 
@@ -894,18 +1094,13 @@ fn hyperliquid_network() -> Result<HyperliquidNetwork> {
 fn env_u64(name: &'static str, default: u64) -> Result<u64> {
     env::var(name)
         .ok()
-        .map(|value| value.parse::<u64>().with_context(|| format!("invalid {name}")))
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("invalid {name}"))
+        })
         .transpose()
         .map(|value| value.unwrap_or(default))
-}
-
-fn event_feed_kind(event: &MarketEvent) -> FeedKind {
-    match event {
-        MarketEvent::Trade(_) => FeedKind::Trades,
-        MarketEvent::BestBidAsk(_) => FeedKind::BestBidAsk,
-        MarketEvent::L2Book(_) => FeedKind::L2Book,
-        MarketEvent::Candle(value) => FeedKind::Candle { interval_ns: value.interval_ns },
-    }
 }
 
 fn now_ns() -> u64 {
@@ -913,9 +1108,4 @@ fn now_ns() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock before unix epoch")
         .as_nanos() as u64
-}
-
-#[allow(dead_code)]
-fn _keep_feed_kind_exhaustive(event: &MarketEvent) -> FeedKind {
-    event_feed_kind(event)
 }
