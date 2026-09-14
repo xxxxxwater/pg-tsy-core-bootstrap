@@ -1,8 +1,13 @@
 pub mod subscription;
 pub mod supervisor_runtime;
+pub mod universe;
 
 pub use subscription::{SubscriptionState, SubscriptionStatus, SubscriptionSupervisor};
 pub use supervisor_runtime::SubscriptionRuntime;
+pub use universe::{
+    InstrumentDescriptor, ProductType, UniverseError, UniverseFilter, UniverseProvider,
+    UniverseSnapshot,
+};
 
 use async_trait::async_trait;
 use pg_types::Venue;
