@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,8 @@ pub enum StrategyRegistryError {
     DuplicateStrategy(String),
     #[error("cannot reload {0}: strategy has active or unresolved state")]
     ActiveState(String),
+    #[error("dynamic strategy template is not registered for {0}")]
+    MissingDynamicTemplate(String),
 }
 
 pub struct RoutedAutomationOutput {
@@ -46,10 +48,17 @@ pub struct RoutedLivePolicyOutput {
     pub exit: ExitPolicyDecision,
 }
 
+#[derive(Debug, Clone)]
+pub struct DynamicStrategyTemplate {
+    pub path: PathBuf,
+    pub definition: StrategyDefinition,
+}
+
 pub struct StrategyRegistry {
     strategies: BTreeMap<String, AutomatedStrategy>,
     policies: BTreeMap<String, PolicyInstance>,
     sources: BTreeMap<PathBuf, Vec<String>>,
+    dynamic_templates: BTreeMap<PathBuf, StrategyDefinition>,
 }
 
 impl StrategyRegistry {
@@ -58,6 +67,7 @@ impl StrategyRegistry {
             strategies: BTreeMap::new(),
             policies: BTreeMap::new(),
             sources: BTreeMap::new(),
+            dynamic_templates: BTreeMap::new(),
         }
     }
 
@@ -83,6 +93,19 @@ impl StrategyRegistry {
     ) -> Result<Vec<String>, StrategyRegistryError> {
         let path = path.as_ref().to_path_buf();
         let definition = StrategyDefinition::from_toml_str(&fs::read_to_string(&path)?)?;
+        if definition.is_dynamic() {
+            self.dynamic_templates.insert(path.clone(), definition);
+            self.sources.insert(path, Vec::new());
+            return Ok(Vec::new());
+        }
+        self.insert_static_definition(path, definition)
+    }
+
+    fn insert_static_definition(
+        &mut self,
+        path: PathBuf,
+        definition: StrategyDefinition,
+    ) -> Result<Vec<String>, StrategyRegistryError> {
         let instances = definition.build_instances()?;
         let policy_instances = definition.build_policy_instances()?;
         let mut ids = Vec::with_capacity(instances.len());
@@ -107,20 +130,20 @@ impl StrategyRegistry {
     ) -> Result<Vec<String>, StrategyRegistryError> {
         let path = path.as_ref().to_path_buf();
         let old_ids = self.sources.get(&path).cloned().unwrap_or_default();
-        for id in &old_ids {
-            if let Some(strategy) = self.strategies.get(id)
-                && (strategy.machine.state.net_quantity != rust_decimal::Decimal::ZERO
-                    || strategy.machine.state.active_intent_id.is_some()
-                    || !matches!(
-                        strategy.machine.state.phase,
-                        StrategyPhase::Flat | StrategyPhase::Halted
-                    ))
-            {
-                return Err(StrategyRegistryError::ActiveState(id.clone()));
-            }
-        }
+        self.ensure_ids_removable(&old_ids)?;
 
         let definition = StrategyDefinition::from_toml_str(&fs::read_to_string(&path)?)?;
+        if definition.is_dynamic() {
+            for id in &old_ids {
+                self.strategies.remove(id);
+                self.policies.remove(id);
+            }
+            self.dynamic_templates.insert(path.clone(), definition);
+            self.sources.insert(path, Vec::new());
+            return Ok(Vec::new());
+        }
+
+        self.dynamic_templates.remove(&path);
         let instances = definition.build_instances()?;
         let policy_instances = definition.build_policy_instances()?;
         let new_ids = instances
@@ -147,6 +170,101 @@ impl StrategyRegistry {
         }
         self.sources.insert(path, new_ids.clone());
         Ok(new_ids)
+    }
+
+    /// Materialize one dynamic template from a real universe selection.
+    ///
+    /// Existing strategy/policy instances whose ids remain selected are preserved so
+    /// rolling factor/feature state survives a universe refresh. Only additions and
+    /// removals are applied. Callers are responsible for pinning venue positions,
+    /// open orders and unresolved recovery assets into `instruments` before removal.
+    pub fn apply_dynamic_instruments(
+        &mut self,
+        path: impl AsRef<Path>,
+        instruments: &[AssetKey],
+    ) -> Result<Vec<String>, StrategyRegistryError> {
+        let path = path.as_ref().to_path_buf();
+        let definition = self
+            .dynamic_templates
+            .get(&path)
+            .cloned()
+            .ok_or_else(|| {
+                StrategyRegistryError::MissingDynamicTemplate(path.display().to_string())
+            })?;
+        let instances = definition.build_instances_for(instruments)?;
+        let policy_instances = definition.build_policy_instances_for(instruments)?;
+        let mut new_strategies = instances
+            .into_iter()
+            .map(|strategy| (strategy.machine.config.strategy_id.clone(), strategy))
+            .collect::<BTreeMap<_, _>>();
+        let mut new_policies = policy_instances
+            .into_iter()
+            .map(|policy| (policy.strategy_id.clone(), policy))
+            .collect::<BTreeMap<_, _>>();
+        let new_ids = new_strategies.keys().cloned().collect::<Vec<_>>();
+        let new_id_set = new_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let old_ids = self.sources.get(&path).cloned().unwrap_or_default();
+        let old_id_set = old_ids.iter().cloned().collect::<BTreeSet<_>>();
+
+        for id in new_id_set.difference(&old_id_set) {
+            if self.strategies.contains_key(id) {
+                return Err(StrategyRegistryError::DuplicateStrategy(id.clone()));
+            }
+        }
+        let removed = old_id_set
+            .difference(&new_id_set)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.ensure_ids_removable(&removed)?;
+
+        for id in removed {
+            self.strategies.remove(&id);
+            self.policies.remove(&id);
+        }
+        for id in new_id_set.difference(&old_id_set) {
+            if let Some(strategy) = new_strategies.remove(id) {
+                self.strategies.insert(id.clone(), strategy);
+            }
+            if let Some(policy) = new_policies.remove(id) {
+                self.policies.insert(id.clone(), policy);
+            }
+        }
+        self.sources.insert(path, new_ids.clone());
+        Ok(new_ids)
+    }
+
+    fn ensure_ids_removable(&self, ids: &[String]) -> Result<(), StrategyRegistryError> {
+        for id in ids {
+            if let Some(strategy) = self.strategies.get(id)
+                && (strategy.machine.state.net_quantity != rust_decimal::Decimal::ZERO
+                    || strategy.machine.state.active_intent_id.is_some()
+                    || !matches!(
+                        strategy.machine.state.phase,
+                        StrategyPhase::Flat | StrategyPhase::Halted
+                    ))
+            {
+                return Err(StrategyRegistryError::ActiveState(id.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn dynamic_templates(&self) -> Vec<DynamicStrategyTemplate> {
+        self.dynamic_templates
+            .iter()
+            .map(|(path, definition)| DynamicStrategyTemplate {
+                path: path.clone(),
+                definition: definition.clone(),
+            })
+            .collect()
+    }
+
+    pub fn dynamic_template_count(&self) -> usize {
+        self.dynamic_templates.len()
+    }
+
+    pub fn has_dynamic_templates(&self) -> bool {
+        !self.dynamic_templates.is_empty()
     }
 
     pub fn strategy_ids(&self) -> Vec<String> {
@@ -380,6 +498,22 @@ mod tests {
         )
     }
 
+    fn dynamic_definition() -> String {
+        r#"
+            [universe]
+            [[universe.dynamic]]
+            venue = "HYPERLIQUID"
+            top_n = 2
+
+            [strategy]
+            id = "dyn"
+            order_quantity = "1"
+            entry_score = 0.3
+            exit_score = 0.05
+        "#
+        .to_string()
+    }
+
     #[test]
     fn directory_loads_and_flat_strategies_can_reload() {
         let dir = temp_dir();
@@ -420,6 +554,43 @@ mod tests {
             0.40
         );
 
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn dynamic_template_materializes_incrementally_without_static_assets() {
+        let dir = temp_dir();
+        let file = dir.join("dynamic.toml");
+        fs::write(&file, dynamic_definition()).unwrap();
+        let mut registry = StrategyRegistry::load_dir(&dir).unwrap();
+        assert_eq!(registry.dynamic_template_count(), 1);
+        assert!(registry.is_empty());
+
+        let first = registry
+            .apply_dynamic_instruments(
+                &file,
+                &[
+                    AssetKey::new(Venue::Hyperliquid, "SOL"),
+                    AssetKey::new(Venue::Hyperliquid, "HYPE"),
+                ],
+            )
+            .unwrap();
+        assert_eq!(first.len(), 2);
+        assert!(registry.get_mut("dyn:HYPERLIQUID:SOL").is_some());
+
+        let second = registry
+            .apply_dynamic_instruments(
+                &file,
+                &[
+                    AssetKey::new(Venue::Hyperliquid, "SOL"),
+                    AssetKey::new(Venue::Hyperliquid, "ETH"),
+                ],
+            )
+            .unwrap();
+        assert_eq!(second.len(), 2);
+        assert!(registry.get_mut("dyn:HYPERLIQUID:HYPE").is_none());
+        assert!(registry.get_mut("dyn:HYPERLIQUID:SOL").is_some());
+        assert!(registry.get_mut("dyn:HYPERLIQUID:ETH").is_some());
         fs::remove_dir_all(dir).ok();
     }
 
