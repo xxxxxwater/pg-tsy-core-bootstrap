@@ -1,5 +1,15 @@
 mod daemon;
 mod health;
+// The default pg-core build enables Hyperliquid but not IBKR. A small subset of
+// live_daemon helpers exists only for the IBKR feature; keep those default-build
+// lints scoped to this module, while CI separately compiles/clippies pg-core with
+// ibkr-marketdata enabled. The unused assignments are defensive fail-closed writes
+// immediately before fatal breaks and have no observable side effect.
+#[cfg_attr(
+    not(feature = "ibkr-marketdata"),
+    allow(unused_imports, unused_variables, dead_code, clippy::vec_init_then_push)
+)]
+#[allow(unused_assignments)]
 mod live_daemon;
 mod secrets;
 
