@@ -101,7 +101,11 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     }
     checklist.pass(StartupGate::VenueAuthenticated);
 
-    let execution = Arc::new(DurableExecution::new(store.clone(), lease.clone(), adapters));
+    let execution = Arc::new(DurableExecution::new(
+        store.clone(),
+        lease.clone(),
+        adapters,
+    ));
     store
         .append_event(
             &format!("runtime:{}", config.instance_id),
@@ -492,19 +496,14 @@ async fn build_real_adapter_registry(
     config: &RunConfig,
 ) -> Result<AdapterRegistry> {
     let mut registry = AdapterRegistry::default();
-    let venues = feeds
-        .iter()
-        .map(|feed| feed.venue)
-        .collect::<BTreeSet<_>>();
+    let venues = feeds.iter().map(|feed| feed.venue).collect::<BTreeSet<_>>();
 
     if venues.contains(&Venue::Hyperliquid) {
         #[cfg(feature = "hyperliquid-marketdata")]
         {
             let network = hyperliquid_network()?;
             if config.mode == RunMode::Paper && network != HyperliquidNetwork::Testnet {
-                bail!(
-                    "Hyperliquid PG_RUN_MODE=paper requires HYPERLIQUID_NETWORK=testnet"
-                );
+                bail!("Hyperliquid PG_RUN_MODE=paper requires HYPERLIQUID_NETWORK=testnet");
             }
             let account_address = required_value("HYPERLIQUID_ACCOUNT_ADDRESS")?;
             let private_key = match optional_secret("HYPERLIQUID_AGENT_PRIVATE_KEY")? {
@@ -536,16 +535,13 @@ async fn build_real_adapter_registry(
             registry.register(Venue::Hyperliquid, Arc::new(adapter));
         }
         #[cfg(not(feature = "hyperliquid-marketdata"))]
-        bail!(
-            "Hyperliquid strategy enabled but pg-core was built without Hyperliquid SDK support"
-        );
+        bail!("Hyperliquid strategy enabled but pg-core was built without Hyperliquid SDK support");
     }
 
     if venues.contains(&Venue::InteractiveBrokers) {
         #[cfg(feature = "ibkr-marketdata")]
         {
-            let allow_software_reduce_only =
-                bool_env("IBKR_ALLOW_SOFTWARE_REDUCE_ONLY", false)?;
+            let allow_software_reduce_only = bool_env("IBKR_ALLOW_SOFTWARE_REDUCE_ONLY", false)?;
             if config.mode == RunMode::Live && !allow_software_reduce_only {
                 bail!(
                     "IBKR live execution requires IBKR_ALLOW_SOFTWARE_REDUCE_ONLY=true; ordinary stock orders have no native atomic reduce-only flag"
@@ -602,9 +598,7 @@ async fn build_real_adapter_registry(
             registry.register(Venue::InteractiveBrokers, Arc::new(composite));
         }
         #[cfg(not(feature = "ibkr-marketdata"))]
-        bail!(
-            "IBKR strategy enabled but pg-core was built without ibkr-marketdata/SDK support"
-        );
+        bail!("IBKR strategy enabled but pg-core was built without ibkr-marketdata/SDK support");
     }
 
     if venues.contains(&Venue::BinancePm) {
@@ -1045,8 +1039,7 @@ fn spawn_live_feed(
 #[cfg(feature = "ibkr-marketdata")]
 fn ibkr_config_from_env() -> Result<IbkrConfig> {
     Ok(IbkrConfig {
-        gateway_addr: env::var("IBKR_GATEWAY_ADDR")
-            .unwrap_or_else(|_| "127.0.0.1:4002".into()),
+        gateway_addr: env::var("IBKR_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:4002".into()),
         client_id: env::var("IBKR_CLIENT_ID")
             .unwrap_or_else(|_| "17".into())
             .parse()
