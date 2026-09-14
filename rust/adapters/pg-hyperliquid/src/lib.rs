@@ -9,6 +9,10 @@ pub use hyperliquid_rust_sdk as sdk;
 mod execution;
 #[cfg(feature = "sdk")]
 pub use execution::{HyperliquidExecutionAdapter, HyperliquidExecutionConfig};
+#[cfg(feature = "sdk")]
+mod universe;
+#[cfg(feature = "sdk")]
+pub use universe::HyperliquidUniverseProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HyperliquidNetwork {
