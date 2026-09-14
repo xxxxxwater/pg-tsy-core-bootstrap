@@ -5,7 +5,10 @@ use pg_marketdata::{
 };
 use pg_types::Venue;
 use rust_decimal::Decimal;
-use std::{str::FromStr, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    str::FromStr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub struct HyperliquidUniverseProvider {
     info: sdk::InfoClient,
@@ -41,7 +44,7 @@ impl HyperliquidUniverseProvider {
         for (index, (asset, context)) in meta
             .universe
             .into_iter()
-            .zip(contexts.into_iter())
+            .zip(contexts)
             .enumerate()
         {
             let mark_price = decimal("markPx", &context.mark_px)?;

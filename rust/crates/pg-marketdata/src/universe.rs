@@ -77,8 +77,7 @@ impl UniverseFilter {
             .iter()
             .filter(|instrument| instrument.tradable)
             .filter(|instrument| {
-                self.include_symbols.is_empty()
-                    || self.include_symbols.contains(&instrument.symbol)
+                self.include_symbols.is_empty() || self.include_symbols.contains(&instrument.symbol)
             })
             .filter(|instrument| !self.exclude_symbols.contains(&instrument.symbol))
             .filter(|instrument| match self.min_day_notional_volume {
@@ -97,9 +96,7 @@ impl UniverseFilter {
             // instrument with no trustworthy BBO spread is excluded rather than
             // treated as liquid.
             .filter(|instrument| match self.max_spread_bps {
-                Some(maximum) => instrument
-                    .spread_bps
-                    .is_some_and(|value| value <= maximum),
+                Some(maximum) => instrument.spread_bps.is_some_and(|value| value <= maximum),
                 None => true,
             })
             .filter(|instrument| match self.min_price {
