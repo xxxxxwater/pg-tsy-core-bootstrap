@@ -3,8 +3,8 @@ use std::{collections::HashMap, str::FromStr};
 use alloy::{primitives::Address, signers::local::PrivateKeySigner};
 use async_trait::async_trait;
 use pg_execution::{
-    ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck, VenueOrderSnapshot,
-    VenueOrderState, VenuePositionSnapshot,
+    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck,
+    VenueOrderSnapshot, VenueOrderState, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -399,6 +399,29 @@ impl ExecutionAdapter for HyperliquidExecutionAdapter {
             .collect()
     }
 
+    async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
+        let state = self
+            .info
+            .user_state(self.account_address)
+            .await
+            .map_err(map_read_error)?;
+        let margin = state.margin_summary;
+        Ok(AccountSnapshot {
+            venue: Venue::Hyperliquid,
+            account_id: Some(self.account_address.to_string()),
+            currency: Some("USD".into()),
+            account_value: Some(parse_decimal(&margin.account_value, "account_value")?),
+            available_funds: None,
+            withdrawable: Some(parse_decimal(&state.withdrawable, "withdrawable")?),
+            buying_power: None,
+            initial_margin: None,
+            maintenance_margin: None,
+            margin_used: Some(parse_decimal(&margin.total_margin_used, "total_margin_used")?),
+            gross_position_value: Some(parse_decimal(&margin.total_ntl_pos, "total_ntl_pos")?),
+            raw_usd: Some(parse_decimal(&margin.total_raw_usd, "total_raw_usd")?),
+        })
+    }
+
     async fn find_order_by_client_id(
         &self,
         client_order_id: &str,
@@ -412,6 +435,12 @@ fn base_url(network: HyperliquidNetwork) -> sdk::BaseUrl {
         HyperliquidNetwork::Mainnet => sdk::BaseUrl::Mainnet,
         HyperliquidNetwork::Testnet => sdk::BaseUrl::Testnet,
     }
+}
+
+fn parse_decimal(value: &str, field: &str) -> Result<Decimal, ExecutionError> {
+    Decimal::from_str(value).map_err(|error| {
+        ExecutionError::Conversion(format!("invalid Hyperliquid {field} value {value}: {error}"))
+    })
 }
 
 fn exact_size(quantity: Decimal, decimals: u32) -> Result<f64, ExecutionError> {
