@@ -3,14 +3,15 @@ use std::{str::FromStr, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use futures::StreamExt;
 use pg_execution::{
-    ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck, VenueOrderSnapshot,
-    VenueOrderState, VenuePositionSnapshot,
+    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck,
+    VenueOrderSnapshot, VenueOrderState, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 
 use crate::{IbkrConfig, IbkrStockSpec, sdk};
-use sdk::accounts::PositionUpdate;
+use sdk::accounts::types::AccountGroup;
+use sdk::accounts::{AccountSummaryResult, AccountSummaryTags, PositionUpdate};
 use sdk::orders::{
     Action, CancelOrder, ExecutionFilter, ExecutionSide, Executions, OrderData, OrderStatusKind,
     Orders, PlaceOrder,
@@ -174,6 +175,42 @@ impl IbkrExecutionAdapter {
         } else {
             contract.symbol.to_string() == self.config.instrument.symbol
         }
+    }
+
+    async fn account_summary_rows(
+        &self,
+    ) -> Result<Vec<sdk::accounts::AccountSummary>, ExecutionError> {
+        let tags = &[
+            AccountSummaryTags::NET_LIQUIDATION,
+            AccountSummaryTags::AVAILABLE_FUNDS,
+            AccountSummaryTags::BUYING_POWER,
+            AccountSummaryTags::INIT_MARGIN_REQ,
+            AccountSummaryTags::MAINT_MARGIN_REQ,
+            AccountSummaryTags::GROSS_POSITION_VALUE,
+        ];
+        let subscription = self
+            .client
+            .account_summary(&AccountGroup("All".to_string()), tags)
+            .await
+            .map_err(map_read_error)?;
+        let mut stream = subscription.filter_data();
+        let mut rows = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.map_err(map_read_error)? {
+                AccountSummaryResult::Summary(summary) => {
+                    if self.account_matches(&summary.account) {
+                        rows.push(summary);
+                    }
+                }
+                AccountSummaryResult::End => break,
+            }
+        }
+        if rows.is_empty() {
+            return Err(ExecutionError::Unknown(
+                "IBKR returned no account summary rows for the configured account".into(),
+            ));
+        }
+        Ok(rows)
     }
 
     async fn position_rows(&self) -> Result<Vec<sdk::accounts::Position>, ExecutionError> {
@@ -481,6 +518,36 @@ impl ExecutionAdapter for IbkrExecutionAdapter {
             .collect()
     }
 
+    async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
+        let rows = self.account_summary_rows().await?;
+        let account_id = self
+            .config
+            .ibkr
+            .account
+            .clone()
+            .or_else(|| rows.first().map(|row| row.account.clone()));
+        let currency = rows
+            .iter()
+            .find_map(|row| (!row.currency.trim().is_empty()).then(|| row.currency.clone()));
+        Ok(AccountSnapshot {
+            venue: Venue::InteractiveBrokers,
+            account_id,
+            currency,
+            account_value: summary_decimal(&rows, AccountSummaryTags::NET_LIQUIDATION)?,
+            available_funds: summary_decimal(&rows, AccountSummaryTags::AVAILABLE_FUNDS)?,
+            withdrawable: None,
+            buying_power: summary_decimal(&rows, AccountSummaryTags::BUYING_POWER)?,
+            initial_margin: summary_decimal(&rows, AccountSummaryTags::INIT_MARGIN_REQ)?,
+            maintenance_margin: summary_decimal(&rows, AccountSummaryTags::MAINT_MARGIN_REQ)?,
+            margin_used: None,
+            gross_position_value: summary_decimal(
+                &rows,
+                AccountSummaryTags::GROSS_POSITION_VALUE,
+            )?,
+            raw_usd: None,
+        })
+    }
+
     async fn find_order_by_client_id(
         &self,
         client_order_id: &str,
@@ -501,6 +568,21 @@ async fn collect_order_data(
         }
     }
     Ok(orders)
+}
+
+fn summary_decimal(
+    rows: &[sdk::accounts::AccountSummary],
+    tag: &str,
+) -> Result<Option<Decimal>, ExecutionError> {
+    let Some(row) = rows.iter().find(|row| row.tag == tag) else {
+        return Ok(None);
+    };
+    Decimal::from_str(&row.value).map(Some).map_err(|error| {
+        ExecutionError::Conversion(format!(
+            "invalid IBKR account summary {} value {}: {error}",
+            row.tag, row.value
+        ))
+    })
 }
 
 fn map_order_data(order: OrderData) -> Result<VenueOrderSnapshot, ExecutionError> {
