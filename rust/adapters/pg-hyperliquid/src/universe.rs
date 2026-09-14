@@ -41,12 +41,7 @@ impl HyperliquidUniverseProvider {
         }
 
         let mut instruments = Vec::with_capacity(meta.universe.len());
-        for (index, (asset, context)) in meta
-            .universe
-            .into_iter()
-            .zip(contexts)
-            .enumerate()
-        {
+        for (index, (asset, context)) in meta.universe.into_iter().zip(contexts).enumerate() {
             let mark_price = decimal("markPx", &context.mark_px)?;
             let mid_price = context
                 .mid_px
