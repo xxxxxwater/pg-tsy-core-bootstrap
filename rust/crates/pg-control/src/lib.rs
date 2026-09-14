@@ -148,6 +148,221 @@ pub enum ControlResponse {
     Rejected { request_id: String, reason: String },
 }
 
+impl ControlResponse {
+    pub fn body(&self) -> String {
+        match self {
+            Self::Accepted { request_id } => format!("accepted · {request_id}"),
+            Self::Text { body, .. } => body.clone(),
+            Self::Rejected { reason, .. } => format!("rejected · {reason}"),
+        }
+    }
+}
+
+#[cfg(feature = "telegram")]
+mod telegram_transport {
+    use super::{ControlCommand, ControlRequest, ControlResponse, TelegramAuthorizer};
+    use std::{
+        collections::{BTreeMap, VecDeque},
+        sync::{Arc, Mutex},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
+    use teloxide::{prelude::*, types::Message};
+    use tokio::sync::{mpsc, oneshot};
+
+    pub struct TelegramControlEnvelope {
+        pub request: ControlRequest,
+        pub reply: oneshot::Sender<ControlResponse>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct TelegramRateLimitConfig {
+        pub normal_per_minute: usize,
+        pub refresh_cooldown: Duration,
+        pub emergency_cooldown: Duration,
+        pub runtime_response_timeout: Duration,
+    }
+
+    impl Default for TelegramRateLimitConfig {
+        fn default() -> Self {
+            Self {
+                normal_per_minute: 10,
+                refresh_cooldown: Duration::from_secs(15),
+                emergency_cooldown: Duration::from_secs(30),
+                runtime_response_timeout: Duration::from_secs(30),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RateState {
+        normal: BTreeMap<i64, VecDeque<Instant>>,
+        last_refresh: BTreeMap<i64, Instant>,
+        last_emergency: BTreeMap<i64, Instant>,
+    }
+
+    struct RateLimiter {
+        config: TelegramRateLimitConfig,
+        state: Mutex<RateState>,
+    }
+
+    impl RateLimiter {
+        fn new(config: TelegramRateLimitConfig) -> Self {
+            Self {
+                config,
+                state: Mutex::new(RateState::default()),
+            }
+        }
+
+        fn allow(&self, user_id: i64, command: &ControlCommand) -> Result<(), &'static str> {
+            let now = Instant::now();
+            let mut state = self.state.lock().expect("telegram rate limiter poisoned");
+            let normal = state.normal.entry(user_id).or_default();
+            while normal
+                .front()
+                .is_some_and(|instant| now.duration_since(*instant) >= Duration::from_secs(60))
+            {
+                normal.pop_front();
+            }
+            if normal.len() >= self.config.normal_per_minute {
+                return Err("rate limit: 10 commands/minute");
+            }
+
+            if command.is_refresh() {
+                if state
+                    .last_refresh
+                    .get(&user_id)
+                    .is_some_and(|instant| now.duration_since(*instant) < self.config.refresh_cooldown)
+                {
+                    return Err("rate limit: /refresh cooldown is 15s");
+                }
+                state.last_refresh.insert(user_id, now);
+            }
+            if command.is_emergency() {
+                if state
+                    .last_emergency
+                    .get(&user_id)
+                    .is_some_and(|instant| now.duration_since(*instant) < self.config.emergency_cooldown)
+                {
+                    return Err("rate limit: /emergency_exit cooldown is 30s");
+                }
+                state.last_emergency.insert(user_id, now);
+            }
+            normal.push_back(now);
+            Ok(())
+        }
+    }
+
+    pub fn spawn_telegram_bot(
+        token: String,
+        authorizer: TelegramAuthorizer,
+        rate_limit: TelegramRateLimitConfig,
+        runtime: mpsc::Sender<TelegramControlEnvelope>,
+    ) -> tokio::task::JoinHandle<()> {
+        let authorizer = Arc::new(authorizer);
+        let limiter = Arc::new(RateLimiter::new(rate_limit.clone()));
+        tokio::spawn(async move {
+            let bot = Bot::new(token);
+            teloxide::repl(bot, move |bot: Bot, msg: Message| {
+                let authorizer = authorizer.clone();
+                let limiter = limiter.clone();
+                let runtime = runtime.clone();
+                let response_timeout = rate_limit.runtime_response_timeout;
+                async move {
+                    let Some(text) = msg.text() else {
+                        return Ok(());
+                    };
+                    if !text.trim_start().starts_with('/') {
+                        return Ok(());
+                    }
+                    let command = match ControlCommand::parse(text) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            bot.send_message(msg.chat.id, format!("invalid command · {error}"))
+                                .await?;
+                            return Ok(());
+                        }
+                    };
+                    let Some(user) = msg.from.as_ref() else {
+                        bot.send_message(msg.chat.id, "unauthorized").await?;
+                        return Ok(());
+                    };
+                    let Ok(user_id) = i64::try_from(user.id.0) else {
+                        bot.send_message(msg.chat.id, "unauthorized").await?;
+                        return Ok(());
+                    };
+                    let chat_id = msg.chat.id.0;
+                    if !authorizer.authorized(user_id, chat_id) {
+                        bot.send_message(msg.chat.id, "unauthorized").await?;
+                        return Ok(());
+                    }
+                    if let Err(reason) = limiter.allow(user_id, &command) {
+                        bot.send_message(msg.chat.id, reason).await?;
+                        return Ok(());
+                    }
+
+                    let request_id = format!("tg:{chat_id}:{}", msg.id.0);
+                    let request = ControlRequest {
+                        request_id: request_id.clone(),
+                        actor_user_id: user_id,
+                        chat_id,
+                        received_at_ns: now_ns(),
+                        command,
+                    };
+                    let (reply, response) = oneshot::channel();
+                    if runtime
+                        .send(TelegramControlEnvelope { request, reply })
+                        .await
+                        .is_err()
+                    {
+                        bot.send_message(msg.chat.id, "runtime unavailable").await?;
+                        return Ok(());
+                    }
+                    let response = match tokio::time::timeout(response_timeout, response).await {
+                        Ok(Ok(response)) => response,
+                        Ok(Err(_)) => ControlResponse::Rejected {
+                            request_id,
+                            reason: "runtime response channel closed".into(),
+                        },
+                        Err(_) => ControlResponse::Rejected {
+                            request_id,
+                            reason: "runtime response timeout".into(),
+                        },
+                    };
+                    bot.send_message(msg.chat.id, response.body()).await?;
+                    Ok(())
+                }
+            })
+            .await;
+        })
+    }
+
+    fn now_ns() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before unix epoch")
+            .as_nanos() as u64
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn refresh_and_emergency_have_extra_cooldowns() {
+            let limiter = RateLimiter::new(TelegramRateLimitConfig::default());
+            assert!(limiter.allow(7, &ControlCommand::Refresh).is_ok());
+            assert!(limiter.allow(7, &ControlCommand::Refresh).is_err());
+            assert!(limiter.allow(8, &ControlCommand::EmergencyExit).is_ok());
+            assert!(limiter.allow(8, &ControlCommand::EmergencyExit).is_err());
+        }
+    }
+}
+
+#[cfg(feature = "telegram")]
+pub use telegram_transport::{
+    TelegramControlEnvelope, TelegramRateLimitConfig, spawn_telegram_bot,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
