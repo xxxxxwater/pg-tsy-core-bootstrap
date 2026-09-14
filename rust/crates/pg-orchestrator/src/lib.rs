@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use pg_execution::{
-    ExecutionAdapter, ExecutionError, VenueOrderSnapshot, VenueOrderState, VenuePositionSnapshot,
+    ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderSnapshot, VenueOrderState,
+    VenuePositionSnapshot,
 };
 use pg_oms::{OrderEvent, OrderRecord, OrderState};
 use pg_reconcile::{Ownership, ReconcileReport, VenuePosition, reconcile};
 use pg_store::{PostgresStore, RuntimeLease, StoreError};
-use pg_types::{OrderIntent, Venue};
+use pg_types::{OrderIntent, Side, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -172,6 +173,8 @@ pub enum OrchestratorError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoveryItem {
+    pub venue: Venue,
+    pub asset: String,
     pub client_order_id: String,
     pub state: OrderState,
     pub venue_order_id: Option<String>,
@@ -225,8 +228,6 @@ impl<S: RuntimeStore> DurableExecution<S> {
         let stream_id = format!("order:{}", intent.client_order_id());
         let mut record = OrderRecord::from_intent(intent);
 
-        // The local record exists before any network side effect. A crash after this point
-        // can therefore recover using the stable client id without inventing a new intent.
         self.store
             .save_order_record(&record, self.lease.fencing_token)
             .await?;
@@ -254,7 +255,7 @@ impl<S: RuntimeStore> DurableExecution<S> {
             )
             .await?;
 
-        // Fencing is checked again immediately before the external side effect.
+        // Every exposure-changing external side effect gets a fresh fencing check.
         self.store.assert_lease(&self.lease).await?;
 
         match adapter.submit(intent).await {
@@ -324,6 +325,126 @@ impl<S: RuntimeStore> DurableExecution<S> {
         }
     }
 
+    /// Durable cancel path used by stop/emergency/shutdown. It journals the cancel
+    /// intent, rechecks the runtime lease immediately before the venue side effect,
+    /// and resolves races against terminal venue history afterwards.
+    pub async fn cancel_order(
+        &self,
+        input: &OrderRecord,
+    ) -> Result<OrderRecord, OrchestratorError> {
+        self.store.assert_lease(&self.lease).await?;
+        if input.is_terminal() {
+            return Ok(input.clone());
+        }
+        let adapter = self
+            .adapters
+            .get(input.venue)
+            .ok_or(OrchestratorError::MissingAdapter(input.venue))?;
+        let stream_id = format!("order:{}", input.client_order_id);
+        let mut record = input.clone();
+
+        if matches!(record.state, OrderState::PendingSubmit | OrderState::Unknown) {
+            let remote = adapter
+                .find_order_by_client_id(&record.client_order_id)
+                .await?;
+            let Some(snapshot) = remote else {
+                record.state = OrderState::Unknown;
+                self.store
+                    .save_order_record(&record, self.lease.fencing_token)
+                    .await?;
+                return Err(OrchestratorError::Ambiguous {
+                    client_order_id: record.client_order_id.clone(),
+                    reason: "cannot prove a cancelable venue order exists".into(),
+                });
+            };
+            apply_snapshot(&mut record, &snapshot);
+            if record.is_terminal() {
+                self.store
+                    .save_order_record(&record, self.lease.fencing_token)
+                    .await?;
+                return Ok(record);
+            }
+        }
+
+        if matches!(record.state, OrderState::Open | OrderState::PartiallyFilled) {
+            record
+                .apply(OrderEvent::CancelRequested)
+                .map_err(|error| OrchestratorError::Oms(error.to_string()))?;
+            self.store
+                .save_order_record(&record, self.lease.fencing_token)
+                .await?;
+            self.store
+                .append_event(
+                    &stream_id,
+                    "order.cancel.started",
+                    &json!({"client_order_id": record.client_order_id}),
+                    self.lease.fencing_token,
+                )
+                .await?;
+        }
+        if record.state != OrderState::PendingCancel {
+            return Err(OrchestratorError::Ambiguous {
+                client_order_id: record.client_order_id.clone(),
+                reason: format!("order is not safely cancelable from {:?}", record.state),
+            });
+        }
+
+        self.store.assert_lease(&self.lease).await?;
+        match adapter
+            .cancel(OrderLocator {
+                asset: &record.asset,
+                venue_order_id: record.venue_order_id.as_deref(),
+                client_order_id: &record.client_order_id,
+            })
+            .await
+        {
+            Ok(()) => {
+                match adapter
+                    .find_order_by_client_id(&record.client_order_id)
+                    .await?
+                {
+                    Some(snapshot) => apply_snapshot(&mut record, &snapshot),
+                    None => record
+                        .apply(OrderEvent::Canceled)
+                        .map_err(|error| OrchestratorError::Oms(error.to_string()))?,
+                }
+                self.store
+                    .save_order_record(&record, self.lease.fencing_token)
+                    .await?;
+                self.store
+                    .append_event(
+                        &stream_id,
+                        "order.cancel.reconciled",
+                        &json!({"state": record.state}),
+                        self.lease.fencing_token,
+                    )
+                    .await?;
+                Ok(record)
+            }
+            Err(error @ (ExecutionError::Unknown(_) | ExecutionError::Transport(_))) => {
+                record
+                    .apply(OrderEvent::LostState)
+                    .map_err(|transition| OrchestratorError::Oms(transition.to_string()))?;
+                self.store
+                    .save_order_record(&record, self.lease.fencing_token)
+                    .await?;
+                self.store
+                    .append_event(
+                        &stream_id,
+                        "order.cancel.unknown",
+                        &json!({"reason": error.to_string()}),
+                        self.lease.fencing_token,
+                    )
+                    .await?;
+                Err(OrchestratorError::Ambiguous {
+                    client_order_id: record.client_order_id.clone(),
+                    reason: error.to_string(),
+                })
+            }
+            Err(error) => Err(OrchestratorError::Execution(error)),
+        }
+    }
+
     /// Resolve PendingSubmit/Unknown records by stable client id. This method never
     /// calls submit, so recovery cannot create duplicate exposure.
     pub async fn recover_ambiguous(
@@ -382,6 +503,8 @@ impl<S: RuntimeStore> DurableExecution<S> {
                 .save_order_record(order, self.lease.fencing_token)
                 .await?;
             report.items.push(RecoveryItem {
+                venue: order.venue,
+                asset: order.asset.clone(),
                 client_order_id: order.client_order_id.clone(),
                 state: order.state,
                 venue_order_id: order.venue_order_id.clone(),
@@ -402,8 +525,6 @@ impl<S: RuntimeStore> DurableExecution<S> {
         let mut local_orders = self.store.load_orders_for_venue(venue).await?;
         let mut venue_orders = adapter.open_orders().await?;
 
-        // An order can fill between snapshots. Resolve every non-terminal local order
-        // that disappeared from open_orders against venue history before declaring drift.
         for local in local_orders.iter().filter(|order| !order.is_terminal()) {
             let already_present = venue_orders.iter().any(|remote| {
                 remote.client_order_id.as_deref() == Some(local.client_order_id.as_str())
@@ -429,12 +550,17 @@ impl<S: RuntimeStore> DurableExecution<S> {
         }
 
         let stored_positions = self.store.load_position_states(venue).await?;
-        let ownership = stored_positions
+        let previous_ownership = stored_positions
             .into_iter()
             .map(|position| (position.asset, position.ownership))
             .collect::<BTreeMap<_, _>>();
         let venue_positions = adapter.positions().await?;
-        let positions = merge_position_ownership(venue, venue_positions, ownership);
+        let positions = infer_position_ownership(
+            venue,
+            venue_positions,
+            &local_orders,
+            previous_ownership,
+        );
         for position in &positions {
             self.store
                 .save_position_state(position, self.lease.fencing_token)
@@ -485,39 +611,86 @@ fn apply_snapshot(record: &mut OrderRecord, snapshot: &VenueOrderSnapshot) {
     };
 }
 
-fn merge_position_ownership(
+fn infer_position_ownership(
     venue: Venue,
     snapshots: Vec<VenuePositionSnapshot>,
-    mut ownership: BTreeMap<String, Ownership>,
+    orders: &[OrderRecord],
+    mut previous: BTreeMap<String, Ownership>,
 ) -> Vec<VenuePosition> {
-    let mut positions = Vec::with_capacity(snapshots.len() + ownership.len());
+    let mut positions = Vec::with_capacity(snapshots.len() + previous.len());
     for snapshot in snapshots {
-        let owner = ownership
-            .remove(&snapshot.asset)
-            .unwrap_or(Ownership::Unknown);
+        let prior = previous.remove(&snapshot.asset);
+        let ownership = ownership_from_order_evidence(
+            &snapshot.asset,
+            snapshot.quantity,
+            orders,
+            prior,
+        );
         positions.push(VenuePosition {
             venue,
             asset: snapshot.asset,
             quantity: snapshot.quantity,
-            ownership: owner,
+            ownership,
         });
     }
-    for (asset, owner) in ownership {
+    for (asset, ownership) in previous {
         positions.push(VenuePosition {
             venue,
             asset,
             quantity: Decimal::ZERO,
-            ownership: owner,
+            ownership,
         });
     }
     positions
 }
 
+fn ownership_from_order_evidence(
+    asset: &str,
+    venue_quantity: Decimal,
+    orders: &[OrderRecord],
+    previous: Option<Ownership>,
+) -> Ownership {
+    if venue_quantity.is_zero() {
+        return previous.unwrap_or(Ownership::Unknown);
+    }
+
+    let relevant = orders
+        .iter()
+        .filter(|order| order.asset == asset && order.filled_quantity > Decimal::ZERO)
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        return previous.unwrap_or(Ownership::Manual);
+    }
+    if relevant.iter().any(|order| order.side.is_none()) {
+        return Ownership::Unknown;
+    }
+
+    let mut by_strategy = BTreeMap::<String, Decimal>::new();
+    for order in relevant {
+        let signed = match order.side.expect("checked above") {
+            Side::Buy => order.filled_quantity,
+            Side::Sell => -order.filled_quantity,
+        };
+        *by_strategy
+            .entry(order.owner_strategy_id.clone())
+            .or_insert(Decimal::ZERO) += signed;
+    }
+    by_strategy.retain(|_, quantity| !quantity.is_zero());
+
+    if by_strategy.len() == 1 {
+        let (strategy_id, strategy_quantity) = by_strategy.into_iter().next().unwrap();
+        if strategy_quantity == venue_quantity {
+            return Ownership::Strategy(strategy_id);
+        }
+    }
+    Ownership::Unknown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pg_execution::{OrderLocator, VenueOrderAck};
-    use pg_types::{ExposureEffect, Side};
+    use pg_execution::VenueOrderAck;
+    use pg_types::ExposureEffect;
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -533,6 +706,7 @@ mod tests {
     struct FakeAdapter {
         mode: SubmitMode,
         submit_count: AtomicUsize,
+        cancel_count: AtomicUsize,
         orders: Mutex<BTreeMap<String, VenueOrderSnapshot>>,
     }
 
@@ -541,6 +715,7 @@ mod tests {
             Self {
                 mode,
                 submit_count: AtomicUsize::new(0),
+                cancel_count: AtomicUsize::new(0),
                 orders: Mutex::new(BTreeMap::new()),
             }
         }
@@ -579,7 +754,9 @@ mod tests {
             }
         }
 
-        async fn cancel(&self, _order: OrderLocator<'_>) -> Result<(), ExecutionError> {
+        async fn cancel(&self, order: OrderLocator<'_>) -> Result<(), ExecutionError> {
+            self.cancel_count.fetch_add(1, Ordering::SeqCst);
+            self.orders.lock().unwrap().remove(order.client_order_id);
             Ok(())
         }
 
@@ -768,18 +945,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fencing_loss_blocks_network_dispatch() {
+    async fn persisted_crash_window_adopts_venue_order_without_submit() {
         let store = Arc::new(MemoryStore::new());
-        store.fenced.store(true, Ordering::SeqCst);
         let adapter = Arc::new(FakeAdapter::new(SubmitMode::Ack));
+        let order_intent = intent();
+        let mut record = OrderRecord::from_intent(&order_intent);
+        record.apply(OrderEvent::SubmitRequested).unwrap();
+        store
+            .orders
+            .lock()
+            .unwrap()
+            .insert(record.client_order_id.clone(), record);
+        adapter.orders.lock().unwrap().insert(
+            order_intent.client_order_id(),
+            VenueOrderSnapshot {
+                venue_order_id: "venue-after-kill".into(),
+                client_order_id: Some(order_intent.client_order_id()),
+                asset: order_intent.asset.clone(),
+                side: order_intent.side,
+                requested_quantity: order_intent.quantity,
+                filled_quantity: Decimal::ZERO,
+                limit_price: order_intent.limit_price,
+                state: VenueOrderState::Open,
+            },
+        );
         let mut adapters = AdapterRegistry::default();
         adapters.register(Venue::Hyperliquid, adapter.clone());
         let execution = DurableExecution::new(store, lease(), adapters);
 
+        let recovery = execution
+            .recover_ambiguous(Venue::Hyperliquid)
+            .await
+            .unwrap();
+        assert!(recovery.items[0].resolved);
+        assert_eq!(recovery.items[0].venue_order_id.as_deref(), Some("venue-after-kill"));
+        assert_eq!(adapter.submit_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fencing_loss_blocks_network_dispatch_and_cancel() {
+        let store = Arc::new(MemoryStore::new());
+        let adapter = Arc::new(FakeAdapter::new(SubmitMode::Ack));
+        let mut adapters = AdapterRegistry::default();
+        adapters.register(Venue::Hyperliquid, adapter.clone());
+        let execution = DurableExecution::new(store.clone(), lease(), adapters);
+
+        store.fenced.store(true, Ordering::SeqCst);
         assert!(matches!(
             execution.dispatch(&intent()).await,
             Err(OrchestratorError::Store(RuntimeStoreError::FencingLost))
         ));
         assert_eq!(adapter.submit_count.load(Ordering::SeqCst), 0);
+
+        let mut record = OrderRecord::from_intent(&intent());
+        record.apply(OrderEvent::SubmitRequested).unwrap();
+        record.accept("venue-1").unwrap();
+        assert!(matches!(
+            execution.cancel_order(&record).await,
+            Err(OrchestratorError::Store(RuntimeStoreError::FencingLost))
+        ));
+        assert_eq!(adapter.cancel_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn ownership_is_strategy_only_when_signed_fills_equal_venue_position() {
+        let mut buy = OrderRecord::from_intent(&intent());
+        buy.filled_quantity = Decimal::from(2);
+        buy.requested_quantity = Decimal::from(2);
+        buy.state = OrderState::Filled;
+        assert_eq!(
+            ownership_from_order_evidence("HYPE", Decimal::from(2), &[buy.clone()], None),
+            Ownership::Strategy("s1".into())
+        );
+        assert_eq!(
+            ownership_from_order_evidence("HYPE", Decimal::from(3), &[buy], None),
+            Ownership::Unknown
+        );
+    }
+
+    #[test]
+    fn no_strategy_fill_evidence_defaults_nonzero_position_to_manual() {
+        assert_eq!(
+            ownership_from_order_evidence("HYPE", Decimal::ONE, &[], None),
+            Ownership::Manual
+        );
     }
 }
