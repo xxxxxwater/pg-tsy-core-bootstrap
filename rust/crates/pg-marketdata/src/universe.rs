@@ -116,13 +116,23 @@ impl UniverseFilter {
             .cloned()
             .collect::<Vec<_>>();
 
-        selected.sort_by(|left, right| {
-            right
-                .day_notional_volume
-                .unwrap_or(Decimal::ZERO)
-                .cmp(&left.day_notional_volume.unwrap_or(Decimal::ZERO))
-                .then_with(|| left.symbol.cmp(&right.symbol))
-        });
+        // Crypto metadata supplies comparable venue-wide notional volume, so rank
+        // by it when available. Scanner-style providers (for example IBKR) already
+        // return a meaningful venue rank but may not supply a comparable 24h
+        // notional. Preserve provider order in that case rather than silently
+        // replacing the venue rank with alphabetical symbol order.
+        if selected
+            .iter()
+            .any(|instrument| instrument.day_notional_volume.is_some())
+        {
+            selected.sort_by(|left, right| {
+                right
+                    .day_notional_volume
+                    .unwrap_or(Decimal::ZERO)
+                    .cmp(&left.day_notional_volume.unwrap_or(Decimal::ZERO))
+                    .then_with(|| left.symbol.cmp(&right.symbol))
+            });
+        }
         if let Some(top_n) = self.top_n {
             selected.truncate(top_n);
         }
@@ -179,6 +189,32 @@ mod tests {
         }
     }
 
+    fn scanner_descriptor(symbol: &str) -> InstrumentDescriptor {
+        InstrumentDescriptor {
+            venue: Venue::InteractiveBrokers,
+            symbol: symbol.into(),
+            product_type: ProductType::Stock,
+            venue_instrument_id: Some(format!("conid-{symbol}")),
+            base: Some(symbol.into()),
+            quote: Some("USD".into()),
+            exchange: Some("SMART".into()),
+            primary_exchange: None,
+            currency: Some("USD".into()),
+            size_decimals: None,
+            tick_size: Some(Decimal::new(1, 2)),
+            lot_size: None,
+            min_size: None,
+            mark_price: None,
+            mid_price: None,
+            spread_bps: None,
+            day_notional_volume: None,
+            open_interest: None,
+            funding_rate: None,
+            max_leverage: None,
+            tradable: true,
+        }
+    }
+
     #[test]
     fn filters_and_ranks_by_real_volume() {
         let snapshot = UniverseSnapshot {
@@ -199,6 +235,27 @@ mod tests {
         let selected = filter.apply(&snapshot);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].symbol, "B");
+    }
+
+    #[test]
+    fn preserves_scanner_rank_when_volume_is_unavailable() {
+        let snapshot = UniverseSnapshot {
+            venue: Venue::InteractiveBrokers,
+            discovered_at_ns: 1,
+            instruments: vec![
+                scanner_descriptor("ZZZ"),
+                scanner_descriptor("AAA"),
+                scanner_descriptor("MMM"),
+            ],
+        };
+        let filter = UniverseFilter {
+            top_n: Some(2),
+            ..UniverseFilter::default()
+        };
+        let selected = filter.apply(&snapshot);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].symbol, "ZZZ");
+        assert_eq!(selected[1].symbol, "AAA");
     }
 
     #[test]
