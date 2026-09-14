@@ -1,4 +1,5 @@
 mod daemon;
+mod dynamic_universe;
 mod health;
 // The default pg-core build enables Hyperliquid but not IBKR. A small subset of
 // live_daemon helpers exists only for the IBKR feature; keep those default-build
@@ -72,6 +73,7 @@ fn load_strategy_registry() -> Result<Option<StrategyRegistry>> {
     tracing::info!(
         strategy_dir = %strategy_dir.display(),
         strategy_count = registry.len(),
+        dynamic_template_count = registry.dynamic_template_count(),
         policy_count = registry.policy_count(),
         subscription_count = registry.subscriptions().len(),
         policy_subscription_count = registry.policy_subscriptions().len(),
