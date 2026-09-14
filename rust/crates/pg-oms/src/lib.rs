@@ -1,4 +1,4 @@
-use pg_types::{OrderIntent, Venue};
+use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -59,6 +59,13 @@ pub struct OrderRecord {
     pub venue: Venue,
     pub asset: String,
     pub owner_strategy_id: String,
+    /// Optional for backward compatibility with order_records written before this
+    /// field existed. Missing side/effect is safety-sensitive and must never be
+    /// guessed by control/recovery code.
+    #[serde(default)]
+    pub side: Option<Side>,
+    #[serde(default)]
+    pub effect: Option<ExposureEffect>,
     pub requested_quantity: Decimal,
     pub filled_quantity: Decimal,
     pub state: OrderState,
@@ -74,6 +81,8 @@ impl OrderRecord {
             venue: intent.venue,
             asset: intent.asset.clone(),
             owner_strategy_id: intent.strategy_id.clone(),
+            side: Some(intent.side),
+            effect: Some(intent.effect),
             requested_quantity: intent.quantity,
             filled_quantity: Decimal::ZERO,
             state: OrderState::Created,
@@ -89,6 +98,14 @@ impl OrderRecord {
             self.state,
             OrderState::Filled | OrderState::Canceled | OrderState::Rejected
         )
+    }
+
+    pub fn is_entry(&self) -> bool {
+        self.effect == Some(ExposureEffect::Increase)
+    }
+
+    pub fn is_reduce_only(&self) -> bool {
+        self.effect == Some(ExposureEffect::ReduceOnly)
     }
 
     pub fn accept(&mut self, venue_order_id: impl Into<String>) -> Result<(), TransitionError> {
@@ -160,7 +177,6 @@ impl OrderRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pg_types::{ExposureEffect, Side};
 
     fn intent(quantity: i64) -> OrderIntent {
         OrderIntent {
@@ -184,10 +200,14 @@ mod tests {
     }
 
     #[test]
-    fn record_keeps_reconcile_scope() {
+    fn record_keeps_reconcile_scope_and_order_semantics() {
         let order = OrderRecord::from_intent(&intent(1));
         assert_eq!(order.venue, Venue::Hyperliquid);
         assert_eq!(order.asset, "HYPE");
+        assert_eq!(order.side, Some(Side::Buy));
+        assert_eq!(order.effect, Some(ExposureEffect::Increase));
+        assert!(order.is_entry());
+        assert!(!order.is_reduce_only());
     }
 
     #[test]
