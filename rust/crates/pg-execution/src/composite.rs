@@ -10,8 +10,8 @@
 //! swallowed: a partial venue snapshot must not be mistaken for a complete one.
 
 use crate::{
-    ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck, VenueOrderSnapshot,
-    VenuePositionSnapshot,
+    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck,
+    VenueOrderSnapshot, VenuePositionSnapshot,
 };
 use async_trait::async_trait;
 use pg_types::{OrderIntent, Venue};
@@ -101,6 +101,15 @@ impl ExecutionAdapter for CompositeExecutionAdapter {
         Ok(positions)
     }
 
+    async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
+        let adapter = self.per_asset.values().next().ok_or_else(|| {
+            ExecutionError::Unsupported("composite has no instrument adapters".into())
+        })?;
+        // Per-instrument IBKR children point at the same brokerage account. Read one
+        // authoritative account summary instead of summing duplicate NetLiq/margin values.
+        adapter.account_snapshot().await
+    }
+
     /// The client id alone does not say which instrument an order belongs to, so
     /// every child is searched. This is the recovery path for a fill that already
     /// left the open-order set, so returning None must mean genuinely not found.
@@ -163,6 +172,26 @@ mod tests {
                 quantity: Decimal::ONE,
             }])
         }
+
+        async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
+            if self.fail_reads {
+                return Err(ExecutionError::Transport("read failed".into()));
+            }
+            Ok(AccountSnapshot {
+                venue: Venue::InteractiveBrokers,
+                account_id: Some("DU123".into()),
+                currency: Some("USD".into()),
+                account_value: Some(Decimal::from(100_000)),
+                available_funds: Some(Decimal::from(50_000)),
+                withdrawable: None,
+                buying_power: Some(Decimal::from(200_000)),
+                initial_margin: Some(Decimal::from(20_000)),
+                maintenance_margin: Some(Decimal::from(15_000)),
+                margin_used: None,
+                gross_position_value: Some(Decimal::from(40_000)),
+                raw_usd: None,
+            })
+        }
     }
 
     fn intent(asset: &str, venue: Venue) -> OrderIntent {
@@ -224,6 +253,10 @@ mod tests {
         let composite = CompositeExecutionAdapter::new(Venue::InteractiveBrokers)
             .with_instrument("AAPL", Arc::new(FakeAdapter::default()));
         assert_eq!(composite.positions().await.unwrap().len(), 1);
+        assert_eq!(
+            composite.account_snapshot().await.unwrap().account_value,
+            Some(Decimal::from(100_000))
+        );
 
         let failing = CompositeExecutionAdapter::new(Venue::InteractiveBrokers).with_instrument(
             "AAPL",
@@ -234,5 +267,6 @@ mod tests {
         );
         // A partial snapshot must never be reported as a complete one.
         assert!(failing.positions().await.is_err());
+        assert!(failing.account_snapshot().await.is_err());
     }
 }
