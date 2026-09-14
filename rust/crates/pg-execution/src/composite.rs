@@ -133,10 +133,7 @@ mod tests {
     #[async_trait]
     impl ExecutionAdapter for FakeAdapter {
         async fn submit(&self, intent: &OrderIntent) -> Result<VenueOrderAck, ExecutionError> {
-            self.submitted
-                .lock()
-                .unwrap()
-                .push(intent.asset.clone());
+            self.submitted.lock().unwrap().push(intent.asset.clone());
             Ok(VenueOrderAck {
                 venue_order_id: format!("fake-{}", intent.asset),
                 client_order_id: intent.client_order_id(),
@@ -228,14 +225,13 @@ mod tests {
             .with_instrument("AAPL", Arc::new(FakeAdapter::default()));
         assert_eq!(composite.positions().await.unwrap().len(), 1);
 
-        let failing = CompositeExecutionAdapter::new(Venue::InteractiveBrokers)
-            .with_instrument(
-                "AAPL",
-                Arc::new(FakeAdapter {
-                    submitted: Mutex::new(Vec::new()),
-                    fail_reads: true,
-                }),
-            );
+        let failing = CompositeExecutionAdapter::new(Venue::InteractiveBrokers).with_instrument(
+            "AAPL",
+            Arc::new(FakeAdapter {
+                submitted: Mutex::new(Vec::new()),
+                fail_reads: true,
+            }),
+        );
         // A partial snapshot must never be reported as a complete one.
         assert!(failing.positions().await.is_err());
     }
