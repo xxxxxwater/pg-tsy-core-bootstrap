@@ -1,3 +1,9 @@
+mod composite;
+mod shadow;
+
+pub use composite::CompositeExecutionAdapter;
+pub use shadow::{ShadowAdapterConfig, ShadowExecutionAdapter, ShadowFillMode, ShadowPosition};
+
 use async_trait::async_trait;
 use pg_types::{OrderIntent, Side};
 use rust_decimal::Decimal;

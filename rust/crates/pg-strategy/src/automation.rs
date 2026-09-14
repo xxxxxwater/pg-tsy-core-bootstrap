@@ -20,11 +20,20 @@ pub struct StrategyAutomationConfig {
     pub entry_filter: EntryFilterConfig,
 }
 
+/// Default candle resolution for the online factor engine.
+///
+/// One minute rather than five seconds: the crypto venues only publish candles
+/// from 1m up, so a 5 second default produced a subscription that could never
+/// succeed. Venues that only serve a different resolution (TWS realtime bars are
+/// 5s) must say so explicitly, and strategy loading now rejects the mismatch
+/// instead of reconnecting forever.
+pub const DEFAULT_CANDLE_INTERVAL_NS: u64 = 60_000_000_000;
+
 impl Default for StrategyAutomationConfig {
     fn default() -> Self {
         Self {
             factors: FactorConfig::default(),
-            candle_interval_ns: 5_000_000_000,
+            candle_interval_ns: DEFAULT_CANDLE_INTERVAL_NS,
             signal_horizon_ms: 5_000,
             signal_ttl_ms: 2_000,
             min_confidence: 0.45,
@@ -218,6 +227,7 @@ mod tests {
             order_quantity: Decimal::ONE,
             entry_score: 0.25,
             exit_score: 0.05,
+            allow_short: false,
         }
     }
 

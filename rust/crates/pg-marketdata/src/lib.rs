@@ -136,6 +136,89 @@ pub enum FeedKind {
     Candle { interval_ns: u64 },
 }
 
+/// Candle resolutions a venue can actually serve, in nanoseconds.
+///
+/// This is a capability table, not a preference. A definition that asks for a
+/// candle stream the venue cannot provide must fail at strategy-load time: a
+/// permanently rejected subscription leaves the daemon reconnecting forever and
+/// never ready, with no obvious cause.
+const HYPERLIQUID_CANDLE_INTERVALS_NS: [u64; 11] = [
+    60_000_000_000,
+    180_000_000_000,
+    300_000_000_000,
+    900_000_000_000,
+    1_800_000_000_000,
+    3_600_000_000_000,
+    7_200_000_000_000,
+    14_400_000_000_000,
+    28_800_000_000_000,
+    43_200_000_000_000,
+    86_400_000_000_000,
+];
+
+/// TWS realtime bars are only requested at the 5 second resolution by this runtime.
+const IBKR_CANDLE_INTERVALS_NS: [u64; 1] = [5_000_000_000];
+
+const BINANCE_CANDLE_INTERVALS_NS: [u64; 8] = [
+    60_000_000_000,
+    180_000_000_000,
+    300_000_000_000,
+    900_000_000_000,
+    1_800_000_000_000,
+    3_600_000_000_000,
+    14_400_000_000_000,
+    86_400_000_000_000,
+];
+
+pub fn supported_candle_intervals(venue: Venue) -> &'static [u64] {
+    match venue {
+        Venue::Hyperliquid => &HYPERLIQUID_CANDLE_INTERVALS_NS,
+        Venue::InteractiveBrokers => &IBKR_CANDLE_INTERVALS_NS,
+        Venue::BinancePm => &BINANCE_CANDLE_INTERVALS_NS,
+    }
+}
+
+pub fn candle_interval_supported(venue: Venue, interval_ns: u64) -> bool {
+    supported_candle_intervals(venue).contains(&interval_ns)
+}
+
+/// The resolution to use when a definition does not pin one explicitly.
+///
+/// Falls back to the venue's own smallest candle resolution. That is what lets a
+/// single template span IBKR (5 second realtime bars) and a crypto venue (1 minute
+/// and up) without pretending they share a candle contract.
+pub fn default_candle_interval(venue: Venue) -> u64 {
+    supported_candle_intervals(venue)
+        .first()
+        .copied()
+        .expect("every supported venue declares at least one candle resolution")
+}
+
+/// Render a venue's supported resolutions for an operator-facing error message.
+pub fn describe_candle_intervals(venue: Venue) -> String {
+    supported_candle_intervals(venue)
+        .iter()
+        .map(|interval_ns| describe_candle_interval(*interval_ns))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn describe_candle_interval(interval_ns: u64) -> String {
+    const SECOND: u64 = 1_000_000_000;
+    const MINUTE: u64 = 60 * SECOND;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    if interval_ns.is_multiple_of(DAY) {
+        format!("{}d", interval_ns / DAY)
+    } else if interval_ns.is_multiple_of(HOUR) {
+        format!("{}h", interval_ns / HOUR)
+    } else if interval_ns.is_multiple_of(MINUTE) {
+        format!("{}m", interval_ns / MINUTE)
+    } else {
+        format!("{}s", interval_ns / SECOND)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FeedSpec {
     pub venue: Venue,
@@ -281,6 +364,37 @@ mod tests {
             aggressor: AggressorSide::Buy,
             sequence: None,
         }
+    }
+
+    #[test]
+    fn hyperliquid_has_no_five_second_candle_stream() {
+        // The online factor defaults used to request a 5s candle, which
+        // Hyperliquid rejects forever. Keep that impossible combination explicit.
+        assert!(!candle_interval_supported(
+            Venue::Hyperliquid,
+            5_000_000_000
+        ));
+        assert!(candle_interval_supported(
+            Venue::Hyperliquid,
+            60_000_000_000
+        ));
+        assert!(candle_interval_supported(
+            Venue::InteractiveBrokers,
+            5_000_000_000
+        ));
+        assert!(!candle_interval_supported(
+            Venue::InteractiveBrokers,
+            60_000_000_000
+        ));
+    }
+
+    #[test]
+    fn intervals_render_for_error_messages() {
+        assert_eq!(describe_candle_interval(60_000_000_000), "1m");
+        assert_eq!(describe_candle_interval(5_000_000_000), "5s");
+        assert_eq!(describe_candle_interval(86_400_000_000_000), "1d");
+        assert_eq!(describe_candle_interval(300_000_000_000), "5m");
+        assert!(describe_candle_intervals(Venue::Hyperliquid).contains("1m"));
     }
 
     #[test]

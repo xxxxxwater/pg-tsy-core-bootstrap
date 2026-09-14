@@ -1,9 +1,13 @@
-FROM rust:1.98-bookworm AS builder
+FROM rust:1.98.1-bookworm AS builder
+
+# Cargo features compiled into the live core. The default build wires both runtime
+# market-data sources; pass PG_CORE_FEATURES= (empty) to drop the ibapi dependency.
+ARG PG_CORE_FEATURES=ibkr-marketdata
 
 WORKDIR /src
 COPY rust ./rust
 WORKDIR /src/rust
-RUN cargo build --release -p pg-core
+RUN cargo build --release -p pg-core --features "${PG_CORE_FEATURES}"
 
 FROM debian:bookworm-slim AS runtime
 

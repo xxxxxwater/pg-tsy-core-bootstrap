@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
-use pg_marketdata::FeedSpec;
+use pg_marketdata::{
+    FeedSpec, candle_interval_supported, default_candle_interval, describe_candle_interval,
+    describe_candle_intervals,
+};
 use pg_types::{AssetKey, Venue};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -60,6 +63,10 @@ pub struct StrategyTemplateDefinition {
     pub order_quantity: String,
     pub entry_score: f64,
     pub exit_score: f64,
+    /// Opt in to short entries. Absent means long-only, which is the safe default
+    /// for the equity/IBKR side and for any strategy whose score is symmetric.
+    #[serde(default)]
+    pub allow_short: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -98,9 +105,19 @@ pub struct PolicyInstance {
     pub instrument: AssetKey,
     pub engine: PolicyEngine,
     pub features: LiveFeatureEngine,
+    /// Size used when a matched entry rule is turned into an order intent.
+    pub order_quantity: Decimal,
+    /// Mirrors StrategyConfig::allow_short for the portable policy path.
+    pub allow_short: bool,
 }
 
 impl PolicyInstance {
+    /// Whether this instance is driven by a portable rule graph rather than by the
+    /// legacy score-threshold automation path.
+    pub fn is_policy_driven(&self) -> bool {
+        self.engine.is_defined()
+    }
+
     pub fn subscriptions(&self) -> Vec<FeedSpec> {
         self.features.subscriptions(&self.instrument)
     }
@@ -191,11 +208,37 @@ impl StrategyDefinition {
             ));
         }
         self.universe.resolved_instruments()?;
-        self.resolved_automation()
-            .map_err(StrategyDefinitionError::Invalid)?;
         self.policy
             .validate()
             .map_err(StrategyDefinitionError::Invalid)?;
+        Ok(())
+    }
+
+    /// Reject a candle resolution the venue cannot serve.
+    ///
+    /// This is checked when a definition is actually instantiated rather than at
+    /// parse time, because a disabled example may legitimately span venues with
+    /// different candle contracts. A live subscription that can never be accepted
+    /// would otherwise be retried forever, leaving the runtime permanently un-ready
+    /// with no obvious cause.
+    ///
+    /// Only an explicitly configured interval can be wrong: when it is omitted each
+    /// instrument falls back to its own venue default.
+    fn validate_candle_contract(&self) -> Result<(), StrategyDefinitionError> {
+        let Some(configured) = self.automation.candle_interval_ns else {
+            return Ok(());
+        };
+        for instrument in self.universe.resolved_instruments()? {
+            if !candle_interval_supported(instrument.venue, configured) {
+                return Err(StrategyDefinitionError::Invalid(format!(
+                    "venue {:?} cannot serve candle interval {} ({} ns); supported: {}",
+                    instrument.venue,
+                    describe_candle_interval(configured),
+                    configured,
+                    describe_candle_intervals(instrument.venue),
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -204,6 +247,7 @@ impl StrategyDefinition {
             return Ok(Vec::new());
         }
         self.validate()?;
+        self.validate_candle_contract()?;
         let order_quantity =
             Decimal::from_str(self.strategy.order_quantity.trim()).map_err(|error| {
                 StrategyDefinitionError::Invalid(format!("invalid order_quantity: {error}"))
@@ -214,19 +258,35 @@ impl StrategyDefinition {
         let identities = self.resolved_instance_identities()?;
         let mut strategies = Vec::with_capacity(identities.len());
         for (strategy_id, instrument) in identities {
+            let venue = instrument.venue;
             let config = StrategyConfig {
                 strategy_id,
                 asset: instrument.asset,
-                venue: instrument.venue,
+                venue,
                 order_quantity,
                 entry_score: self.strategy.entry_score,
                 exit_score: self.strategy.exit_score,
+                allow_short: self.strategy.allow_short,
             };
-            let instance = AutomatedStrategy::new(config, automation.clone())
+            let mut automation = automation.clone();
+            automation.candle_interval_ns = self.resolved_candle_interval(venue);
+            let instance = AutomatedStrategy::new(config, automation)
                 .map_err(|error| StrategyDefinitionError::Invalid(error.into()))?;
             strategies.push(instance);
         }
         Ok(strategies)
+    }
+
+    /// Candle resolution to use for one instrument of this definition.
+    ///
+    /// An explicit `[automation] candle_interval_ns` is honoured for every
+    /// instrument (and validated against the venue at load time). When it is
+    /// omitted each instrument uses its own venue default, so one template can
+    /// still expand across venues with different candle contracts.
+    fn resolved_candle_interval(&self, venue: Venue) -> u64 {
+        self.automation
+            .candle_interval_ns
+            .unwrap_or_else(|| default_candle_interval(venue))
     }
 
     pub fn policy_feature_plan(&self) -> Result<FeaturePlan, StrategyDefinitionError> {
@@ -240,20 +300,31 @@ impl StrategyDefinition {
             return Ok(Vec::new());
         }
         self.validate()?;
+        self.validate_candle_contract()?;
         let engine = self
             .policy
             .compile()
             .map_err(StrategyDefinitionError::Invalid)?;
         let plan = self.policy_feature_plan()?;
+        let order_quantity =
+            Decimal::from_str(self.strategy.order_quantity.trim()).map_err(|error| {
+                StrategyDefinitionError::Invalid(format!("invalid order_quantity: {error}"))
+            })?;
+        if order_quantity <= Decimal::ZERO {
+            return Err(StrategyDefinitionError::Invalid(
+                "order_quantity must be positive".into(),
+            ));
+        }
         let automation = self
             .resolved_automation()
             .map_err(StrategyDefinitionError::Invalid)?;
         let mut instances = Vec::new();
         for (strategy_id, instrument) in self.resolved_instance_identities()? {
+            let candle_interval_ns = self.resolved_candle_interval(instrument.venue);
             let features = LiveFeatureEngine::new(
                 plan.clone(),
                 automation.factors.clone(),
-                automation.candle_interval_ns,
+                candle_interval_ns,
                 automation.entry_filter.volume_window,
                 automation.entry_filter.min_volume_samples,
             )
@@ -263,6 +334,8 @@ impl StrategyDefinition {
                 instrument,
                 engine: engine.clone(),
                 features,
+                order_quantity,
+                allow_short: self.strategy.allow_short,
             });
         }
         Ok(instances)

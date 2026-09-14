@@ -27,11 +27,21 @@ fn default_enabled() -> bool {
 pub enum ControlAction {
     Status,
     Latency,
-    Logs { lines: u16 },
-    Reconcile { venue: Option<String> },
+    Logs {
+        lines: u16,
+    },
+    Reconcile {
+        venue: Option<String>,
+    },
     ReloadStrategies,
-    SafeHold { venue: Option<String>, asset: Option<String> },
-    EmergencyFlattenOwned { venue: Option<String>, asset: Option<String> },
+    SafeHold {
+        venue: Option<String>,
+        asset: Option<String>,
+    },
+    EmergencyFlattenOwned {
+        venue: Option<String>,
+        asset: Option<String>,
+    },
     Halt,
 }
 
@@ -165,7 +175,10 @@ impl ControlScriptRegistry {
     }
 
     pub fn len(&self) -> usize {
-        self.scripts.values().filter(|script| script.enabled).count()
+        self.scripts
+            .values()
+            .filter(|script| script.enabled)
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {

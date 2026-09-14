@@ -34,7 +34,7 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
-fn resolve_strategy_dir() -> Option<PathBuf> {
+pub(crate) fn resolve_strategy_dir() -> Option<PathBuf> {
     if let Ok(path) = env::var("PG_STRATEGY_DIR") {
         return Some(PathBuf::from(path));
     }

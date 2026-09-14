@@ -16,10 +16,42 @@ services:
     volumes:
       - pgtsy-postgres:/var/lib/postgresql/data
 
+  # Interactive Brokers TWS / IB Gateway.
+  #
+  # Opt in with:  docker compose --profile ibkr up -d
+  #
+  # It stays out of the default quick-start because it needs real IBKR credentials
+  # and cannot run headless without them. With GATEWAY_OR_TWS=gateway (this image's
+  # default) the API port is 4002 in paper mode and 4001 in live mode, which is why
+  # the repository default IBKR_GATEWAY_ADDR is 127.0.0.1:4002.
+  ib-gateway:
+    image: ${IBKR_GATEWAY_IMAGE:-ghcr.io/gnzsnz/ib-gateway:stable}
+    profiles: ["ibkr"]
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${IBKR_TWS_USERID:-}
+      TWS_PASSWORD: ${IBKR_TWS_PASSWORD:-}
+      TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
+      # The runtime only consumes market data through this adapter today, so the
+      # gateway is not given order-submission rights either.
+      READ_ONLY_API: ${IBKR_READ_ONLY_API:-yes}
+      TWOFA_TIMEOUT_ACTION: ${IBKR_TWOFA_TIMEOUT_ACTION:-restart}
+      IBKR_GATEWAY_API_PORT: ${IBKR_GATEWAY_API_PORT:-4002}
+    ports:
+      - "${IBKR_GATEWAY_PORT:-4002}:${IBKR_GATEWAY_API_PORT:-4002}"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/$${IBKR_GATEWAY_API_PORT}' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 10
+
   pg-core:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PG_CORE_FEATURES: ${PG_CORE_FEATURES:-ibkr-marketdata}
     restart: unless-stopped
     environment:
       PG_ENV: ${PG_ENV:-dev}
@@ -38,8 +70,24 @@ services:
       PG_LEASE_KEY: ${PG_LEASE_KEY:-pg-core:docker:shadow}
       PG_HYPERLIQUID_NETWORK: ${PG_HYPERLIQUID_NETWORK:-mainnet}
       PG_MARKET_MAX_RECONNECTS: ${PG_MARKET_MAX_RECONNECTS:-50}
+      # Simulated venue behaviour. "rest" (default) only acknowledges orders;
+      # "immediate" fills them so the position/exit half of a strategy is
+      # observable before a real venue is wired. Neither sends a real order.
+      PG_SHADOW_FILL_MODE: ${PG_SHADOW_FILL_MODE:-rest}
+      # Interactive Brokers market data. Only used when an enabled strategy
+      # declares an IBKR instrument; inside compose the gateway is a sibling
+      # service, so the default points at the service name rather than localhost.
+      IBKR_GATEWAY_ADDR: ${IBKR_GATEWAY_ADDR:-ib-gateway:4002}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-17}
+      IBKR_ACCOUNT: ${IBKR_ACCOUNT:-}
+      IBKR_MARKET_DEPTH_ROWS: ${IBKR_MARKET_DEPTH_ROWS:-5}
+      IBKR_DEFAULT_EXCHANGE: ${IBKR_DEFAULT_EXCHANGE:-SMART}
+      IBKR_DEFAULT_CURRENCY: ${IBKR_DEFAULT_CURRENCY:-USD}
       RUST_LOG: ${RUST_LOG:-info}
-    command: ["/usr/local/bin/pg-core", "--serve"]
+    # ENTRYPOINT already is /usr/local/bin/pg-core; this only supplies args.
+    # Passing the binary path here again makes pg-core treat it as a positional
+    # <signal.json> path and try to UTF-8-decode the ELF binary.
+    command: ["--serve"]
     depends_on:
       postgres:
         condition: service_healthy

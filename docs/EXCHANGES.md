@@ -35,6 +35,35 @@ adopt     submit once
 
 `ExecutionError::Unknown` is intentionally different from `Rejected`: unknown means the system cannot prove whether the external side effect occurred.
 
+## Runtime market-data coverage
+
+| Venue | Cargo feature | Runtime market data | Runtime execution |
+| --- | --- | --- | --- |
+| Hyperliquid | `hyperliquid-marketdata` (default) | yes | none — shadow venue only |
+| Interactive Brokers | `ibkr-marketdata` | yes, via TWS / IB Gateway | none — shadow venue only |
+| Binance Portfolio Margin | — | no | none — shadow venue only |
+
+The daemon validates every derived feed against this table at startup: a subscription no
+build can serve fails the process instead of reconnecting forever. Binance PM currently
+has no runtime market-data source, so an enabled definition that declares a
+`BINANCE_PM` instrument is refused at startup.
+
+## Shadow venue
+
+The only execution adapter the shipping daemon constructs is the in-process
+`ShadowExecutionAdapter` from `pg-execution`. It is registered for Hyperliquid, IBKR and
+Binance PM, speaks the same `ExecutionAdapter` contract as the real adapters, and never
+touches the network:
+
+- `ShadowFillMode::Rest` (default) acknowledges orders and leaves them resting;
+- `ShadowFillMode::ImmediateFill` fills on acknowledgement at the limit price or latest mark;
+- a replayed intent with the same client order id adopts the existing shadow order instead of duplicating it;
+- cancellation is only accepted for resting orders, matching venue semantics;
+- reduce-only orders are rejected unless they strictly shrink an existing opposite-signed simulated position (software guard, same timing-window caveat as IBKR).
+
+Live mode is refused before any of this is reached, so the shadow adapter can never be
+combined with real-venue routing. See `docs/PRODUCTION_RUNTIME.md`.
+
 ## Hyperliquid
 
 `pg-hyperliquid` pins the official `hyperliquid-dex/hyperliquid-rust-sdk` to a reviewed commit behind the `sdk` Cargo feature. The SDK feature is optional so core replay/CI can run without venue/network dependencies.
@@ -85,6 +114,48 @@ Current mapped feeds include:
 
 IBKR does not expose a trustworthy monotonic sequence for the tick-by-tick path used here, so `MarketEvent.sequence` remains `None`. Never synthesize a sequence from exchange names, timestamps or local counters and then treat it as venue gap evidence.
 
+### Runtime market-data source
+
+IBKR is a runtime market-data source for the shadow daemon behind the opt-in
+`ibkr-marketdata` cargo feature (it pulls the community `ibapi` crate). The shipped image
+enables it through the `PG_CORE_FEATURES` build arg, whose default is
+`ibkr-marketdata` alongside the default Hyperliquid feed.
+
+```bash
+cd rust && cargo build -p pg-core --features ibkr-marketdata
+```
+
+The daemon resolves one endpoint per derived feed at startup and fails fast on invalid
+configuration instead of retrying on every reconnect:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `IBKR_GATEWAY_ADDR` | `127.0.0.1:4002` | TWS / IB Gateway host:port |
+| `IBKR_CLIENT_ID` | `17` | API client id |
+| `IBKR_ACCOUNT` | unset | optional account selector; empty means unset |
+| `IBKR_MARKET_DEPTH_ROWS` | `5` | L2 depth rows (must be positive) |
+| `IBKR_DEFAULT_EXCHANGE` | `SMART` | default routing for a normalized asset name |
+| `IBKR_DEFAULT_CURRENCY` | `USD` | default contract currency |
+
+A `FeedSpec` carries only venue and asset, so the IBKR contract is mapped
+deployment-wide: US SMART routing by default, overridable per deployment. Per-asset
+contract metadata (con_id, primary exchange, non-US listings) is not inferred.
+
+`docker-compose.yml` ships an opt-in gateway service behind the `ibkr` profile:
+
+```bash
+docker compose --profile ibkr up -d
+```
+
+It uses `ghcr.io/gnzsnz/ib-gateway:stable`, default paper API port 4002 (live API port
+4001), and requests read-only API access by default — the runtime only consumes market
+data through this adapter today.
+
+**There is no IBKR execution path in the runtime.** `pg-ibkr` still contains the
+execution/recovery adapter described below and CI still compiles and tests it, but the
+daemon never constructs it: live mode is refused, and every order goes to the in-process
+shadow venue.
+
 ### Execution identity and recovery
 
 IBKR uses the order's `order_ref` as the stable PG client identity. `OrderIntent.client_order_id()` is written into `order_ref`.
@@ -113,7 +184,7 @@ This is a software guard with a timing window, not a substitute for a venue-nati
 
 ## Binance Portfolio Margin
 
-`pg-binance` remains the Binance/Portfolio Margin venue boundary. The production execution/recovery loop is not yet at the same completion level as Hyperliquid and IBKR. Do not infer live readiness from the existence of the adapter crate.
+`pg-binance` remains the Binance/Portfolio Margin venue boundary. Binance PM has no runtime market-data source, so the daemon refuses to start with a derived `BINANCE_PM` subscription. The production execution/recovery loop is not yet at the same completion level as Hyperliquid and IBKR. Do not infer live readiness from the existence of the adapter crate.
 
 Binance PM remains part of the P0 production-hardening backlog: user stream/account truth, client-order id recovery, reconcile, reduce-only emergency path and failure-injection acceptance must be completed before canary use.
 
@@ -134,6 +205,10 @@ cargo clippy -p pg-hyperliquid -p pg-ibkr --all-targets --features sdk -- -D war
 
 # Telegram control transport
 cargo check -p pg-control --features telegram
+
+# Local check of the live core with both runtime market-data sources
+# (the Dockerfile enables ibkr-marketdata for the shipped image)
+cargo check -p pg-core --features ibkr-marketdata
 ```
 
 These CI tests compile and unit-test the venue bindings without intentionally submitting real orders. Real-account tests and failure injection must remain explicit opt-in procedures and must never run against production credentials by default.

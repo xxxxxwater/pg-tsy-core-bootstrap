@@ -256,6 +256,11 @@ impl StrategyRegistry {
             .collect()
     }
 
+    /// Look up a portable policy instance, e.g. to read its configured size.
+    pub fn policy(&self, strategy_id: &str) -> Option<&PolicyInstance> {
+        self.policies.get(strategy_id)
+    }
+
     pub fn get_mut(&mut self, strategy_id: &str) -> Option<&mut AutomatedStrategy> {
         self.strategies.get_mut(strategy_id)
     }
@@ -334,7 +339,8 @@ mod tests {
                 exit_score = 0.05
 
                 [automation]
-                candle_interval_ns = 300
+                # 5m: a candle resolution Hyperliquid can actually serve.
+                candle_interval_ns = 300000000000
 
                 [automation.factors]
                 candle_window = 3
@@ -444,7 +450,7 @@ mod tests {
                 &MarketEvent::Candle(Candle {
                     venue: Venue::Hyperliquid,
                     asset: "HYPE".into(),
-                    interval_ns: 300,
+                    interval_ns: 300_000_000_000,
                     start_ns: ts,
                     end_ns: ts + 1,
                     ts_recv_ns: ts,

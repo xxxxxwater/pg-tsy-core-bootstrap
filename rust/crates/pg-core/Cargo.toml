@@ -7,19 +7,27 @@ license.workspace = true
 [features]
 default = ["hyperliquid-marketdata"]
 hyperliquid-marketdata = ["dep:pg-hyperliquid", "pg-hyperliquid/sdk"]
+# Interactive Brokers market data via TWS / IB Gateway. Opt-in because it pulls
+# the community ibapi crate; the Dockerfile enables it for the shipped image.
+ibkr-marketdata = ["dep:pg-ibkr", "pg-ibkr/sdk"]
 
 [dependencies]
 anyhow.workspace = true
+pg-execution = { path = "../pg-execution" }
 pg-hyperliquid = { path = "../../adapters/pg-hyperliquid", optional = true }
+pg-ibkr = { path = "../../adapters/pg-ibkr", optional = true }
 pg-marketdata = { path = "../pg-marketdata" }
+pg-oms = { path = "../pg-oms" }
 pg-orchestrator = { path = "../pg-orchestrator" }
 pg-runtime = { path = "../pg-runtime" }
 pg-store = { path = "../pg-store" }
 pg-types = { path = "../pg-types" }
 pg-risk = { path = "../pg-risk" }
 pg-strategy = { path = "../pg-strategy" }
+rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true

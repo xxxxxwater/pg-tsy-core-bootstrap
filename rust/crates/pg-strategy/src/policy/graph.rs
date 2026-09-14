@@ -105,6 +105,16 @@ pub enum ExitPolicyDecision {
 }
 
 impl PolicyEngine {
+    /// Whether this definition declares a rule graph that can produce decisions.
+    ///
+    /// Every strategy instance carries a policy engine, but a definition written
+    /// with only an [automation] section compiles an empty graph. That distinction
+    /// is what stops the legacy score machine and the rule graph from both
+    /// dispatching orders for the same instrument.
+    pub fn is_defined(&self) -> bool {
+        !self.definition.entries.is_empty() || !self.definition.exits.is_empty()
+    }
+
     pub fn evaluate_entry(&self, context: &StrategyContext<'_>) -> EntryPolicyDecision {
         for filter in &self.definition.filters {
             let result = filter.evaluate(context);

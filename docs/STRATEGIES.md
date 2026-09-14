@@ -119,9 +119,62 @@ value = -0.10
 
 Missing features never cause an entry rule to match. Entry filters gate **new exposure only**; exit rules are evaluated independently so an entry screen cannot disable management of an already-owned position.
 
-Position state is resolved through `StrategyContext` rather than copied into a venue-specific strategy object. Both `unrealized_return` and `position.unrealized_return` address the normalized position view.
+`evaluate_predicates` fails closed: if any predicate of a rule references a feature the
+frame does not carry, the rule cannot match and the missing names are reported in
+`missing_features`. Partial feature state is never enough to create exposure.
+
+Position state is resolved through `StrategyContext` rather than copied into a venue-specific strategy object. Both `unrealized_return` and `position.unrealized_return` address the normalized position view. In the live daemon that view is built from the simulated venue: net quantity, average entry price, filled entries, unrealized return and running peak return.
 
 See `strategies/portable_multi_venue.toml` for a complete multi-venue definition.
+
+## One decision engine per definition
+
+A definition may carry both an `[automation]` section and a `[[policy.*]]` rule graph.
+Only one of them may dispatch:
+
+- `PolicyEngine::is_defined()` is true when the definition declares at least one entry
+  or exit rule; `PolicyInstance::is_policy_driven()` mirrors that;
+- a policy-driven definition dispatches through the rule graph, and the legacy score
+  machine's `Submit` decisions for that definition are suppressed in the daemon;
+- a definition with only `[automation]` keeps the legacy score path.
+
+Without this rule two independent decision engines could open the same exposure on one
+instrument.
+
+## Long-only by default
+
+`[strategy] allow_short` defaults to `false`:
+
+```toml
+[strategy]
+id = "momentum-volume-vwap"
+order_quantity = "1"
+entry_score = 0.35
+exit_score = 0.05
+# allow_short = true   # opt in; absent means long-only
+```
+
+The flag reaches both engines: the legacy `StrategyMachine` only opens a short from
+flat when `allow_short` is set, and the policy path suppresses a matched `side = "Sell"`
+entry when the definition is long-only. That suppression is a runtime decision with a
+debug log, not a load-time error: the rule still exists in the graph, it just cannot open
+exposure. Shorting is an exposure-increasing action, so it must be asked for explicitly
+rather than inherited from a symmetric score threshold.
+
+## Candle resolution is a venue capability
+
+`pg-marketdata` owns the table of candle resolutions a venue can actually serve
+(`supported_candle_intervals`, `candle_interval_supported`, `default_candle_interval`,
+`describe_candle_interval`, `describe_candle_intervals`). It is a capability table, not a
+preference:
+
+- an explicitly configured `[automation] candle_interval_ns` that the instrument's venue
+  cannot serve fails at strategy load, naming the supported resolutions;
+- when the interval is omitted, each instrument uses its own venue default — the venue's
+  smallest supported resolution — so one template can span venues with different candle
+  contracts (Hyperliquid 1m, IBKR 5s) instead of a global 5s;
+- a permanently rejected subscription would otherwise leave the daemon reconnecting
+  forever and never ready, with no obvious cause.
 
 ## Feature Provider Registry
 
@@ -221,7 +274,24 @@ StrategyMachine
 OrderIntent
 ```
 
-The portable policy path now runs alongside it in market-event replay and owns its own graph-derived feature subscriptions. It is not yet allowed to bypass the production Risk/OMS/reconcile gates or dispatch orders directly.
+The portable policy path runs alongside it and owns its own graph-derived feature
+subscriptions. In the shadow daemon it dispatches — through exactly the same gates as the
+legacy path:
+
+```text
+policy decision (entry from flat / reduce-only exit)
+   ↓
+pg_risk::evaluate_order
+   ↓
+DurableExecution::dispatch (journal before adapter)
+   ↓
+shadow venue
+```
+
+Neither engine can bypass Risk, the journal or the OMS, and only one of them dispatches
+for a given definition. Exits are always `ReduceOnly`; entries only open from flat; the
+policy path tracks a working client order id per strategy instance so the same entry is
+not re-emitted on every tick.
 
 ## Reusable factors
 
@@ -276,6 +346,7 @@ For migration/parity tests, supply newline-delimited normalized feature frames:
 
 ```bash
 make policy-replay FEATURES=data/replay/policy_features.jsonl
+make policy-replay FEATURES=data/replay/policy_features.jsonl STRATEGY_DIR=../data/replay/strategies
 ```
 
 or:
@@ -287,7 +358,8 @@ PG_STRATEGY_DIR=../strategies \
 cargo run -p pg-core -- --replay-policy-features ../data/replay/policy_features.jsonl
 ```
 
-This evaluates the portable rule graph without touching any venue.
+This evaluates the portable rule graph without touching any venue. The frame format is
+documented in [`data/replay/README.md`](../data/replay/README.md).
 
 ## Replay live-style market events
 
@@ -295,6 +367,7 @@ Market-event replay now executes both the compatibility automation path and the 
 
 ```bash
 make strategy-replay EVENTS=data/replay/hype.jsonl
+make strategy-replay EVENTS=data/replay/hype.jsonl STRATEGY_DIR=../data/replay/strategies
 ```
 
 The portable path is:
@@ -328,8 +401,30 @@ Direct reload is rejected if an old instance has:
 
 Flat or halted instances can be replaced. Production hot reload should evolve toward `validate → drain → reconcile → atomic swap` without transferring ambiguous ownership to the new definition.
 
+The running daemon exposes this over its health/control listener:
+
+```bash
+make reload   # POST http://127.0.0.1:8080/admin/reload
+```
+
+The HTTP endpoint only enqueues `ControlCommand::ReloadStrategies`; it cannot submit,
+cancel or flatten. The daemon re-reads every `*.toml` in the strategy directory, validates
+each replacement and only then swaps, so a rejected reload leaves the running set
+untouched and records the reason in the health snapshot's `last_error`. Reload does not
+drain: an instance with owned position, active intent or non-flat state is still refused.
+
 ## Live runtime boundary
 
-Portable feature planning and live normalized policy evaluation are now implemented, but full unattended live orchestration is still a P0 hardening milestone. Real market subscriptions still need to be driven by the derived `FeedSpec` inventory inside the production daemon, and any actionable policy decision must continue through journal-before-dispatch, Risk, OMS, execution, continuous reconcile and recovery.
+Portable feature planning, live normalized policy evaluation and real market
+subscriptions now run inside the shadow daemon: the derived `FeedSpec` inventory drives
+the market-data tasks, one decision engine per definition produces intents, and every
+intent continues through Risk → journal-before-dispatch → OMS → execution.
 
-Never add a convenience runner that bypasses those layers just to make a strategy "live" faster.
+What is still missing for unattended live orchestration: a continuous reconcile loop that
+writes venue fills back into the durable order records, and the crash-window proof around
+an ACK lost between journal and record update. `pg-core --serve` therefore still refuses
+`paper` and `live`, and the only execution adapter it registers is the in-process shadow
+venue.
+
+Never add a convenience runner that bypasses Risk, the journal, the OMS or reconcile just
+to make a strategy "live" faster.

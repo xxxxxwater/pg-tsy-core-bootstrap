@@ -1,0 +1,12 @@
+# Synthetic normalized FeatureFrame stream for --replay-policy-features.
+# One PolicyReplayFrame per line. See data/replay/README.md for the format.
+#
+# Frames are ordered so every rule outcome appears at least once, including the
+# near-misses either side of a threshold.
+{"instrument":{"venue":"HYPERLIQUID","asset":"HYPE"},"features":{"values":{"spread_bps":5,"momentum_bps":18,"volume_ratio":1.3}},"position":{"net_quantity":"0","average_entry_price":null,"filled_entries":0,"unrealized_return":null,"peak_return":null},"now_ns":1}
+{"instrument":{"venue":"HYPERLIQUID","asset":"HYPE"},"features":{"values":{"spread_bps":5,"momentum_bps":25,"volume_ratio":1.4}},"position":{"net_quantity":"0","average_entry_price":null,"filled_entries":0,"unrealized_return":null,"peak_return":null},"now_ns":2}
+{"instrument":{"venue":"HYPERLIQUID","asset":"HYPE"},"features":{"values":{"spread_bps":30,"momentum_bps":40,"volume_ratio":2}},"position":{"net_quantity":"0","average_entry_price":null,"filled_entries":0,"unrealized_return":null,"peak_return":null},"now_ns":3}
+{"instrument":{"venue":"HYPERLIQUID","asset":"HYPE"},"features":{"values":{"spread_bps":5,"momentum_bps":30}},"position":{"net_quantity":"0","average_entry_price":null,"filled_entries":0,"unrealized_return":null,"peak_return":null},"now_ns":4}
+{"instrument":{"venue":"HYPERLIQUID","asset":"HYPE"},"features":{"values":{"spread_bps":4,"momentum_bps":12,"volume_ratio":1.1}},"position":{"net_quantity":"1","average_entry_price":"31.00","filled_entries":1,"unrealized_return":-0.12,"peak_return":-0.09999999999999999},"now_ns":5}
+{"instrument":{"venue":"HYPERLIQUID","asset":"HYPE"},"features":{"values":{"spread_bps":40,"momentum_bps":-60,"volume_ratio":0.8}},"position":{"net_quantity":"1","average_entry_price":"31.00","filled_entries":1,"unrealized_return":-0.01,"peak_return":0.01},"now_ns":6}
+{"instrument":{"venue":"HYPERLIQUID","asset":"HYPE"},"features":{"values":{"spread_bps":4,"momentum_bps":-60,"volume_ratio":0.8}},"position":{"net_quantity":"0","average_entry_price":null,"filled_entries":0,"unrealized_return":null,"peak_return":null},"now_ns":7}

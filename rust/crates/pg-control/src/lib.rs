@@ -74,10 +74,7 @@ impl ControlCommand {
     pub fn mutates_runtime(&self) -> bool {
         matches!(
             self,
-            Self::Start
-                | Self::EmergencyExit
-                | Self::RunScript { .. }
-                | Self::ReloadScript { .. }
+            Self::Start | Self::EmergencyExit | Self::RunScript { .. } | Self::ReloadScript { .. }
         )
     }
 }

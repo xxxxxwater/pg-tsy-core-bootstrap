@@ -68,10 +68,11 @@ The venue adapters can now recognize previously accepted orders after ambiguous 
 
 ### P0.2 Journal-before-dispatch
 
-- [ ] Persist order intent and dispatch state before entering a path where the venue may accept the request.
-- [ ] Bind every durable mutation to the current fencing token.
-- [ ] Ensure a restarted process never interprets "ACK not persisted" as "order not accepted".
+- [x] Persist order intent and dispatch state before entering a path where the venue may accept the request. (`DurableExecution::dispatch` saves the record and journals `order.intent.persisted` before calling the adapter.)
+- [x] Bind every durable mutation to the current fencing token. (`assert_lease` runs first and every store write carries `lease.fencing_token`.)
+- [ ] Ensure a restarted process never interprets "ACK not persisted" as "order not accepted". Recovery primitives exist (`recover_ambiguous`, `reconcile_once`) but the shadow daemon does not call them yet.
 - [ ] Add explicit recovery state for dispatch-started / outcome-unknown.
+- [ ] Prove the ordering under kill-9 / network / database faults (see P0.3).
 
 ### P0.3 Failure injection
 
@@ -101,13 +102,13 @@ Exit criterion:
 
 ## P0.5 Observability / operations
 
-- [ ] `/healthz` for process liveness.
-- [ ] `/readyz` for database/lease/feed/reconcile/trading readiness.
-- [ ] Prometheus metrics for market-data age, gaps, order latency, unknown outcomes, reconcile mismatches, fencing and command activity.
+- [x] `/healthz` for process liveness.
+- [x] `/readyz` for database/lease/feed/startup-gate readiness.
+- [ ] Prometheus metrics for market-data age, gaps, order latency, unknown outcomes, reconcile mismatches, fencing and command activity. (Currently exposed: process/ready/lease health, feed counts, event and policy-decision counters, open orders, journaled orders, blocking startup gates.)
 - [ ] Alert rules for stale feed, lease loss, Unknown order, ownership mismatch and reconciliation lag.
-- [ ] Hardened production Docker image.
+- [ ] Hardened production Docker image. (Pinned toolchain, committed lockfile and non-root runtime exist; image scanning/hardening policy does not.)
 - [ ] systemd unit/restart policy for EC2.
-- [ ] graceful shutdown and startup-gate runbook.
+- [x] Startup-gate enforcement and shutdown policy (`PG_SHUTDOWN_POLICY`) in the runtime.
 
 ## P0.6 Binance Portfolio Margin parity
 

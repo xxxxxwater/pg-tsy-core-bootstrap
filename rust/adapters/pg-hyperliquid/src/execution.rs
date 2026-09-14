@@ -63,6 +63,20 @@ impl HyperliquidExecutionAdapter {
         })
     }
 
+    /// Build an execution adapter from a hex-encoded secp256k1 private key.
+    ///
+    /// The signing primitive stays inside the venue boundary so core crates never
+    /// depend on the venue's cryptography stack. The key is never logged.
+    pub async fn connect_with_private_key(
+        config: HyperliquidExecutionConfig,
+        private_key: &str,
+    ) -> Result<Self, ExecutionError> {
+        let signer = PrivateKeySigner::from_str(private_key.trim()).map_err(|error| {
+            ExecutionError::Authentication(format!("invalid Hyperliquid private key: {error}"))
+        })?;
+        Self::connect(config, signer).await
+    }
+
     fn validate_intent(&self, intent: &OrderIntent) -> Result<(), ExecutionError> {
         if intent.venue != Venue::Hyperliquid {
             return Err(ExecutionError::Unsupported(

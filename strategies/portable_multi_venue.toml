@@ -2,10 +2,16 @@
 # This file demonstrates infrastructure portability, not a recommendation to use
 # identical thresholds/sizing for crypto and equities in production.
 #
-# It is intentionally disabled in the default Docker quick-start because the
-# shadow daemon currently wires public Hyperliquid market data only. Enable it
-# only after the corresponding Binance/IBKR runtime market-data sources are
-# registered for the deployment.
+# It is intentionally disabled by default. The runtime can now consume
+# Hyperliquid and (with the ibkr-marketdata feature) Interactive Brokers market
+# data, but Binance Portfolio Margin has no runtime feed yet, so this template
+# cannot be enabled as written.
+#
+# Note also that the three venues do not share a candle contract: Hyperliquid
+# serves 1m and up while IBKR realtime bars are 5s. Leaving
+# [automation] candle_interval_ns unset lets each instrument use its own venue
+# default; setting it explicitly requires a resolution every listed venue can
+# serve, and loading fails otherwise.
 
 schema_version = "strategy.v1"
 enabled = false

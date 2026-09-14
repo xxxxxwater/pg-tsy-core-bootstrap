@@ -1,0 +1,61 @@
+# Replay fixture strategy: Hyperliquid-only so it can be replayed without the
+# multi-venue example (which the shadow daemon intentionally refuses to run).
+#
+#   make strategy-replay EVENTS=data/replay/hype.jsonl STRATEGY_DIR=../data/replay/strategies
+#   make policy-replay   FEATURES=data/replay/policy_features.jsonl STRATEGY_DIR=../data/replay/strategies
+schema_version = "strategy.v1"
+enabled = true
+
+[universe]
+[[universe.instruments]]
+venue = "HYPERLIQUID"
+asset = "HYPE"
+
+[strategy]
+id = "replay-hype-momentum"
+order_quantity = "1"
+entry_score = 0.35
+exit_score = 0.05
+
+[automation]
+# Hyperliquid has no 5 second candle stream; 5m is the resolution the online
+# factor engine uses for this fixture.
+candle_interval_ns = 300000000000
+
+[[policy.filters]]
+id = "liquidity"
+mode = "all"
+
+[[policy.filters.predicates]]
+feature = "spread_bps"
+op = "lte"
+value = 20.0
+
+[[policy.entries]]
+id = "momentum_volume_long"
+side = "Buy"
+mode = "all"
+
+[[policy.entries.predicates]]
+feature = "momentum_bps"
+op = "gte"
+value = 20.0
+
+[[policy.entries.predicates]]
+feature = "volume_ratio"
+op = "gte"
+value = 1.25
+
+[[policy.exits]]
+id = "risk_or_momentum_exit"
+mode = "any"
+
+[[policy.exits.predicates]]
+feature = "position.unrealized_return"
+op = "lte"
+value = -0.10
+
+[[policy.exits.predicates]]
+feature = "momentum_bps"
+op = "lte"
+value = -50.0

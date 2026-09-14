@@ -25,13 +25,11 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo generate-lockfile
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rust-cargo-lock
-          path: rust/Cargo.lock
-          if-no-files-found: error
+      - uses: dtolnay/rust-toolchain@1.98.1
+      # Cargo.lock is committed so the container image resolves the same
+      # dependency versions on every build. This fails when Cargo.toml and
+      # Cargo.lock have drifted apart.
+      - run: cargo metadata --locked --format-version 1 > /dev/null
 
   rust-core:
     runs-on: ubuntu-latest
@@ -40,7 +38,7 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt,clippy
       - run: cargo fmt --check
@@ -54,10 +52,35 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt,clippy
       - run: cargo test -p pg-hyperliquid --features sdk
       - run: cargo test -p pg-ibkr --features sdk
       - run: cargo clippy -p pg-hyperliquid -p pg-ibkr --all-targets --features sdk -- -D warnings
       - run: cargo check -p pg-control --features telegram
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # The image ENTRYPOINT already supplies the pg-core binary, so the compose
+      # command must carry arguments only. Repeating the binary path made pg-core
+      # read it as a positional <signal.json> argument and try to UTF-8-decode
+      # the ELF, which crash-looped the container on startup.
+      - name: pg-core command must be arguments only
+        run: |
+          resolved=$(docker compose config --format json | jq -r '.services["pg-core"].command | join(" ")')
+          if [ "$resolved" != "--serve" ]; then
+            echo "unexpected pg-core command: '$resolved' (expected '--serve')"
+            exit 1
+          fi
+      # The IB Gateway container is opt-in and must never join the default run.
+      - name: ib-gateway stays behind its profile
+        run: |
+          services=$(docker compose config --services | tr '\n' ' ')
+          case "$services" in
+            *ib-gateway*) echo "ib-gateway leaked into the default profile"; exit 1 ;;
+          esac
+          docker compose --profile ibkr config --services | grep -qx ib-gateway

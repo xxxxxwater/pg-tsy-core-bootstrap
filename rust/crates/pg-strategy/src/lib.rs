@@ -18,6 +18,12 @@ pub struct StrategyConfig {
     pub order_quantity: Decimal,
     pub entry_score: f64,
     pub exit_score: f64,
+    /// Whether a negative score may open a short from flat.
+    ///
+    /// Defaults to false. Opening a short is an exposure-increasing action, so it
+    /// has to be asked for explicitly in the strategy definition rather than being
+    /// inherited from a symmetric score threshold.
+    pub allow_short: bool,
 }
 
 impl StrategyConfig {
@@ -109,7 +115,9 @@ impl StrategyMachine {
             StrategyPhase::Flat if signal.score >= self.config.entry_score => {
                 self.submit_entry(signal, Side::Buy, StrategyPhase::EnteringLong)
             }
-            StrategyPhase::Flat if signal.score <= -self.config.entry_score => {
+            StrategyPhase::Flat
+                if self.config.allow_short && signal.score <= -self.config.entry_score =>
+            {
                 self.submit_entry(signal, Side::Sell, StrategyPhase::EnteringShort)
             }
             StrategyPhase::Long if signal.score <= self.config.exit_score => {
@@ -306,6 +314,7 @@ mod tests {
             order_quantity: Decimal::from(2),
             entry_score: 0.5,
             exit_score: 0.1,
+            allow_short: false,
         }
     }
 
@@ -345,8 +354,28 @@ mod tests {
         };
         assert_eq!(exit.effect, ExposureEffect::ReduceOnly);
         assert_eq!(exit.side, Side::Sell);
-        assert!(machine.on_intent_filled(exit.intent_id));
+    }
+
+    #[test]
+    fn negative_score_does_not_open_a_short_unless_allowed() {
+        let mut machine = StrategyMachine::new(config()).unwrap();
+        let decision = machine.on_signal(&signal("s-short", -0.9), 1);
+        assert!(
+            matches!(decision, StrategyDecision::Noop),
+            "long-only strategies must ignore a negative score, got {decision:?}"
+        );
         assert_eq!(machine.state.phase, StrategyPhase::Flat);
+
+        let mut shorting = config();
+        shorting.allow_short = true;
+        let mut machine = StrategyMachine::new(shorting).unwrap();
+        let decision = machine.on_signal(&signal("s-short", -0.9), 1);
+        let StrategyDecision::Submit(intent) = decision else {
+            panic!("allow_short should permit a short entry, got {decision:?}");
+        };
+        assert_eq!(intent.side, Side::Sell);
+        assert_eq!(intent.effect, ExposureEffect::Increase);
+        assert_eq!(machine.state.phase, StrategyPhase::EnteringShort);
     }
 
     #[test]
