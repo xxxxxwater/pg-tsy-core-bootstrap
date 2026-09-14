@@ -14,8 +14,13 @@ pub use teloxide as telegram_sdk;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlCommand {
     Start,
+    Stop,
     Performance,
     Status,
+    Positions,
+    Orders,
+    Risk,
+    Refresh,
     Logs { lines: u16 },
     EmergencyExit,
     Scripts,
@@ -36,10 +41,15 @@ impl ControlCommand {
     pub fn parse(input: &str) -> Result<Self, CommandParseError> {
         let mut parts = input.split_whitespace();
         let command = parts.next().ok_or(CommandParseError::Unknown)?;
-        match command.split('@').next().unwrap_or(command) {
-            "/start" => Ok(Self::Start),
-            "/performance" => Ok(Self::Performance),
-            "/status" => Ok(Self::Status),
+        let parsed = match command.split('@').next().unwrap_or(command) {
+            "/start" => Self::Start,
+            "/stop" => Self::Stop,
+            "/performance" => Self::Performance,
+            "/status" => Self::Status,
+            "/positions" => Self::Positions,
+            "/orders" => Self::Orders,
+            "/risk" => Self::Risk,
+            "/refresh" => Self::Refresh,
             "/logs" => {
                 let lines = parts.next().unwrap_or("50");
                 let lines = lines
@@ -48,34 +58,51 @@ impl ControlCommand {
                 if !(1..=200).contains(&lines) {
                     return Err(CommandParseError::InvalidArgument);
                 }
-                Ok(Self::Logs { lines })
+                Self::Logs { lines }
             }
-            "/emergency_exit" => Ok(Self::EmergencyExit),
-            "/scripts" => Ok(Self::Scripts),
+            "/emergency_exit" => Self::EmergencyExit,
+            "/scripts" => Self::Scripts,
             "/script" => {
                 let name = parts.next().ok_or(CommandParseError::InvalidArgument)?;
                 if !valid_script_name(name) || parts.next().is_some() {
                     return Err(CommandParseError::InvalidArgument);
                 }
-                Ok(Self::RunScript { name: name.into() })
+                return Ok(Self::RunScript { name: name.into() });
             }
             "/reload_script" => {
                 let name = parts.next().ok_or(CommandParseError::InvalidArgument)?;
                 if !valid_script_name(name) || parts.next().is_some() {
                     return Err(CommandParseError::InvalidArgument);
                 }
-                Ok(Self::ReloadScript { name: name.into() })
+                return Ok(Self::ReloadScript { name: name.into() });
             }
-            "/latency" => Ok(Self::Latency),
-            _ => Err(CommandParseError::Unknown),
+            "/latency" => Self::Latency,
+            _ => return Err(CommandParseError::Unknown),
+        };
+        if parts.next().is_some() {
+            return Err(CommandParseError::InvalidArgument);
         }
+        Ok(parsed)
     }
 
     pub fn mutates_runtime(&self) -> bool {
         matches!(
             self,
-            Self::Start | Self::EmergencyExit | Self::RunScript { .. } | Self::ReloadScript { .. }
+            Self::Start
+                | Self::Stop
+                | Self::Refresh
+                | Self::EmergencyExit
+                | Self::RunScript { .. }
+                | Self::ReloadScript { .. }
         )
+    }
+
+    pub fn is_emergency(&self) -> bool {
+        matches!(self, Self::EmergencyExit)
+    }
+
+    pub fn is_refresh(&self) -> bool {
+        matches!(self, Self::Refresh)
     }
 }
 
@@ -98,6 +125,10 @@ impl TelegramAuthorizer {
 
     pub fn authorized(&self, user_id: i64, chat_id: i64) -> bool {
         self.allowed_user_ids.contains(&user_id) && self.allowed_chat_ids.contains(&chat_id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.allowed_user_ids.is_empty() || self.allowed_chat_ids.is_empty()
     }
 }
 
@@ -122,6 +153,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_required_operator_commands() {
+        for (raw, expected) in [
+            ("/start", ControlCommand::Start),
+            ("/stop", ControlCommand::Stop),
+            ("/status", ControlCommand::Status),
+            ("/positions", ControlCommand::Positions),
+            ("/orders", ControlCommand::Orders),
+            ("/risk", ControlCommand::Risk),
+            ("/refresh", ControlCommand::Refresh),
+            ("/emergency_exit", ControlCommand::EmergencyExit),
+        ] {
+            assert_eq!(ControlCommand::parse(raw).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn commands_without_arguments_reject_trailing_input() {
+        assert!(ControlCommand::parse("/start now").is_err());
+        assert!(ControlCommand::parse("/refresh all").is_err());
+        assert!(ControlCommand::parse("/emergency_exit yes").is_err());
+    }
+
+    #[test]
     fn parses_bounded_log_request() {
         assert_eq!(
             ControlCommand::parse("/logs 100").unwrap(),
@@ -143,5 +197,17 @@ mod tests {
         let auth = TelegramAuthorizer::new([7], [11]);
         assert!(auth.authorized(7, 11));
         assert!(!auth.authorized(7, 12));
+    }
+
+    #[test]
+    fn mutation_classification_is_fail_closed() {
+        assert!(ControlCommand::Start.mutates_runtime());
+        assert!(ControlCommand::Stop.mutates_runtime());
+        assert!(ControlCommand::Refresh.mutates_runtime());
+        assert!(ControlCommand::EmergencyExit.mutates_runtime());
+        assert!(!ControlCommand::Status.mutates_runtime());
+        assert!(!ControlCommand::Positions.mutates_runtime());
+        assert!(!ControlCommand::Orders.mutates_runtime());
+        assert!(!ControlCommand::Risk.mutates_runtime());
     }
 }
