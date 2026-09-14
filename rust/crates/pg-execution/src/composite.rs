@@ -154,22 +154,12 @@ impl ExecutionAdapter for CompositeExecutionAdapter {
     }
 
     async fn positions(&self) -> Result<Vec<VenuePositionSnapshot>, ExecutionError> {
-        let mut unique = BTreeMap::<String, VenuePositionSnapshot>::new();
-        for adapter in self.children() {
-            for position in adapter.positions().await? {
-                if let Some(existing) = unique.get(&position.asset) {
-                    if existing.quantity != position.quantity {
-                        return Err(ExecutionError::Unknown(format!(
-                            "conflicting composite position snapshots for {}: {} != {}",
-                            position.asset, existing.quantity, position.quantity
-                        )));
-                    }
-                } else {
-                    unique.insert(position.asset.clone(), position);
-                }
-            }
-        }
-        Ok(unique.into_values().collect())
+        let adapter = self.children().into_iter().next().ok_or_else(|| {
+            ExecutionError::Unsupported("composite has no instrument adapters".into())
+        })?;
+        // IBKR positions are account-wide, not instrument-client scoped. Querying
+        // every per-symbol child would multiply the same API request by top-N.
+        adapter.positions().await
     }
 
     async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
@@ -196,12 +186,16 @@ impl ExecutionAdapter for CompositeExecutionAdapter {
 mod tests {
     use super::*;
     use rust_decimal::Decimal;
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[derive(Default)]
     struct FakeAdapter {
         submitted: Mutex<Vec<String>>,
         fail_reads: bool,
+        position_reads: AtomicUsize,
     }
 
     #[async_trait]
@@ -229,6 +223,7 @@ mod tests {
         }
 
         async fn positions(&self) -> Result<Vec<VenuePositionSnapshot>, ExecutionError> {
+            self.position_reads.fetch_add(1, Ordering::SeqCst);
             if self.fail_reads {
                 return Err(ExecutionError::Transport("read failed".into()));
             }
@@ -316,11 +311,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_side_deduplicates_shared_account_snapshots_and_propagates_errors() {
+    async fn account_positions_are_queried_once_even_with_multiple_children() {
+        let apple = Arc::new(FakeAdapter::default());
+        let msft = Arc::new(FakeAdapter::default());
         let composite = CompositeExecutionAdapter::new(Venue::InteractiveBrokers)
-            .with_instrument("AAPL", Arc::new(FakeAdapter::default()))
-            .with_instrument("MSFT", Arc::new(FakeAdapter::default()));
+            .with_instrument("AAPL", apple.clone())
+            .with_instrument("MSFT", msft.clone());
         assert_eq!(composite.positions().await.unwrap().len(), 1);
+        assert_eq!(
+            apple.position_reads.load(Ordering::SeqCst)
+                + msft.position_reads.load(Ordering::SeqCst),
+            1
+        );
         assert_eq!(
             composite.account_snapshot().await.unwrap().account_value,
             Some(Decimal::from(100_000))
@@ -331,6 +333,7 @@ mod tests {
             Arc::new(FakeAdapter {
                 submitted: Mutex::new(Vec::new()),
                 fail_reads: true,
+                position_reads: AtomicUsize::new(0),
             }),
         );
         assert!(failing.positions().await.is_err());
