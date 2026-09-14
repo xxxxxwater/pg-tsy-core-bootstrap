@@ -1,9 +1,21 @@
 mod daemon;
 mod health;
+// The default pg-core build enables Hyperliquid but not IBKR. A small subset of
+// live_daemon helpers exists only for the IBKR feature; keep those default-build
+// lints scoped to this module, while CI separately compiles/clippies pg-core with
+// ibkr-marketdata enabled. The unused assignments are defensive fail-closed writes
+// immediately before fatal breaks and have no observable side effect.
+#[cfg_attr(
+    not(feature = "ibkr-marketdata"),
+    allow(unused_imports, unused_variables, dead_code, clippy::vec_init_then_push)
+)]
+#[allow(unused_assignments)]
+mod live_daemon;
+mod secrets;
 
 use anyhow::{Context, Result, bail};
 use pg_risk::{RiskLimits, evaluate_signal};
-use pg_runtime::RunConfig;
+use pg_runtime::{RunConfig, RunMode};
 use pg_strategy::StrategyDecision;
 use pg_strategy::policy::{FeatureFrame, PositionView};
 use pg_strategy::registry::StrategyRegistry;
@@ -195,7 +207,8 @@ async fn main() -> Result<()> {
         environment = %config.environment,
         instance_id = %config.instance_id,
         mode = ?config.mode,
-        real_venue = config.routes_to_real_venue(),
+        real_venue = config.mode != RunMode::Shadow,
+        live_money = config.routes_to_real_venue(),
         "runtime configuration loaded"
     );
 
@@ -209,7 +222,10 @@ async fn main() -> Result<()> {
         let registry = registry
             .take()
             .context("--serve requires a strategy directory")?;
-        return daemon::serve(config, registry).await;
+        return match config.mode {
+            RunMode::Shadow => daemon::serve(config, registry).await,
+            RunMode::Paper | RunMode::Live => live_daemon::serve(config, registry).await,
+        };
     }
 
     if args.first().map(String::as_str) == Some("--replay-market-events") {
@@ -234,7 +250,7 @@ async fn main() -> Result<()> {
 
     let Some(path) = args.first() else {
         println!(
-            "pg-core configured in {:?} mode. Use --serve for the fail-closed shadow daemon, --replay-market-events <events.jsonl> for normalized live-feature replay, or --replay-policy-features <features.jsonl> for fixture parity. Real-money live orchestration remains disabled until release gates are complete.",
+            "pg-core configured in {:?} mode. Use --serve to run the selected runtime, --replay-market-events <events.jsonl> for normalized live-feature replay, or --replay-policy-features <features.jsonl> for fixture parity. Shadow stays simulated; paper/live require real venue adapters and never fall back to shadow execution.",
             config.mode
         );
         return Ok(());

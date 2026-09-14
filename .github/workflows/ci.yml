@@ -58,6 +58,10 @@ jobs:
       - run: cargo test -p pg-hyperliquid --features sdk
       - run: cargo test -p pg-ibkr --features sdk
       - run: cargo clippy -p pg-hyperliquid -p pg-ibkr --all-targets --features sdk -- -D warnings
+      # The production image enables ibkr-marketdata. Compile/clippy the actual
+      # pg-core runtime with that feature so feature-gated real execution wiring
+      # cannot silently rot while the default Hyperliquid-only workspace stays green.
+      - run: cargo clippy -p pg-core --all-targets --features ibkr-marketdata -- -D warnings
       - run: cargo check -p pg-control --features telegram
 
   compose-config:
@@ -84,3 +88,10 @@ jobs:
             *ib-gateway*) echo "ib-gateway leaked into the default profile"; exit 1 ;;
           esac
           docker compose --profile ibkr config --services | grep -qx ib-gateway
+      - name: production compose parses with explicit operator settings
+        env:
+          PG_RUN_MODE: paper
+          PG_LIVE_TRADING: "false"
+          POSTGRES_USER: pgtsy_ci
+          POSTGRES_PASSWORD: ci-not-a-real-secret
+        run: docker compose -f docker-compose.production.yml config >/dev/null
