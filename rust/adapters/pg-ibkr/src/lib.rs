@@ -10,6 +10,10 @@ pub use ibapi as sdk;
 mod execution;
 #[cfg(feature = "sdk")]
 pub use execution::{IbkrExecutionAdapter, IbkrExecutionConfig};
+#[cfg(feature = "sdk")]
+mod universe;
+#[cfg(feature = "sdk")]
+pub use universe::{IbkrScannerConfig, IbkrUniverseProvider};
 
 #[derive(Debug, Clone)]
 pub struct IbkrConfig {
