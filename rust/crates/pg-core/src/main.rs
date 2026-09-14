@@ -7,14 +7,9 @@ mod health;
 // immediately before fatal breaks and have no observable side effect.
 #[cfg_attr(
     not(feature = "ibkr-marketdata"),
-    allow(
-        unused_imports,
-        unused_variables,
-        dead_code,
-        clippy::vec_init_then_push
-    )
+    allow(unused_imports, unused_variables, dead_code)
 )]
-#[allow(unused_assignments)]
+#[allow(unused_assignments, clippy::vec_init_then_push)]
 mod live_daemon;
 mod secrets;
 

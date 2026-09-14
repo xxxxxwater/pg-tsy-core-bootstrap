@@ -20,8 +20,12 @@ services:
     profiles: ["ibkr"]
     restart: unless-stopped
     environment:
-      TWS_USERID: ${IBKR_TWS_USERID:?set IBKR_TWS_USERID when using the ibkr profile}
-      TWS_PASSWORD: ${IBKR_TWS_PASSWORD:?set IBKR_TWS_PASSWORD when using the ibkr profile}
+      # Compose interpolates profile services even when the profile is disabled.
+      # Keep these empty by default so Hyperliquid-only production config parses;
+      # the IBKR gateway itself remains opt-in and pg-core fails closed if the
+      # requested real IBKR venue is unavailable or unauthenticated.
+      TWS_USERID: ${IBKR_TWS_USERID:-}
+      TWS_PASSWORD: ${IBKR_TWS_PASSWORD:-}
       TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
       READ_ONLY_API: ${IBKR_READ_ONLY_API:-yes}
       TWOFA_TIMEOUT_ACTION: ${IBKR_TWOFA_TIMEOUT_ACTION:-restart}
