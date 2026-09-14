@@ -1,4 +1,5 @@
 use super::{HyperliquidNetwork, sdk};
+use alloy::primitives::Address;
 use async_trait::async_trait;
 use pg_marketdata::{
     InstrumentDescriptor, ProductType, UniverseError, UniverseProvider, UniverseSnapshot,
@@ -6,6 +7,7 @@ use pg_marketdata::{
 use pg_types::Venue;
 use rust_decimal::Decimal;
 use std::{
+    collections::BTreeSet,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -24,6 +26,38 @@ impl HyperliquidUniverseProvider {
             .await
             .map_err(|error| UniverseError::Transport(error.to_string()))?;
         Ok(Self { info })
+    }
+
+    /// Read non-flat positions and open-order assets before top-N materialization.
+    /// Hyperliquid account state is queryable by the public account address, so no
+    /// signing key needs to cross into the universe-discovery boundary.
+    pub async fn account_assets(
+        &self,
+        account_address: &str,
+    ) -> Result<BTreeSet<String>, UniverseError> {
+        let address = Address::from_str(account_address.trim())
+            .map_err(|error| UniverseError::Conversion(error.to_string()))?;
+        let state = self
+            .info
+            .user_state(address)
+            .await
+            .map_err(|error| UniverseError::Transport(error.to_string()))?;
+        let mut assets = BTreeSet::new();
+        for position in state.asset_positions {
+            let quantity = decimal("szi", &position.position.szi)?;
+            if !quantity.is_zero() {
+                assets.insert(position.position.coin);
+            }
+        }
+        for order in self
+            .info
+            .open_orders(address)
+            .await
+            .map_err(|error| UniverseError::Transport(error.to_string()))?
+        {
+            assets.insert(order.coin);
+        }
+        Ok(assets)
     }
 
     async fn snapshot(&self) -> Result<UniverseSnapshot, UniverseError> {
