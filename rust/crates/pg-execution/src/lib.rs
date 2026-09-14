@@ -5,7 +5,7 @@ pub use composite::CompositeExecutionAdapter;
 pub use shadow::{ShadowAdapterConfig, ShadowExecutionAdapter, ShadowFillMode, ShadowPosition};
 
 use async_trait::async_trait;
-use pg_types::{OrderIntent, Side};
+use pg_types::{OrderIntent, Side, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -42,6 +42,27 @@ pub struct VenueOrderSnapshot {
 pub struct VenuePositionSnapshot {
     pub asset: String,
     pub quantity: Decimal,
+}
+
+/// Cross-venue account values used by runtime risk/control surfaces.
+///
+/// A venue must leave a field `None` when it does not expose an equivalent value.
+/// In particular, Hyperliquid `withdrawable` and IBKR `BuyingPower` are deliberately
+/// separate fields and must never be treated as interchangeable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountSnapshot {
+    pub venue: Venue,
+    pub account_id: Option<String>,
+    pub currency: Option<String>,
+    pub account_value: Option<Decimal>,
+    pub available_funds: Option<Decimal>,
+    pub withdrawable: Option<Decimal>,
+    pub buying_power: Option<Decimal>,
+    pub initial_margin: Option<Decimal>,
+    pub maintenance_margin: Option<Decimal>,
+    pub margin_used: Option<Decimal>,
+    pub gross_position_value: Option<Decimal>,
+    pub raw_usd: Option<Decimal>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +103,14 @@ pub trait ExecutionAdapter: Send + Sync {
     async fn open_orders(&self) -> Result<Vec<VenueOrderSnapshot>, ExecutionError>;
 
     async fn positions(&self) -> Result<Vec<VenuePositionSnapshot>, ExecutionError>;
+
+    /// Read the venue's own account/margin summary. Adapters must not synthesize
+    /// unavailable values from local estimates.
+    async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
+        Err(ExecutionError::Unsupported(
+            "account snapshot is not implemented by this adapter".into(),
+        ))
+    }
 
     /// Resolve an ambiguous submit/cancel by the stable client id before retrying.
     async fn find_order_by_client_id(
