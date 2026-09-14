@@ -23,13 +23,14 @@ pub fn optional_secret(name: &str) -> Result<Option<String>> {
 }
 
 pub fn required_secret(name: &str) -> Result<String> {
-    optional_secret(name)?.ok_or_else(|| anyhow::anyhow!(
-        "missing required secret {name} (set {name} or {name}_FILE)"
-    ))
+    optional_secret(name)?.ok_or_else(|| {
+        anyhow::anyhow!("missing required secret {name} (set {name} or {name}_FILE)")
+    })
 }
 
 pub fn required_value(name: &'static str) -> Result<String> {
-    let value = env::var(name).with_context(|| format!("missing required environment variable {name}"))?;
+    let value =
+        env::var(name).with_context(|| format!("missing required environment variable {name}"))?;
     if value.trim().is_empty() {
         bail!("environment variable {name} cannot be empty");
     }
@@ -49,12 +50,8 @@ pub fn bool_env(name: &'static str, default: bool) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn boolean_parser_rejects_ambiguous_values() {
-        // Keep the helper deterministic without mutating process-global env from
-        // parallel tests; the accepted syntax is covered by the match above.
+    fn boolean_parser_documents_true_form() {
         assert_eq!("true".to_ascii_lowercase(), "true");
     }
 }
