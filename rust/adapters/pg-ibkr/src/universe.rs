@@ -157,8 +157,8 @@ fn descriptor(
         _ => ProductType::Unknown,
     };
     let tick_size = positive_decimal(details.min_tick)?;
-    let min_size = positive_decimal(details.min_size)?;
-    let lot_size = positive_decimal(details.size_increment)?;
+    let min_size = optional_positive_decimal(details.min_size)?;
+    let lot_size = optional_positive_decimal(details.size_increment)?;
 
     Ok(InstrumentDescriptor {
         venue: Venue::InteractiveBrokers,
@@ -183,6 +183,13 @@ fn descriptor(
         max_leverage: None,
         tradable: contract.contract_id > 0,
     })
+}
+
+fn optional_positive_decimal(value: Option<f64>) -> Result<Option<Decimal>, UniverseError> {
+    match value {
+        Some(value) => positive_decimal(value),
+        None => Ok(None),
+    }
 }
 
 fn positive_decimal(value: f64) -> Result<Option<Decimal>, UniverseError> {
@@ -214,5 +221,18 @@ mod tests {
         assert!(validate_scanner_config(&config).is_err());
         config.number_of_rows = IBKR_SCANNER_MAX_ROWS;
         assert!(validate_scanner_config(&config).is_ok());
+    }
+
+    #[test]
+    fn optional_size_metadata_stays_optional() {
+        assert_eq!(optional_positive_decimal(None).unwrap(), None);
+        assert_eq!(
+            optional_positive_decimal(Some(0.0)).unwrap(),
+            None,
+        );
+        assert_eq!(
+            optional_positive_decimal(Some(100.0)).unwrap(),
+            Some(Decimal::from(100)),
+        );
     }
 }
