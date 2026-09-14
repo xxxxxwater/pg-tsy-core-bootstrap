@@ -5,8 +5,9 @@ use pg_types::{AssetKey, Venue};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
-    time::Duration,
 };
+#[cfg(feature = "ibkr-marketdata")]
+use std::time::Duration;
 
 #[cfg(feature = "hyperliquid-marketdata")]
 use pg_hyperliquid::{HyperliquidNetwork, HyperliquidUniverseProvider};
@@ -85,7 +86,10 @@ pub async fn refresh_dynamic_universe(
         #[cfg(feature = "ibkr-marketdata")]
         {
             let mut config = ibkr_config_from_env()?;
-            config.client_id = env_i32("IBKR_SCANNER_CLIENT_ID", config.client_id.saturating_add(5_000))?;
+            config.client_id = env_i32(
+                "IBKR_SCANNER_CLIENT_ID",
+                config.client_id.saturating_add(5_000),
+            )?;
             let provider = IbkrUniverseProvider::connect(&config, ibkr_scanner_from_env()?)
                 .await
                 .context("failed to connect IBKR universe provider")?;
@@ -135,8 +139,6 @@ pub async fn refresh_dynamic_universe(
                     selected.push(key);
                 }
             }
-            // Only ownership-proven strategy assets become strategy pins. Manual and
-            // Unknown assets stay operational-only and cannot receive strategy exits.
             for key in strategy_pins.iter().filter(|key| key.venue == source.venue) {
                 if !selected.contains(key) {
                     selected.push(key.clone());
@@ -219,6 +221,7 @@ fn ibkr_scanner_from_env() -> Result<IbkrScannerConfig> {
     })
 }
 
+#[cfg(feature = "ibkr-marketdata")]
 fn env_i32(name: &'static str, default: i32) -> Result<i32> {
     env::var(name)
         .ok()
