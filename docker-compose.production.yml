@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-pgtsy}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pgtsy-postgres:/var/lib/postgresql/data
+    networks: [backend]
+
+  ib-gateway:
+    image: ${IBKR_GATEWAY_IMAGE:-ghcr.io/gnzsnz/ib-gateway:stable}
+    profiles: ["ibkr"]
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${IBKR_TWS_USERID:?set IBKR_TWS_USERID when using the ibkr profile}
+      TWS_PASSWORD: ${IBKR_TWS_PASSWORD:?set IBKR_TWS_PASSWORD when using the ibkr profile}
+      TRADING_MODE: ${IBKR_TRADING_MODE:-paper}
+      READ_ONLY_API: ${IBKR_READ_ONLY_API:-yes}
+      TWOFA_TIMEOUT_ACTION: ${IBKR_TWOFA_TIMEOUT_ACTION:-restart}
+      IBKR_GATEWAY_API_PORT: ${IBKR_GATEWAY_API_PORT:-4002}
+    expose:
+      - "${IBKR_GATEWAY_API_PORT:-4002}"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/$${IBKR_GATEWAY_API_PORT}' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 10
+    networks: [backend]
+
+  pg-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PG_CORE_FEATURES: ${PG_CORE_FEATURES:-ibkr-marketdata}
+    restart: unless-stopped
+    init: true
+    environment:
+      PG_ENV: ${PG_ENV:-production}
+      PG_INSTANCE_ID: ${PG_INSTANCE_ID:-pg-core-prod-1}
+      # These two switches are intentionally explicit. Live refuses to start unless
+      # PG_LIVE_TRADING=true; paper/live never fall back to the shadow adapter.
+      PG_RUN_MODE: ${PG_RUN_MODE:?set PG_RUN_MODE=paper or live}
+      PG_LIVE_TRADING: ${PG_LIVE_TRADING:-false}
+      PG_AUTO_START: ${PG_AUTO_START:-false}
+      PG_SHUTDOWN_POLICY: ${PG_SHUTDOWN_POLICY:-cancel_resting}
+      PG_DATABASE_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-pgtsy}
+      PG_STRATEGY_DIR: /app/strategies
+      PG_DATA_ROOT: /app/data
+      PG_HEALTH_ADDR: 0.0.0.0:8080
+      PG_MAX_MARKET_STALENESS_MS: ${PG_MAX_MARKET_STALENESS_MS:-10000}
+      PG_LEASE_TTL_SECONDS: ${PG_LEASE_TTL_SECONDS:-15}
+      PG_LEASE_KEY: ${PG_LEASE_KEY:-pg-core:production:real}
+      PG_MARKET_MAX_RECONNECTS: ${PG_MARKET_MAX_RECONNECTS:-50}
+      PG_RECONCILE_INTERVAL_MS: ${PG_RECONCILE_INTERVAL_MS:-2000}
+
+      HYPERLIQUID_ACCOUNT_ADDRESS: ${HYPERLIQUID_ACCOUNT_ADDRESS:-}
+      HYPERLIQUID_AGENT_ADDRESS: ${HYPERLIQUID_AGENT_ADDRESS:-}
+      HYPERLIQUID_AGENT_PRIVATE_KEY_FILE: ${HYPERLIQUID_AGENT_PRIVATE_KEY_FILE:-/run/secrets/hyperliquid_agent_private_key}
+      HYPERLIQUID_NETWORK: ${HYPERLIQUID_NETWORK:-mainnet}
+      PG_HYPERLIQUID_NETWORK: ${PG_HYPERLIQUID_NETWORK:-${HYPERLIQUID_NETWORK:-mainnet}}
+      HYPERLIQUID_MAX_MARKET_SLIPPAGE: ${HYPERLIQUID_MAX_MARKET_SLIPPAGE:-0.005}
+
+      IBKR_GATEWAY_ADDR: ${IBKR_GATEWAY_ADDR:-ib-gateway:4002}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-17}
+      IBKR_EXECUTION_CLIENT_ID_BASE: ${IBKR_EXECUTION_CLIENT_ID_BASE:-117}
+      IBKR_MARKETDATA_CLIENT_ID_BASE: ${IBKR_MARKETDATA_CLIENT_ID_BASE:-1017}
+      IBKR_ACCOUNT: ${IBKR_ACCOUNT:-}
+      IBKR_MARKET_DEPTH_ROWS: ${IBKR_MARKET_DEPTH_ROWS:-5}
+      IBKR_DEFAULT_EXCHANGE: ${IBKR_DEFAULT_EXCHANGE:-SMART}
+      IBKR_DEFAULT_CURRENCY: ${IBKR_DEFAULT_CURRENCY:-USD}
+      IBKR_ALLOW_SOFTWARE_REDUCE_ONLY: ${IBKR_ALLOW_SOFTWARE_REDUCE_ONLY:-false}
+
+      TELEGRAM_BOT_TOKEN_FILE: ${TELEGRAM_BOT_TOKEN_FILE:-/run/secrets/telegram_bot_token}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
+      TELEGRAM_RATE_LIMIT_PER_MINUTE: ${TELEGRAM_RATE_LIMIT_PER_MINUTE:-10}
+      TELEGRAM_REFRESH_COOLDOWN_SECONDS: ${TELEGRAM_REFRESH_COOLDOWN_SECONDS:-15}
+      TELEGRAM_EMERGENCY_COOLDOWN_SECONDS: ${TELEGRAM_EMERGENCY_COOLDOWN_SECONDS:-60}
+      RUST_LOG: ${RUST_LOG:-info}
+    command: ["--serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PG_HEALTH_PORT:-8080}:8080"
+    volumes:
+      - ./strategies:/app/strategies:ro
+      - pgtsy-data:/app/data
+      - ${PG_SECRET_DIR:-./secrets}:/run/secrets:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 12
+    networks: [backend]
+
+volumes:
+  pgtsy-postgres:
+  pgtsy-data:
+
+networks:
+  backend:
+    driver: bridge
