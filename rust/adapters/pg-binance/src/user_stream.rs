@@ -8,7 +8,10 @@ use pg_execution::VenueOrderSnapshot;
 use rust_decimal::Decimal;
 use serde_json::Value;
 
-use crate::{durable_client_order_id, order_protocol::{normalize_order, RawOrder, SYMBOL}};
+use crate::{
+    durable_client_order_id,
+    order_protocol::{RawOrder, SYMBOL, normalize_order},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamError {
@@ -37,7 +40,7 @@ pub enum UserEvent {
     Order {
         durable_client_id: String,
         snapshot: VenueOrderSnapshot,
-        fill: Option<FillNotice>,
+        fill: Box<Option<FillNotice>>,
     },
     /// ACCOUNT_UPDATE, ALGO_UPDATE, listenKeyExpired, reconnect and foreign
     /// orders are not permission to change a strategy's owned positions.
@@ -45,23 +48,35 @@ pub enum UserEvent {
 }
 
 fn string<'a>(object: &'a Value, key: &str) -> Result<&'a str, StreamError> {
-    object.get(key).and_then(Value::as_str).ok_or(StreamError::Malformed)
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or(StreamError::Malformed)
 }
 
 fn unsigned(object: &Value, key: &str) -> Result<u64, StreamError> {
-    object.get(key).and_then(Value::as_u64).ok_or(StreamError::Malformed)
+    object
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or(StreamError::Malformed)
 }
 
 fn nonnegative_decimal(object: &Value, key: &str) -> Result<Decimal, StreamError> {
-    let value = string(object, key)?.parse::<Decimal>().map_err(|_| StreamError::Malformed)?;
-    if value < Decimal::ZERO { return Err(StreamError::Malformed); }
+    let value = string(object, key)?
+        .parse::<Decimal>()
+        .map_err(|_| StreamError::Malformed)?;
+    if value < Decimal::ZERO {
+        return Err(StreamError::Malformed);
+    }
     Ok(value)
 }
 
 /// Parse one `ORDER_TRADE_UPDATE` using its actual nested `o` payload.
 /// Never interpret unknown event types as a successful order or an empty fill.
 pub fn decode_user_event(bytes: &[u8]) -> Result<UserEvent, StreamError> {
-    if bytes.is_empty() || bytes.len() > 64 * 1024 { return Err(StreamError::Malformed); }
+    if bytes.is_empty() || bytes.len() > 64 * 1024 {
+        return Err(StreamError::Malformed);
+    }
     let message: Value = serde_json::from_slice(bytes).map_err(|_| StreamError::Malformed)?;
     match string(&message, "e")? {
         "ACCOUNT_UPDATE" | "ALGO_UPDATE" | "listenKeyExpired" | "MARGIN_CALL" => {
@@ -78,21 +93,27 @@ pub fn decode_user_event(bytes: &[u8]) -> Result<UserEvent, StreamError> {
     let Some(durable_id) = durable_client_order_id(venue_id) else {
         return Ok(UserEvent::ReconcileRequired);
     };
-    if string(order, "ps")? != "BOTH" { return Ok(UserEvent::ReconcileRequired); }
+    if string(order, "ps")? != "BOTH" {
+        return Ok(UserEvent::ReconcileRequired);
+    }
     if unsigned(&message, "E")? == 0 || unsigned(&message, "T")? == 0 {
         return Err(StreamError::Malformed);
     }
     let order_id = unsigned(order, "i")?.to_string();
-    let mut snapshot = normalize_order(RawOrder {
-        symbol: SYMBOL,
-        client_order_id: venue_id,
-        order_id: &order_id,
-        side: string(order, "S")?,
-        original_quantity: string(order, "q")?,
-        executed_quantity: string(order, "z")?,
-        price: string(order, "p")?,
-        status: string(order, "X")?,
-    }, venue_id).map_err(|_| StreamError::InvalidOrder)?;
+    let mut snapshot = normalize_order(
+        RawOrder {
+            symbol: SYMBOL,
+            client_order_id: venue_id,
+            order_id: &order_id,
+            side: string(order, "S")?,
+            original_quantity: string(order, "q")?,
+            executed_quantity: string(order, "z")?,
+            price: string(order, "p")?,
+            status: string(order, "X")?,
+        },
+        venue_id,
+    )
+    .map_err(|_| StreamError::InvalidOrder)?;
     snapshot.client_order_id = Some(durable_id.clone());
     let fill = if string(order, "x")? == "TRADE" {
         let quantity = nonnegative_decimal(order, "l")?;
@@ -100,9 +121,13 @@ pub fn decode_user_event(bytes: &[u8]) -> Result<UserEvent, StreamError> {
         let commission = nonnegative_decimal(order, "n")?;
         let trade_id = unsigned(order, "t")?;
         let time = unsigned(order, "T")?;
-        if quantity <= Decimal::ZERO || price <= Decimal::ZERO || time == 0
+        if quantity <= Decimal::ZERO
+            || price <= Decimal::ZERO
+            || time == 0
             || quantity > snapshot.filled_quantity
-        { return Err(StreamError::InvalidOrder); }
+        {
+            return Err(StreamError::InvalidOrder);
+        }
         Some(FillNotice {
             trade_id,
             venue_order_id: order_id,
@@ -114,14 +139,18 @@ pub fn decode_user_event(bytes: &[u8]) -> Result<UserEvent, StreamError> {
             trade_time_ms: time,
         })
     } else {
-        // Unknown execution types demand a reconciliation rather than assuming
+        // Unknown execution types demand reconciliation rather than assuming
         // that a positive executed quantity means an incoming new fill.
         match string(order, "x")? {
             "NEW" | "CANCELED" | "EXPIRED" | "REJECTED" | "AMENDMENT" | "CALCULATED" => None,
             _ => return Err(StreamError::UnknownEvent),
         }
     };
-    Ok(UserEvent::Order { durable_client_id: durable_id, snapshot, fill })
+    Ok(UserEvent::Order {
+        durable_client_id: durable_id,
+        snapshot,
+        fill: Box::new(fill),
+    })
 }
 
 /// In-memory dedup is only a secondary guard. Persisted order history and
@@ -134,32 +163,51 @@ pub struct UserOrderTracker {
 }
 
 impl UserOrderTracker {
-    pub fn mark_reconciled(&mut self) { self.healthy = true; }
-    pub fn is_healthy(&self) -> bool { self.healthy }
+    pub fn mark_reconciled(&mut self) {
+        self.healthy = true;
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.healthy
+    }
+
     pub fn disconnect(&mut self) {
         self.healthy = false;
         self.cumulative.clear();
         self.seen_trades.clear();
     }
+
     /// Returns whether the fill is new within this connection. Duplicate event
     /// delivery is harmless. A decrease or unexplained positive cumulative
     /// change causes a full REST reconciliation rather than synthetic fills.
     pub fn accept(&mut self, event: &UserEvent) -> Result<bool, StreamError> {
-        if !self.healthy { return Err(StreamError::ReconcileRequired); }
-        let UserEvent::Order { durable_client_id, snapshot, fill } = event else {
+        if !self.healthy {
+            return Err(StreamError::ReconcileRequired);
+        }
+        let UserEvent::Order {
+            durable_client_id,
+            snapshot,
+            fill,
+        } = event
+        else {
             self.disconnect();
             return Err(StreamError::ReconcileRequired);
         };
-        if let Some(previous) = self.cumulative.get(durable_client_id) {
-            if snapshot.filled_quantity < *previous {
-                self.disconnect();
-                return Err(StreamError::ReconcileRequired);
-            }
+        if let Some(previous) = self.cumulative.get(durable_client_id)
+            && snapshot.filled_quantity < *previous
+        {
+            self.disconnect();
+            return Err(StreamError::ReconcileRequired);
         }
-        self.cumulative.insert(durable_client_id.clone(), snapshot.filled_quantity);
-        if let Some(fill) = fill {
-            Ok(self.seen_trades.insert((durable_client_id.clone(), fill.trade_id)))
-        } else { Ok(false) }
+        self.cumulative
+            .insert(durable_client_id.clone(), snapshot.filled_quantity);
+        if let Some(fill) = fill.as_ref() {
+            Ok(self
+                .seen_trades
+                .insert((durable_client_id.clone(), fill.trade_id)))
+        } else {
+            Ok(false)
+        }
     }
 }
 
@@ -175,9 +223,19 @@ mod tests {
 
     #[test]
     fn owned_partial_fill_maps_to_persisted_core_id() {
-        let UserEvent::Order { durable_client_id, snapshot, fill } = decode_user_event(&trade()).unwrap() else { panic!("expected order"); };
+        let UserEvent::Order {
+            durable_client_id,
+            snapshot,
+            fill,
+        } = decode_user_event(&trade()).unwrap()
+        else {
+            panic!("expected order");
+        };
         assert_eq!(durable_client_id, format!("pg{}", "42".repeat(16)));
-        assert_eq!(snapshot.client_order_id.as_deref(), Some(durable_client_id.as_str()));
+        assert_eq!(
+            snapshot.client_order_id.as_deref(),
+            Some(durable_client_id.as_str())
+        );
         assert_eq!(fill.unwrap().quantity.to_string(), "0.005");
     }
 
@@ -196,16 +254,30 @@ mod tests {
 
     #[test]
     fn unrelated_account_update_and_manual_orders_never_adopt() {
-        assert!(matches!(decode_user_event(br#"{"e":"ACCOUNT_UPDATE"}"#), Ok(UserEvent::ReconcileRequired)));
+        assert!(matches!(
+            decode_user_event(br#"{"e":"ACCOUNT_UPDATE"}"#),
+            Ok(UserEvent::ReconcileRequired)
+        ));
         let mut foreign = String::from_utf8(trade()).unwrap();
         foreign = foreign.replace(&encode_intent_bytes(&[0x42; 16]), "manual123");
-        assert!(matches!(decode_user_event(foreign.as_bytes()), Ok(UserEvent::ReconcileRequired)));
+        assert!(matches!(
+            decode_user_event(foreign.as_bytes()),
+            Ok(UserEvent::ReconcileRequired)
+        ));
     }
 
     #[test]
     fn contradictory_fills_fail_closed() {
-        let bad = String::from_utf8(trade()).unwrap().replace("\"l\":\"0.005\"", "\"l\":\"0.020\"");
-        assert!(matches!(decode_user_event(bad.as_bytes()), Err(StreamError::InvalidOrder)));
-        assert!(matches!(decode_user_event(br#"{"e":"unknown"}"#), Err(StreamError::UnknownEvent)));
+        let bad = String::from_utf8(trade())
+            .unwrap()
+            .replace("\"l\":\"0.005\"", "\"l\":\"0.020\"");
+        assert!(matches!(
+            decode_user_event(bad.as_bytes()),
+            Err(StreamError::InvalidOrder)
+        ));
+        assert!(matches!(
+            decode_user_event(br#"{"e":"unknown"}"#),
+            Err(StreamError::UnknownEvent)
+        ));
     }
 }
