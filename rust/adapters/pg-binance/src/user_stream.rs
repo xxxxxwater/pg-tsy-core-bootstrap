@@ -178,8 +178,10 @@ impl UserOrderTracker {
     }
 
     /// Returns whether the fill is new within this connection. Duplicate event
-    /// delivery is harmless. A decrease or unexplained positive cumulative
-    /// change causes a full REST reconciliation rather than synthetic fills.
+    /// delivery is harmless. Once an order has a previous snapshot, a positive
+    /// cumulative change MUST have exactly one matching new TRADE fill. Missing,
+    /// repeated or contradictory trade IDs require REST reconciliation; never
+    /// synthesize missing fills from cumulative quantity alone.
     pub fn accept(&mut self, event: &UserEvent) -> Result<bool, StreamError> {
         if !self.healthy {
             return Err(StreamError::ReconcileRequired);
@@ -193,21 +195,35 @@ impl UserOrderTracker {
             self.disconnect();
             return Err(StreamError::ReconcileRequired);
         };
-        if let Some(previous) = self.cumulative.get(durable_client_id)
-            && snapshot.filled_quantity < *previous
-        {
-            self.disconnect();
-            return Err(StreamError::ReconcileRequired);
+        let previous = self.cumulative.get(durable_client_id).copied();
+        let trade_key = fill
+            .as_ref()
+            .as_ref()
+            .map(|trade| (durable_client_id.clone(), trade.trade_id));
+        if let Some(previous) = previous {
+            let delta = snapshot.filled_quantity - previous;
+            let consistent = if delta < Decimal::ZERO {
+                false
+            } else if delta > Decimal::ZERO {
+                fill.as_ref().as_ref().is_some_and(|trade| {
+                    trade.quantity == delta
+                        && trade_key
+                            .as_ref()
+                            .is_some_and(|key| !self.seen_trades.contains(key))
+                })
+            } else {
+                trade_key
+                    .as_ref()
+                    .is_none_or(|key| self.seen_trades.contains(key))
+            };
+            if !consistent {
+                self.disconnect();
+                return Err(StreamError::ReconcileRequired);
+            }
         }
         self.cumulative
             .insert(durable_client_id.clone(), snapshot.filled_quantity);
-        if let Some(fill) = fill.as_ref() {
-            Ok(self
-                .seen_trades
-                .insert((durable_client_id.clone(), fill.trade_id)))
-        } else {
-            Ok(false)
-        }
+        Ok(trade_key.is_some_and(|key| self.seen_trades.insert(key)))
     }
 }
 
@@ -250,6 +266,55 @@ mod tests {
         tracker.disconnect();
         assert!(!tracker.is_healthy());
         assert_eq!(tracker.accept(&event), Err(StreamError::ReconcileRequired));
+    }
+
+    #[test]
+    fn unexplained_cumulative_fill_requires_rest_reconciliation() {
+        let baseline = decode_user_event(&trade()).unwrap();
+        let mut tracker = UserOrderTracker::default();
+        tracker.mark_reconciled();
+        assert_eq!(tracker.accept(&baseline), Ok(true));
+        let mut missing_trade = baseline.clone();
+        if let UserEvent::Order { snapshot, fill, .. } = &mut missing_trade {
+            snapshot.filled_quantity += Decimal::new(1, 3);
+            **fill = None;
+        }
+        assert_eq!(tracker.accept(&missing_trade), Err(StreamError::ReconcileRequired));
+        assert!(!tracker.is_healthy());
+    }
+
+    #[test]
+    fn mismatched_or_replayed_trade_id_cannot_explain_new_quantity() {
+        let baseline = decode_user_event(&trade()).unwrap();
+        let mut tracker = UserOrderTracker::default();
+        tracker.mark_reconciled();
+        assert_eq!(tracker.accept(&baseline), Ok(true));
+        let mut mismatched = baseline.clone();
+        if let UserEvent::Order { snapshot, fill, .. } = &mut mismatched {
+            snapshot.filled_quantity += Decimal::new(2, 3);
+            fill.as_mut().as_mut().expect("trade").quantity = Decimal::new(1, 3);
+        }
+        assert_eq!(tracker.accept(&mismatched), Err(StreamError::ReconcileRequired));
+        tracker.mark_reconciled();
+        assert_eq!(tracker.accept(&baseline), Ok(true));
+        let mut replayed = baseline.clone();
+        if let UserEvent::Order { snapshot, .. } = &mut replayed {
+            snapshot.filled_quantity += Decimal::new(5, 3);
+        }
+        assert_eq!(tracker.accept(&replayed), Err(StreamError::ReconcileRequired));
+    }
+
+    #[test]
+    fn new_trade_id_without_cumulative_change_requires_reconcile() {
+        let baseline = decode_user_event(&trade()).unwrap();
+        let mut tracker = UserOrderTracker::default();
+        tracker.mark_reconciled();
+        assert_eq!(tracker.accept(&baseline), Ok(true));
+        let mut contradictory = baseline.clone();
+        if let UserEvent::Order { fill, .. } = &mut contradictory {
+            fill.as_mut().as_mut().expect("trade").trade_id = 10;
+        }
+        assert_eq!(tracker.accept(&contradictory), Err(StreamError::ReconcileRequired));
     }
 
     #[test]
