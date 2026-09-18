@@ -220,9 +220,10 @@ mod telegram_transport {
             // same locked state and must only be accessed after it is released.
             {
                 let normal = state.normal.entry(user_id).or_default();
-                while normal.front().is_some_and(|instant| {
-                    now.duration_since(*instant) >= Duration::from_secs(60)
-                }) {
+                while normal
+                    .front()
+                    .is_some_and(|instant| now.duration_since(*instant) >= Duration::from_secs(60))
+                {
                     normal.pop_front();
                 }
                 if normal.len() >= self.config.normal_per_minute {
