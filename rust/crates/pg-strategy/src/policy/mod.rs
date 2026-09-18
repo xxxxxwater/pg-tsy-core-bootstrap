@@ -9,6 +9,7 @@ pub mod exits;
 pub mod factors;
 pub mod filters;
 pub mod graph;
+pub mod jev_advisory;
 pub mod providers;
 pub mod sizing;
 
