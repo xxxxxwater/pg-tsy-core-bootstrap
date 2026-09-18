@@ -1,8 +1,8 @@
 //! Binance USD-M depth snapshot/diff bridge for a single symbol.
 //!
 //! Pure normalization; transport must buffer WS deltas while REST snapshot loads.
-//! A book is NEVER publishable until the first delta bridges the snapshot; every
-//! following delta must have `pu == previous u`. A gap requires a fresh snapshot.
+//! A book is NEVER publishable until the first delta bridges the snapshot;
+//! subsequent deltas require `pu == previous u`. Gap means resnapshot.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::str::FromStr;
@@ -78,6 +78,7 @@ impl BinanceDepthBridge {
         self.bridged
     }
 
+    /// Called on reconnect, stale feed, buffer overflow or any invalid update.
     pub fn invalidate(&mut self) {
         self.bids.clear();
         self.asks.clear();
@@ -86,15 +87,17 @@ impl BinanceDepthBridge {
         self.buffered.clear();
     }
 
-    /// May return None while waiting for a REST snapshot or bridge event.
+    /// Buffer until a snapshot is installed; only a bridged book may be published.
     pub fn push(
         &mut self,
         delta: BinanceDepthDelta,
         received_ns: u64,
     ) -> Result<Option<L2Book>, DepthError> {
         if delta.symbol != self.symbol
+            || delta.first_update_id == 0
             || delta.first_update_id > delta.final_update_id
             || delta.event_time_ms == 0
+            || delta.event_time_ms.checked_mul(1_000_000).is_none()
             || received_ns == 0
         {
             self.invalidate();
@@ -111,12 +114,16 @@ impl BinanceDepthBridge {
         self.apply(delta, received_ns)
     }
 
-    /// Install a fresh REST snapshot, then replay all previously buffered diffs.
-    /// Do not trade on a snapshot alone: publication requires sequence bridging.
+    /// REST snapshot is never sufficient alone. Replay buffered WS updates,
+    /// dropping `u < lastUpdateId` before the first inclusive bridge.
     pub fn install_snapshot(
         &mut self,
         snapshot: BinanceDepthSnapshot,
     ) -> Result<Option<L2Book>, DepthError> {
+        if snapshot.last_update_id == 0 {
+            self.invalidate();
+            return Err(DepthError::InvalidEvent);
+        }
         let bids = match parse_levels(&snapshot.bids) {
             Ok(levels) => levels,
             Err(error) => {
@@ -156,7 +163,11 @@ impl BinanceDepthBridge {
         received_ns: u64,
     ) -> Result<Option<L2Book>, DepthError> {
         let last = self.last_update_id.ok_or(DepthError::SequenceGap)?;
-        if delta.final_update_id <= last {
+        // Futures initial bridge is inclusive: U <= snapshotId <= u.
+        // Only an already-bridged stream discards u == previous u as duplicate.
+        if (self.bridged && delta.final_update_id <= last)
+            || (!self.bridged && delta.final_update_id < last)
+        {
             return Ok(None);
         }
         let sequence_valid = if self.bridged {
@@ -168,7 +179,7 @@ impl BinanceDepthBridge {
             self.invalidate();
             return Err(DepthError::SequenceGap);
         }
-        // Validate the complete event before changing either book side.
+        // Validate the complete event before changing either side.
         let bids = match parse_updates(&delta.bids) {
             Ok(levels) => levels,
             Err(error) => {
@@ -203,41 +214,58 @@ impl BinanceDepthBridge {
         }
         self.bridged = true;
         self.last_update_id = Some(delta.final_update_id);
-        let ts_event_ns = delta.event_time_ms.checked_mul(1_000_000).ok_or_else(|| {
-            self.invalidate();
-            DepthError::InvalidEvent
-        })?;
+        let ts_event_ns = delta.event_time_ms * 1_000_000;
         Ok(Some(L2Book {
             venue: Venue::BinancePm,
             asset: self.symbol.clone(),
             ts_event_ns,
             ts_recv_ns: received_ns,
-            bids: self.bids.iter().rev().take(PUBLISHED_LEVELS).map(|(price, quantity)| {
-                BookLevel { price: *price, quantity: *quantity, order_count: None }
-            }).collect(),
-            asks: self.asks.iter().take(PUBLISHED_LEVELS).map(|(price, quantity)| {
-                BookLevel { price: *price, quantity: *quantity, order_count: None }
-            }).collect(),
+            bids: self
+                .bids
+                .iter()
+                .rev()
+                .take(PUBLISHED_LEVELS)
+                .map(|(price, quantity)| BookLevel {
+                    price: *price,
+                    quantity: *quantity,
+                    order_count: None,
+                })
+                .collect(),
+            asks: self
+                .asks
+                .iter()
+                .take(PUBLISHED_LEVELS)
+                .map(|(price, quantity)| BookLevel {
+                    price: *price,
+                    quantity: *quantity,
+                    order_count: None,
+                })
+                .collect(),
             sequence: Some(delta.final_update_id),
             is_snapshot: false,
         }))
     }
 
     fn valid_book(&self) -> bool {
-        matches!((self.bids.keys().next_back(), self.asks.keys().next()),
-            (Some(bid), Some(ask)) if bid < ask)
+        matches!(
+            (self.bids.keys().next_back(), self.asks.keys().next()),
+            (Some(bid), Some(ask)) if bid < ask
+        )
     }
 }
 
 fn parse_updates(levels: &[[String; 2]]) -> Result<Vec<(Decimal, Decimal)>, DepthError> {
-    levels.iter().map(|[price, quantity]| {
-        let price = Decimal::from_str(price).map_err(|_| DepthError::InvalidLevel)?;
-        let quantity = Decimal::from_str(quantity).map_err(|_| DepthError::InvalidLevel)?;
-        if price <= Decimal::ZERO || quantity < Decimal::ZERO {
-            return Err(DepthError::InvalidLevel);
-        }
-        Ok((price, quantity))
-    }).collect()
+    levels
+        .iter()
+        .map(|[price, quantity]| {
+            let price = Decimal::from_str(price).map_err(|_| DepthError::InvalidLevel)?;
+            let quantity = Decimal::from_str(quantity).map_err(|_| DepthError::InvalidLevel)?;
+            if price <= Decimal::ZERO || quantity < Decimal::ZERO {
+                return Err(DepthError::InvalidLevel);
+            }
+            Ok((price, quantity))
+        })
+        .collect()
 }
 
 fn parse_levels(levels: &[[String; 2]]) -> Result<BTreeMap<Decimal, Decimal>, DepthError> {
@@ -255,14 +283,23 @@ mod tests {
     use super::*;
 
     fn snapshot() -> BinanceDepthSnapshot {
-        BinanceDepthSnapshot { last_update_id: 100,
+        BinanceDepthSnapshot {
+            last_update_id: 100,
             bids: vec![["99".into(), "2".into()]],
-            asks: vec![["101".into(), "3".into()]], }
+            asks: vec![["101".into(), "3".into()]],
+        }
     }
+
     fn delta(first: u64, final_id: u64, previous: u64) -> BinanceDepthDelta {
-        BinanceDepthDelta { symbol: "BTCUSDC".into(), event_time_ms: 1_700_000_000_000,
-            first_update_id: first, final_update_id: final_id, pu: previous,
-            bids: vec![["100".into(), "1".into()]], asks: vec![], }
+        BinanceDepthDelta {
+            symbol: "BTCUSDC".into(),
+            event_time_ms: 1_700_000_000_000,
+            first_update_id: first,
+            final_update_id: final_id,
+            pu: previous,
+            bids: vec![["100".into(), "1".into()]],
+            asks: vec![],
+        }
     }
 
     #[test]
@@ -270,28 +307,84 @@ mod tests {
         let mut bridge = BinanceDepthBridge::new("BTCUSDC");
         assert!(bridge.install_snapshot(snapshot()).unwrap().is_none());
         assert!(!bridge.is_ready());
-        let book = bridge.push(delta(99, 101, 98), 1_700_000_000_001_000_000).unwrap().unwrap();
+        let book = bridge
+            .push(delta(99, 101, 98), 1_700_000_000_001_000_000)
+            .unwrap()
+            .unwrap();
         assert!(bridge.is_ready());
         assert_eq!(book.asset, "BTCUSDC");
         assert_eq!(book.sequence, Some(101));
         assert_eq!(book.bids[0].price, Decimal::from(100));
-        assert_eq!(bridge.push(delta(102, 104, 101), 1_700_000_000_002_000_000)
-            .unwrap().unwrap().sequence, Some(104));
+        assert_eq!(
+            bridge
+                .push(delta(102, 104, 101), 1_700_000_000_002_000_000)
+                .unwrap()
+                .unwrap()
+                .sequence,
+            Some(104)
+        );
+    }
+
+    #[test]
+    fn exact_snapshot_id_is_valid_first_bridge() {
+        let mut bridge = BinanceDepthBridge::new("BTCUSDC");
+        bridge.install_snapshot(snapshot()).unwrap();
+        assert_eq!(bridge.push(delta(99, 100, 98), 1).unwrap().unwrap().sequence, Some(100));
+        assert_eq!(bridge.push(delta(101, 102, 100), 2).unwrap().unwrap().sequence, Some(102));
+        assert!(bridge.is_ready());
+    }
+
+    #[test]
+    fn buffered_old_diff_is_discarded_before_exact_bridge() {
+        let mut bridge = BinanceDepthBridge::new("BTCUSDC");
+        assert!(bridge.push(delta(90, 99, 89), 1).unwrap().is_none());
+        assert!(bridge.push(delta(99, 100, 98), 2).unwrap().is_none());
+        assert_eq!(
+            bridge
+                .install_snapshot(snapshot())
+                .unwrap()
+                .unwrap()
+                .sequence,
+            Some(100)
+        );
     }
 
     #[test]
     fn buffered_diffs_replay_after_snapshot() {
         let mut bridge = BinanceDepthBridge::new("BTCUSDC");
         assert!(bridge.push(delta(99, 101, 98), 1).unwrap().is_none());
-        assert_eq!(bridge.install_snapshot(snapshot()).unwrap().unwrap().sequence, Some(101));
+        assert_eq!(
+            bridge
+                .install_snapshot(snapshot())
+                .unwrap()
+                .unwrap()
+                .sequence,
+            Some(101)
+        );
     }
 
     #[test]
-    fn missing_previous_id_blocks_exposure_and_requires_snapshot() {
+    fn missing_first_bridge_or_previous_id_requires_resnapshot() {
         let mut bridge = BinanceDepthBridge::new("BTCUSDC");
+        bridge.install_snapshot(snapshot()).unwrap();
+        assert_eq!(bridge.push(delta(101, 102, 100), 1).unwrap_err(), DepthError::SequenceGap);
+        assert!(!bridge.is_ready());
         bridge.install_snapshot(snapshot()).unwrap();
         bridge.push(delta(99, 101, 98), 1).unwrap();
         assert_eq!(bridge.push(delta(103, 104, 99), 2).unwrap_err(), DepthError::SequenceGap);
+        assert!(!bridge.is_ready());
+    }
+
+    #[test]
+    fn disconnect_clears_book_and_requires_new_snapshot() {
+        let mut bridge = BinanceDepthBridge::new("BTCUSDC");
+        bridge.install_snapshot(snapshot()).unwrap();
+        bridge.push(delta(99, 101, 98), 1).unwrap();
+        bridge.invalidate();
+        assert!(!bridge.is_ready());
+        assert!(bridge.push(delta(102, 103, 101), 2).unwrap().is_none());
+        // A gap in the retained feed will not silently adopt the old book.
+        assert_eq!(bridge.install_snapshot(snapshot()).unwrap_err(), DepthError::SequenceGap);
         assert!(!bridge.is_ready());
     }
 
@@ -307,6 +400,20 @@ mod tests {
         let mut crossed = delta(99, 101, 98);
         crossed.bids[0][0] = "102".into();
         assert_eq!(bridge.push(crossed, 1).unwrap_err(), DepthError::InvalidBook);
+        assert!(!bridge.is_ready());
+    }
+
+    #[test]
+    fn wrong_symbol_and_event_clock_overflow_invalidate() {
+        let mut bridge = BinanceDepthBridge::new("BTCUSDC");
+        bridge.install_snapshot(snapshot()).unwrap();
+        let mut wrong = delta(99, 101, 98);
+        wrong.symbol = "BTCUSDT".into();
+        assert_eq!(bridge.push(wrong, 1).unwrap_err(), DepthError::InvalidEvent);
+        assert!(!bridge.is_ready());
+        let mut overflow = delta(99, 101, 98);
+        overflow.event_time_ms = u64::MAX;
+        assert_eq!(bridge.push(overflow, 1).unwrap_err(), DepthError::InvalidEvent);
         assert!(!bridge.is_ready());
     }
 }
