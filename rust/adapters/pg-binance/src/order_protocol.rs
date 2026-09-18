@@ -1,8 +1,7 @@
 //! Strict, transport-free Binance Portfolio Margin UM order protocol.
 //!
-//! No credentials, signing, HTTP requests, retries or order placement live here.
-//! Network timeouts MUST be represented as Unknown by the future transport, and
-//! recovery must query both open and historical orders using this stable ID.
+//! Does not sign, send, retry, or place orders. A lost acknowledgement is
+//! UNKNOWN, never a rejection; recovery must inspect open and historical truth.
 
 use pg_execution::{VenueOrderSnapshot, VenueOrderState};
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
@@ -27,8 +26,7 @@ pub enum ProtocolError {
     InvalidVenueOrder,
 }
 
-/// Must be populated by a *verified* exchangeInfo snapshot for this symbol.
-/// No hard-coded Binance tick, lot, minimum, fee or notional is safe to assume.
+/// Supply ONLY after validating the current BTCUSDC exchangeInfo filters.
 #[derive(Debug, Clone)]
 pub struct SymbolFilters {
     pub symbol: String,
@@ -56,7 +54,7 @@ pub enum OrderStyle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedOrder {
-    /// Unsigned POST form fields. Signing and timestamp are transport responsibilities.
+    /// Unsigned form fields. The future transport owns the signed timestamp.
     pub path: &'static str,
     pub params: Vec<(&'static str, String)>,
     pub client_id: String,
@@ -71,9 +69,8 @@ impl PreparedOrder {
     }
 }
 
-/// Validates a single strategy-owned BTCUSDC order before the signed transport.
-/// Hedge mode is refused until its positionSide/reduce-only safety contract exists.
-/// No model is permitted to manufacture exchange prices, quantities or this intent.
+/// Validate the actual persisted intent, never a model-supplied order.
+/// Hedge mode is prohibited pending a separately validated position-side guard.
 pub fn prepare_order(
     intent: &OrderIntent,
     filters: &SymbolFilters,
@@ -90,21 +87,26 @@ pub fn prepare_order(
     if mode != PositionMode::OneWay {
         return Err(ProtocolError::UnsupportedPositionMode);
     }
-    if intent.quantity <= rust_decimal_zero(intent) {
+    if intent.quantity.is_zero() || intent.quantity.is_sign_negative() {
         return Err(ProtocolError::InvalidQuantity);
     }
+    // The Decimal type is inferred from OrderIntent.quantity; no floating point.
     let step = filters
         .step_size
         .parse()
         .map_err(|_| ProtocolError::InvalidFilters)?;
-    let min_quantity = filters
+    let minimum_quantity = filters
         .min_quantity
         .parse()
         .map_err(|_| ProtocolError::InvalidFilters)?;
-    if step <= rust_decimal_zero(intent) || min_quantity <= rust_decimal_zero(intent) {
+    if step.is_zero()
+        || step.is_sign_negative()
+        || minimum_quantity.is_zero()
+        || minimum_quantity.is_sign_negative()
+    {
         return Err(ProtocolError::InvalidFilters);
     }
-    if !(intent.quantity % step).is_zero() || intent.quantity < min_quantity {
+    if !(intent.quantity % step).is_zero() || intent.quantity < minimum_quantity {
         return Err(ProtocolError::InvalidQuantity);
     }
     let is_market = style == OrderStyle::ReduceOnlyMarket;
@@ -147,13 +149,15 @@ pub fn prepare_order(
             .min_notional
             .parse()
             .map_err(|_| ProtocolError::InvalidFilters)?;
-        if tick <= rust_decimal_zero(intent) || minimum_notional < rust_decimal_zero(intent) {
+        if tick.is_zero()
+            || tick.is_sign_negative()
+            || minimum_notional.is_sign_negative()
+        {
             return Err(ProtocolError::InvalidFilters);
         }
-        if price <= rust_decimal_zero(intent) || !(price % tick).is_zero() {
+        if price.is_zero() || price.is_sign_negative() || !(price % tick).is_zero() {
             return Err(ProtocolError::InvalidPrice);
         }
-        // A genuine reducing order may be smaller than the entry minimum.
         if intent.effect == ExposureEffect::Increase
             && price * intent.quantity < minimum_notional
         {
@@ -178,14 +182,7 @@ pub fn prepare_order(
     })
 }
 
-// The type is inferred from OrderIntent.quantity, avoiding another public
-// venue-specific Decimal representation. Zero is always quantity minus itself.
-fn rust_decimal_zero(intent: &OrderIntent) -> impl PartialOrd + Copy {
-    intent.quantity - intent.quantity
-}
-
-/// Validate exact identity before any venue adoption. Binance allows some
-/// punctuation; our own orders deliberately use only a restricted Base32 form.
+/// Binance allows more characters; PG itself accepts only its own full UUID ID.
 pub fn valid_client_order_id(value: &str) -> bool {
     crate::decode_intent_bytes(value).is_some()
 }
@@ -212,13 +209,15 @@ pub struct RawOrder<'a> {
     pub status: &'a str,
 }
 
-/// Normalize REST order data into the shared execution contract; unknown status,
-/// wrong symbol, ID mismatch and inconsistent fill accounting all fail closed.
+/// Use for both open and historical order reads. Unknown or contradictory
+/// status/quantity is never silently interpreted as zero fills or rejection.
 pub fn normalize_order(
     raw: RawOrder<'_>,
     expected_id: &str,
 ) -> Result<VenueOrderSnapshot, ProtocolError> {
-    if raw.symbol != SYMBOL || raw.client_order_id != expected_id || !valid_client_order_id(expected_id)
+    if raw.symbol != SYMBOL
+        || raw.client_order_id != expected_id
+        || !valid_client_order_id(expected_id)
         || raw.order_id.is_empty()
         || !raw.order_id.bytes().all(|byte| byte.is_ascii_digit())
     {
@@ -275,78 +274,57 @@ mod tests {
     use super::*;
     use crate::encode_intent_bytes;
 
-    fn order_id() -> String {
+    fn id() -> String {
         encode_intent_bytes(&[0x42; 16])
+    }
+
+    fn raw<'a>(id: &'a str, status: &'a str) -> RawOrder<'a> {
+        RawOrder {
+            symbol: SYMBOL,
+            client_order_id: id,
+            order_id: "123",
+            side: "BUY",
+            original_quantity: "0.010",
+            executed_quantity: "0.010",
+            price: "80000.0",
+            status,
+        }
     }
 
     #[test]
     fn lookup_uses_stable_id_and_symbol() {
-        let id = order_id();
-        let fields = lookup_by_client_id(&id).unwrap();
+        let client = id();
+        let fields = lookup_by_client_id(&client).unwrap();
         assert_eq!(fields[0], ("symbol", "BTCUSDC".to_owned()));
-        assert_eq!(fields[1], ("origClientOrderId", id));
-        assert!(lookup_by_client_id("unowned-client-id").is_err());
+        assert_eq!(fields[1], ("origClientOrderId", client));
+        assert!(lookup_by_client_id("unowned").is_err());
     }
 
     #[test]
-    fn completed_fill_is_recovered_not_reposted() {
-        let id = order_id();
-        let snapshot = normalize_order(
-            RawOrder {
-                symbol: SYMBOL,
-                client_order_id: &id,
-                order_id: "123",
-                side: "BUY",
-                original_quantity: "0.010",
-                executed_quantity: "0.010",
-                price: "80000.0",
-                status: "FILLED",
-            },
-            &id,
-        )
-        .unwrap();
+    fn historical_fill_is_adopted() {
+        let client = id();
+        let snapshot = normalize_order(raw(&client, "FILLED"), &client).unwrap();
         assert_eq!(snapshot.state, VenueOrderState::Filled);
-        assert_eq!(snapshot.client_order_id.as_deref(), Some(id.as_str()));
+        assert_eq!(snapshot.client_order_id.as_deref(), Some(client.as_str()));
     }
 
     #[test]
-    fn partial_cancel_keeps_filled_quantity() {
-        let id = order_id();
-        let snapshot = normalize_order(
-            RawOrder {
-                symbol: SYMBOL,
-                client_order_id: &id,
-                order_id: "124",
-                side: "SELL",
-                original_quantity: "0.020",
-                executed_quantity: "0.005",
-                price: "81000",
-                status: "CANCELED",
-            },
-            &id,
-        )
-        .unwrap();
+    fn canceled_partial_fill_is_not_zeroed() {
+        let client = id();
+        let mut order = raw(&client, "CANCELED");
+        order.executed_quantity = "0.005";
+        let snapshot = normalize_order(order, &client).unwrap();
         assert_eq!(snapshot.state, VenueOrderState::Canceled);
         assert_eq!(snapshot.filled_quantity.to_string(), "0.005");
     }
 
     #[test]
-    fn mismatch_or_unknown_status_must_not_be_adopted() {
-        let id = order_id();
-        let mut raw = RawOrder {
-            symbol: SYMBOL,
-            client_order_id: &id,
-            order_id: "125",
-            side: "BUY",
-            original_quantity: "0.010",
-            executed_quantity: "0.000",
-            price: "80000",
-            status: "NEW",
-        };
-        assert!(normalize_order(raw.clone(), "pgINVALID").is_err());
-        raw.status = "SOMETHING_NEW";
-        assert!(normalize_order(raw.clone(), &id).is_err());
-        raw.status = "FILLED";
-        assert!(normalize_order(raw, &id).is_err());
+    fn mismatched_ids_unknown_status_and_inconsistent_fills_fail() {
+        let client = id();
+        assert!(normalize_order(raw(&client, "FILLED"), "bad-id").is_err());
+        assert!(normalize_order(raw(&client, "NEW_STATUS"), &client).is_err());
+        let mut order = raw(&client, "FILLED");
+        order.executed_quantity = "0.001";
+        assert!(normalize_order(order, &client).is_err());
     }
 }
