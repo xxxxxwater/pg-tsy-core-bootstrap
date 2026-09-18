@@ -13,7 +13,10 @@ use futures_util::{SinkExt, StreamExt};
 use pg_execution::ExecutionError;
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
-use tokio::{sync::mpsc, time::{Instant, MissedTickBehavior, interval, timeout}};
+use tokio::{
+    sync::mpsc,
+    time::{Instant, MissedTickBehavior, interval, timeout},
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::user_stream::{UserEvent, decode_user_event};
@@ -34,7 +37,9 @@ pub struct BinanceUserStream {
 impl BinanceUserStream {
     pub fn new(api_key: String) -> Result<Self, ExecutionError> {
         if api_key.is_empty() || api_key.len() > 512 {
-            return Err(ExecutionError::Authentication("invalid PM stream credentials".into()));
+            return Err(ExecutionError::Authentication(
+                "invalid PM stream credentials".into(),
+            ));
         }
         let http = Client::builder()
             .timeout(Duration::from_secs(5))
@@ -55,31 +60,40 @@ impl BinanceUserStream {
         };
         let response = request
             .header("X-MBX-APIKEY", &self.api_key)
-            .send().await
+            .send()
+            .await
             .map_err(|_| ExecutionError::Transport("PM user stream management failed".into()))?;
         if response.status() != StatusCode::OK {
-            return Err(ExecutionError::Unknown("PM listen key invalid or renewal failed".into()));
+            return Err(ExecutionError::Unknown(
+                "PM listen key invalid or renewal failed".into(),
+            ));
         }
         if !start {
             return Ok(None);
         }
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .map_err(|_| ExecutionError::Transport("PM listen key response incomplete".into()))?;
         if bytes.is_empty() || bytes.len() > 4 * 1024 {
-            return Err(ExecutionError::Conversion("invalid PM listen key response".into()));
+            return Err(ExecutionError::Conversion(
+                "invalid PM listen key response".into(),
+            ));
         }
         let payload: Value = serde_json::from_slice(&bytes)
             .map_err(|_| ExecutionError::Conversion("malformed PM listen key response".into()))?;
-        let key = payload.get("listenKey").and_then(Value::as_str)
+        let key = payload
+            .get("listenKey")
+            .and_then(Value::as_str)
             .filter(|key| valid_listen_key(key))
             .ok_or_else(|| ExecutionError::Conversion("missing PM listen key".into()))?;
         Ok(Some(key.to_owned()))
     }
 
     pub async fn create_listen_key(&self) -> Result<String, ExecutionError> {
-        self.listen_key_request(true).await?.ok_or_else(|| {
-            ExecutionError::Conversion("missing PM listen key".into())
-        })
+        self.listen_key_request(true)
+            .await?
+            .ok_or_else(|| ExecutionError::Conversion("missing PM listen key".into()))
     }
 
     pub async fn renew_listen_key(&self) -> Result<(), ExecutionError> {
@@ -89,10 +103,7 @@ impl BinanceUserStream {
     /// One session only: no recursive/unbounded reconnect. The operator's
     /// supervisor must back off and REST-reconcile on every returned error.
     /// All messages have bounded size and the consumer has bounded send time.
-    pub async fn stream_once(
-        &self,
-        sink: &mpsc::Sender<UserEvent>,
-    ) -> Result<(), ExecutionError> {
+    pub async fn stream_once(&self, sink: &mpsc::Sender<UserEvent>) -> Result<(), ExecutionError> {
         require_reconcile(sink).await?;
         let key = self.create_listen_key().await?;
         let ws_url = format!("{USER_WS_BASE}{key}");
@@ -208,6 +219,9 @@ mod tests {
     async fn no_session_can_start_without_emitting_reconcile_required() {
         let (tx, mut rx) = mpsc::channel(1);
         require_reconcile(&tx).await.unwrap();
-        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(UserEvent::ReconcileRequired)
+        ));
     }
 }
