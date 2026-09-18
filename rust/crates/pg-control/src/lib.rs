@@ -216,34 +216,43 @@ mod telegram_transport {
         fn allow(&self, user_id: i64, command: &ControlCommand) -> Result<(), &'static str> {
             let now = Instant::now();
             let mut state = self.state.lock().expect("telegram rate limiter poisoned");
-            let normal = state.normal.entry(user_id).or_default();
-            while normal
-                .front()
-                .is_some_and(|instant| now.duration_since(*instant) >= Duration::from_secs(60))
+            // Scope the queue borrow: cooldown maps are distinct fields of the
+            // same locked state and must only be accessed after it is released.
             {
-                normal.pop_front();
-            }
-            if normal.len() >= self.config.normal_per_minute {
-                return Err("rate limit: 10 commands/minute");
+                let normal = state.normal.entry(user_id).or_default();
+                while normal.front().is_some_and(|instant| {
+                    now.duration_since(*instant) >= Duration::from_secs(60)
+                }) {
+                    normal.pop_front();
+                }
+                if normal.len() >= self.config.normal_per_minute {
+                    return Err("rate limit: 10 commands/minute");
+                }
             }
 
-            if command.is_refresh() {
-                if state.last_refresh.get(&user_id).is_some_and(|instant| {
+            // Rejected cooldown checks never spend a normal-rate slot or move
+            // the cooldown. All checks and updates share one lock.
+            if command.is_refresh()
+                && state.last_refresh.get(&user_id).is_some_and(|instant| {
                     now.duration_since(*instant) < self.config.refresh_cooldown
-                }) {
-                    return Err("rate limit: /refresh cooldown is 15s");
-                }
+                })
+            {
+                return Err("rate limit: /refresh cooldown is 15s");
+            }
+            if command.is_emergency()
+                && state.last_emergency.get(&user_id).is_some_and(|instant| {
+                    now.duration_since(*instant) < self.config.emergency_cooldown
+                })
+            {
+                return Err("rate limit: /emergency_exit cooldown is 30s");
+            }
+            if command.is_refresh() {
                 state.last_refresh.insert(user_id, now);
             }
             if command.is_emergency() {
-                if state.last_emergency.get(&user_id).is_some_and(|instant| {
-                    now.duration_since(*instant) < self.config.emergency_cooldown
-                }) {
-                    return Err("rate limit: /emergency_exit cooldown is 30s");
-                }
                 state.last_emergency.insert(user_id, now);
             }
-            normal.push_back(now);
+            state.normal.entry(user_id).or_default().push_back(now);
             Ok(())
         }
     }
@@ -350,6 +359,19 @@ mod telegram_transport {
             assert!(limiter.allow(7, &ControlCommand::Refresh).is_err());
             assert!(limiter.allow(8, &ControlCommand::EmergencyExit).is_ok());
             assert!(limiter.allow(8, &ControlCommand::EmergencyExit).is_err());
+        }
+
+        #[test]
+        fn cooldown_rejection_does_not_consume_normal_allowance() {
+            let limiter = RateLimiter::new(TelegramRateLimitConfig {
+                normal_per_minute: 2,
+                ..TelegramRateLimitConfig::default()
+            });
+            assert!(limiter.allow(7, &ControlCommand::Refresh).is_ok());
+            assert!(limiter.allow(7, &ControlCommand::Refresh).is_err());
+            assert!(limiter.allow(7, &ControlCommand::Status).is_ok());
+            assert!(limiter.allow(7, &ControlCommand::Status).is_err());
+            assert!(limiter.allow(8, &ControlCommand::Status).is_ok());
         }
     }
 }
