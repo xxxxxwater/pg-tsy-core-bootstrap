@@ -1,14 +1,12 @@
 name: binance-public-live
 
-# Network smoke is deliberately outside deterministic CI. It has no secrets,
-# account endpoints or ability to submit orders. Updating the specific probe
-# runs it once on main; operators may also dispatch it manually.
+# Real exchange smoke cannot run reliably on US GitHub-hosted runners:
+# Binance public depth REST returned HTTP 451 on 2026-09-18 (run 35343735329).
+# Retain this strict fail-on-451 test for operator-invoked diagnosis; do not
+# weaken it or mark it successful without a genuine REST/WS L2 bridge.
+# This job uses no secrets, account endpoints or order submission capability.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - rust/adapters/pg-binance/tests/live_public.rs
 
 permissions:
   contents: read
