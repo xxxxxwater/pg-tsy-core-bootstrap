@@ -19,6 +19,21 @@ pub fn binance_client_order_id(intent: &OrderIntent) -> String {
     encode_intent_bytes(intent.intent_id.as_bytes())
 }
 
+/// Translate a venue ID back to the durable *core* identity. Every adapter
+/// acknowledgment, historical lookup and user-stream event MUST use this
+/// canonical identity before crossing into pg-oms / pg-reconcile. Otherwise
+/// a 28-character Binance ID cannot match a persisted 34-character PG ID.
+pub fn durable_client_order_id(venue_client_id: &str) -> Option<String> {
+    let bytes = decode_intent_bytes(venue_client_id)?;
+    let mut id = String::with_capacity(34);
+    id.push_str("pg");
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(&mut id, "{byte:02x}").ok()?;
+    }
+    Some(id)
+}
+
 /// Deterministic, full-UUID encoding with no additional crate dependencies.
 pub fn encode_intent_bytes(bytes: &[u8; 16]) -> String {
     const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -84,7 +99,7 @@ pub fn decode_intent_bytes(client_order_id: &str) -> Option<[u8; 16]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_intent_bytes, encode_intent_bytes};
+    use super::{decode_intent_bytes, durable_client_order_id, encode_intent_bytes};
 
     #[test]
     fn venue_id_is_stable_short_and_reversible() {
@@ -118,5 +133,13 @@ mod tests {
         assert_eq!(decode_intent_bytes(&format!("pg{}", "a".repeat(26))), None);
         // Twenty-six Base32 symbols encode 130 bits: the final two must be zero.
         assert_eq!(decode_intent_bytes(&format!("pg{}B", "A".repeat(25))), None);
+    }
+
+    #[test]
+    fn recovered_order_identity_matches_persisted_core_id() {
+        let bytes = [0x42; 16];
+        let venue = encode_intent_bytes(&bytes);
+        assert_eq!(durable_client_order_id(&venue), Some(format!("pg{}", "42".repeat(16))));
+        assert_eq!(durable_client_order_id("manual-foreign"), None);
     }
 }
