@@ -34,6 +34,21 @@ jobs:
       - run: cargo test -p pg-marketdata binance_depth --lib
       - run: cargo clippy -p pg-binance -p pg-marketdata --all-targets -- -D warnings
 
+  # A separate bounded model-advisory regression gate. It must not depend on
+  # the model service, keys, live trading or the rest of the workspace being green.
+  jev-contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy
+      - run: cargo test -p pg-strategy jev_advisory --lib
+      - run: cargo clippy -p pg-strategy --all-targets -- -D warnings
+
   rust-lockfile:
     runs-on: ubuntu-latest
     defaults:
