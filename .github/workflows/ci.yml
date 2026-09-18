@@ -30,7 +30,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: clippy
-      - run: cargo test -p pg-binance --lib
+      - run: cargo test -p pg-binance --all-targets
       - run: cargo test -p pg-marketdata binance_depth --lib
       - run: cargo clippy -p pg-binance -p pg-marketdata --all-targets -- -D warnings
 
