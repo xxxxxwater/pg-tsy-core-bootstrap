@@ -279,7 +279,10 @@ mod tests {
             snapshot.filled_quantity += Decimal::new(1, 3);
             **fill = None;
         }
-        assert_eq!(tracker.accept(&missing_trade), Err(StreamError::ReconcileRequired));
+        assert_eq!(
+            tracker.accept(&missing_trade),
+            Err(StreamError::ReconcileRequired)
+        );
         assert!(!tracker.is_healthy());
     }
 
@@ -294,14 +297,20 @@ mod tests {
             snapshot.filled_quantity += Decimal::new(2, 3);
             fill.as_mut().as_mut().expect("trade").quantity = Decimal::new(1, 3);
         }
-        assert_eq!(tracker.accept(&mismatched), Err(StreamError::ReconcileRequired));
+        assert_eq!(
+            tracker.accept(&mismatched),
+            Err(StreamError::ReconcileRequired)
+        );
         tracker.mark_reconciled();
         assert_eq!(tracker.accept(&baseline), Ok(true));
         let mut replayed = baseline.clone();
         if let UserEvent::Order { snapshot, .. } = &mut replayed {
             snapshot.filled_quantity += Decimal::new(5, 3);
         }
-        assert_eq!(tracker.accept(&replayed), Err(StreamError::ReconcileRequired));
+        assert_eq!(
+            tracker.accept(&replayed),
+            Err(StreamError::ReconcileRequired)
+        );
     }
 
     #[test]
@@ -314,7 +323,10 @@ mod tests {
         if let UserEvent::Order { fill, .. } = &mut contradictory {
             fill.as_mut().as_mut().expect("trade").trade_id = 10;
         }
-        assert_eq!(tracker.accept(&contradictory), Err(StreamError::ReconcileRequired));
+        assert_eq!(
+            tracker.accept(&contradictory),
+            Err(StreamError::ReconcileRequired)
+        );
     }
 
     #[test]
