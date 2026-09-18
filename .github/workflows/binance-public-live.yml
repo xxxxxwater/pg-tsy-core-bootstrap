@@ -1,0 +1,29 @@
+name: binance-public-live
+
+# Network smoke is deliberately outside deterministic CI. It has no secrets,
+# account endpoints or ability to submit orders. Updating the specific probe
+# runs it once on main; operators may also dispatch it manually.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - rust/adapters/pg-binance/tests/live_public.rs
+
+permissions:
+  contents: read
+
+jobs:
+  public-feed-reconnect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Read-only live BTCUSDC BBO reconnect and REST/L2 bridge
+        env:
+          PG_LIVE_TRADING: 'false'
+        run: cargo test --locked -p pg-binance --test live_public -- --ignored --nocapture
