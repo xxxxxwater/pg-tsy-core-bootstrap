@@ -6,6 +6,7 @@
 
 pub mod market_protocol;
 pub mod order_protocol;
+pub mod user_stream;
 
 use pg_types::OrderIntent;
 
