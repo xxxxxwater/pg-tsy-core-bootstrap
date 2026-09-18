@@ -334,9 +334,10 @@ mod tests {
     #[test]
     fn unknown_order_state_is_never_clean_even_if_fills_match() {
         let (local, mut remote) = open_order_fixture();
-        assert!(reconcile(Venue::Hyperliquid, &[local.clone()], &[remote.clone()], &[]).clean());
+        let local_orders = std::slice::from_ref(&local);
+        assert!(reconcile(Venue::Hyperliquid, local_orders, std::slice::from_ref(&remote), &[]).clean());
         remote.state = VenueOrderState::Unknown;
-        let report = reconcile(Venue::Hyperliquid, &[local.clone()], &[remote], &[]);
+        let report = reconcile(Venue::Hyperliquid, local_orders, std::slice::from_ref(&remote), &[]);
         assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
         assert!(matches!(
             report.issues.first(),
@@ -368,29 +369,27 @@ mod tests {
     #[test]
     fn side_quantity_and_exchange_order_id_mismatch_hold() {
         let (local, mut remote) = open_order_fixture();
+        let local_orders = std::slice::from_ref(&local);
         remote.side = Side::Sell;
-        assert!(
-            reconcile(Venue::Hyperliquid, &[local.clone()], &[remote.clone()], &[])
-                .blocks(Venue::Hyperliquid, "HYPE")
-        );
+        let report = reconcile(Venue::Hyperliquid, local_orders, std::slice::from_ref(&remote), &[]);
+        assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
         remote.side = Side::Buy;
         remote.requested_quantity += Decimal::ONE;
-        assert!(
-            reconcile(Venue::Hyperliquid, &[local.clone()], &[remote.clone()], &[])
-                .blocks(Venue::Hyperliquid, "HYPE")
-        );
+        let report = reconcile(Venue::Hyperliquid, local_orders, std::slice::from_ref(&remote), &[]);
+        assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
         remote.requested_quantity -= Decimal::ONE;
         remote.venue_order_id = "999".into();
-        assert!(
-            reconcile(Venue::Hyperliquid, &[local.clone()], &[remote], &[])
-                .blocks(Venue::Hyperliquid, "HYPE")
-        );
+        let report = reconcile(Venue::Hyperliquid, local_orders, std::slice::from_ref(&remote), &[]);
+        assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
         let mut missing_side = local;
         missing_side.side = None;
-        let good_remote = open_order_fixture().1;
-        assert!(
-            reconcile(Venue::Hyperliquid, &[missing_side], &[good_remote], &[])
-                .blocks(Venue::Hyperliquid, "HYPE")
-        );
+        let mut good_remote = open_order_fixture().1;
+        good_remote.client_order_id = Some(missing_side.client_order_id.clone());
+        let report = reconcile(Venue::Hyperliquid, &[missing_side], &[good_remote], &[]);
+        assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
+        assert!(matches!(
+            report.issues.first(),
+            Some(ReconcileIssue::OrderContractMismatch { .. })
+        ));
     }
 }
