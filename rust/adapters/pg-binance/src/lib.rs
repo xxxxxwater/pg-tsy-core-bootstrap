@@ -4,6 +4,7 @@
 //! production Portfolio Margin adapter is not implemented or wired up yet.
 //! These pure helpers neither submit orders nor enable live trading.
 
+pub mod market_protocol;
 pub mod order_protocol;
 
 use pg_types::OrderIntent;
