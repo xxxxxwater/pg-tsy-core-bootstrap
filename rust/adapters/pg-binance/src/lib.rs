@@ -1,36 +1,30 @@
 //! Binance adapter boundary.
 //!
-//! Venue-specific request/response types must remain inside this crate. The
-//! production Binance Portfolio Margin implementation is not wired up yet.
-//! This module only provides a deterministic venue-safe client order identity;
-//! it does not submit orders or enable live trading.
+//! Venue-specific request/response types must stay inside this crate. The
+//! production Portfolio Margin adapter is not implemented or wired up yet.
+//! These pure helpers neither submit orders nor enable live trading.
 
 use pg_types::OrderIntent;
-use uuid::Uuid;
 
 pub struct BinancePmAdapter;
 
-/// Binance PM UM `newClientOrderId` accepts at most 32 characters. The shared
-/// core identity (`pg` followed by 32 UUID hex digits) is 34 characters, so it
-/// must NOT be submitted unchanged to this venue.
-///
-/// Prefix the full 128-bit intent UUID with `pg` and encode it using RFC 4648
-/// Base32 without padding: 2 + ceil(128 / 5) = 28 ASCII characters. Retaining
-/// all 128 bits allows exact mapping back to the persisted intent on recovery.
-/// This mapping does not change the core or other venues' client identities.
+/// Binance PM UM `newClientOrderId` allows at most 32 characters. The shared
+/// client identity (`pg` + 32 UUID hex digits) is 34 characters and cannot be
+/// sent unchanged. Encode all 128 intent UUID bits as unpadded RFC 4648 Base32
+/// with a `pg` prefix, yielding 28 characters without changing other venues.
 pub fn binance_client_order_id(intent: &OrderIntent) -> String {
-    encode_intent_uuid(intent.intent_id)
+    encode_intent_bytes(intent.intent_id.as_bytes())
 }
 
-/// Generate the stable Binance identifier from the persisted intent UUID.
-pub fn encode_intent_uuid(intent_id: Uuid) -> String {
+/// Deterministic, full-UUID encoding with no additional crate dependencies.
+pub fn encode_intent_bytes(bytes: &[u8; 16]) -> String {
     const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     let mut out = String::with_capacity(28);
     out.push_str("pg");
 
     let mut buffer = 0_u32;
     let mut bits = 0_u8;
-    for &byte in intent_id.as_bytes() {
+    for &byte in bytes {
         buffer = (buffer << 8) | u32::from(byte);
         bits += 8;
         while bits >= 5 {
@@ -47,10 +41,9 @@ pub fn encode_intent_uuid(intent_id: Uuid) -> String {
     out
 }
 
-/// Recover the *exact* intent UUID from an ID emitted by `encode_intent_uuid`.
-/// Reject invalid lengths, alphabet and nonzero trailing padding bits instead
-/// of attempting to guess an order's ownership from its symbol or side.
-pub fn decode_intent_uuid(client_order_id: &str) -> Option<Uuid> {
+/// Recover all 128 intent UUID bits; reject malformed or noncanonical IDs.
+/// The caller must also verify the durable intent and venue order ownership.
+pub fn decode_intent_bytes(client_order_id: &str) -> Option<[u8; 16]> {
     let encoded = client_order_id.strip_prefix("pg")?;
     if encoded.len() != 26 {
         return None;
@@ -83,46 +76,44 @@ pub fn decode_intent_uuid(client_order_id: &str) -> Option<Uuid> {
     if written != bytes.len() || buffer != 0 {
         return None;
     }
-    Some(Uuid::from_bytes(bytes))
+    Some(bytes)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_intent_uuid, encode_intent_uuid};
-    use uuid::Uuid;
+    use super::{decode_intent_bytes, encode_intent_bytes};
 
     #[test]
     fn venue_id_is_stable_short_and_reversible() {
-        let id = Uuid::parse_str("018f7f2e-6f5c-7cc4-98e8-2cd9b5c67d0f").unwrap();
-        let venue_id = encode_intent_uuid(id);
+        let bytes = [0x42_u8; 16];
+        let venue_id = encode_intent_bytes(&bytes);
         assert_eq!(venue_id.len(), 28);
         assert!(venue_id.starts_with("pg"));
         assert!(venue_id.bytes().all(|ch| ch.is_ascii_alphanumeric()));
-        assert_eq!(venue_id, encode_intent_uuid(id));
-        assert_eq!(decode_intent_uuid(&venue_id), Some(id));
+        assert_eq!(venue_id, encode_intent_bytes(&bytes));
+        assert_eq!(decode_intent_bytes(&venue_id), Some(bytes));
     }
 
     #[test]
     fn full_uuid_bits_are_preserved() {
-        let zero = Uuid::from_bytes([0_u8; 16]);
-        let last_bit = Uuid::from_bytes({
-            let mut bytes = [0_u8; 16];
-            bytes[15] = 1;
-            bytes
-        });
-        assert_eq!(encode_intent_uuid(zero), format!("pg{}", "A".repeat(26)));
-        assert_ne!(encode_intent_uuid(zero), encode_intent_uuid(last_bit));
-        assert_eq!(decode_intent_uuid(&encode_intent_uuid(last_bit)), Some(last_bit));
+        let zero = [0_u8; 16];
+        let mut last_bit = zero;
+        last_bit[15] = 1;
+        assert_eq!(encode_intent_bytes(&zero), format!("pg{}", "A".repeat(26)));
+        assert_ne!(encode_intent_bytes(&zero), encode_intent_bytes(&last_bit));
+        assert_eq!(
+            decode_intent_bytes(&encode_intent_bytes(&last_bit)),
+            Some(last_bit)
+        );
     }
 
     #[test]
     fn invalid_and_noncanonical_ids_fail_closed() {
-        assert_eq!(decode_intent_uuid("pg"), None);
-        assert_eq!(decode_intent_uuid(&format!("xx{}", "A".repeat(26))), None);
-        assert_eq!(decode_intent_uuid(&format!("pg{}!", "A".repeat(25))), None);
-        assert_eq!(decode_intent_uuid(&format!("pg{}", "a".repeat(26))), None);
-        // The UUID contains 128 bits, while 26 Base32 symbols carry 130 bits;
-        // the two trailing padding bits must be zero to be canonical.
-        assert_eq!(decode_intent_uuid(&format!("pg{}B", "A".repeat(25))), None);
+        assert_eq!(decode_intent_bytes("pg"), None);
+        assert_eq!(decode_intent_bytes(&format!("xx{}", "A".repeat(26))), None);
+        assert_eq!(decode_intent_bytes(&format!("pg{}!", "A".repeat(25))), None);
+        assert_eq!(decode_intent_bytes(&format!("pg{}", "a".repeat(26))), None);
+        // Twenty-six Base32 symbols encode 130 bits: the final two must be zero.
+        assert_eq!(decode_intent_bytes(&format!("pg{}B", "A".repeat(25))), None);
     }
 }
