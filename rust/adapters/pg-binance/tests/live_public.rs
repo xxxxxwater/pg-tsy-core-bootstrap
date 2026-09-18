@@ -29,10 +29,14 @@ async fn first_real_event(kind: FeedKind) -> MarketEvent {
             )
             .await
     });
-    let event = timeout(Duration::from_secs(20), receiver.recv())
-        .await
-        .expect("timed out waiting for a REAL public venue event")
-        .expect("public transport stopped before first event");
+    let event = match timeout(Duration::from_secs(20), receiver.recv()).await {
+        Ok(Some(event)) => event,
+        Ok(None) => panic!("public transport terminated before first event: {:?}", worker.await),
+        Err(_) => {
+            worker.abort();
+            panic!("timed out waiting for REAL public venue event");
+        }
+    };
     worker.abort();
     assert!(worker.await.expect_err("public socket must be canceled").is_cancelled());
     event
