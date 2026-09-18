@@ -329,8 +329,22 @@ mod tests {
     fn exact_snapshot_id_is_valid_first_bridge() {
         let mut bridge = BinanceDepthBridge::new("BTCUSDC");
         bridge.install_snapshot(snapshot()).unwrap();
-        assert_eq!(bridge.push(delta(99, 100, 98), 1).unwrap().unwrap().sequence, Some(100));
-        assert_eq!(bridge.push(delta(101, 102, 100), 2).unwrap().unwrap().sequence, Some(102));
+        assert_eq!(
+            bridge
+                .push(delta(99, 100, 98), 1)
+                .unwrap()
+                .unwrap()
+                .sequence,
+            Some(100)
+        );
+        assert_eq!(
+            bridge
+                .push(delta(101, 102, 100), 2)
+                .unwrap()
+                .unwrap()
+                .sequence,
+            Some(102)
+        );
         assert!(bridge.is_ready());
     }
 
@@ -367,11 +381,17 @@ mod tests {
     fn missing_first_bridge_or_previous_id_requires_resnapshot() {
         let mut bridge = BinanceDepthBridge::new("BTCUSDC");
         bridge.install_snapshot(snapshot()).unwrap();
-        assert_eq!(bridge.push(delta(101, 102, 100), 1).unwrap_err(), DepthError::SequenceGap);
+        assert_eq!(
+            bridge.push(delta(101, 102, 100), 1).unwrap_err(),
+            DepthError::SequenceGap
+        );
         assert!(!bridge.is_ready());
         bridge.install_snapshot(snapshot()).unwrap();
         bridge.push(delta(99, 101, 98), 1).unwrap();
-        assert_eq!(bridge.push(delta(103, 104, 99), 2).unwrap_err(), DepthError::SequenceGap);
+        assert_eq!(
+            bridge.push(delta(103, 104, 99), 2).unwrap_err(),
+            DepthError::SequenceGap
+        );
         assert!(!bridge.is_ready());
     }
 
@@ -384,7 +404,10 @@ mod tests {
         assert!(!bridge.is_ready());
         assert!(bridge.push(delta(102, 103, 101), 2).unwrap().is_none());
         // A gap in the retained feed will not silently adopt the old book.
-        assert_eq!(bridge.install_snapshot(snapshot()).unwrap_err(), DepthError::SequenceGap);
+        assert_eq!(
+            bridge.install_snapshot(snapshot()).unwrap_err(),
+            DepthError::SequenceGap
+        );
         assert!(!bridge.is_ready());
     }
 
@@ -399,7 +422,10 @@ mod tests {
         bridge.install_snapshot(snapshot()).unwrap();
         let mut crossed = delta(99, 101, 98);
         crossed.bids[0][0] = "102".into();
-        assert_eq!(bridge.push(crossed, 1).unwrap_err(), DepthError::InvalidBook);
+        assert_eq!(
+            bridge.push(crossed, 1).unwrap_err(),
+            DepthError::InvalidBook
+        );
         assert!(!bridge.is_ready());
     }
 
@@ -413,7 +439,10 @@ mod tests {
         assert!(!bridge.is_ready());
         let mut overflow = delta(99, 101, 98);
         overflow.event_time_ms = u64::MAX;
-        assert_eq!(bridge.push(overflow, 1).unwrap_err(), DepthError::InvalidEvent);
+        assert_eq!(
+            bridge.push(overflow, 1).unwrap_err(),
+            DepthError::InvalidEvent
+        );
         assert!(!bridge.is_ready());
     }
 }

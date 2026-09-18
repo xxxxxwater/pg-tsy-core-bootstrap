@@ -101,11 +101,7 @@ pub fn channel() -> (JevAdvisoryPublisher, JevAdvisoryGate) {
 
 impl JevAdvisoryPublisher {
     /// Invalidate the previous observation on any invalid/newer response.
-    pub fn publish(
-        &self,
-        observation: JevObservation,
-        now_ns: u64,
-    ) -> Result<(), JevGateError> {
+    pub fn publish(&self, observation: JevObservation, now_ns: u64) -> Result<(), JevGateError> {
         if !observation.valid_at(now_ns) {
             self.sender.send_replace(None);
             return Err(JevGateError::InvalidObservation);
@@ -123,12 +119,7 @@ impl JevAdvisoryGate {
     /// This method NEVER calls on_signal or creates an intent. It is a veto
     /// for an otherwise independently risk-approved signal. Reduction ignores
     /// a stale advisory, so an AI outage cannot block emergency exits.
-    pub fn check(
-        &self,
-        signal: &Signal,
-        effect: ExposureEffect,
-        now_ns: u64,
-    ) -> JevGateDecision {
+    pub fn check(&self, signal: &Signal, effect: ExposureEffect, now_ns: u64) -> JevGateDecision {
         if effect == ExposureEffect::ReduceOnly {
             return JevGateDecision::AllowExistingDeterministicSignal;
         }
@@ -207,18 +198,33 @@ mod tests {
     #[test]
     fn no_observation_blocks_new_exposure_but_not_reduction() {
         let (_, gate) = channel();
-        assert_eq!(gate.check(&signal(), ExposureEffect::Increase, 110), JevGateDecision::HoldNewExposure);
-        assert_eq!(gate.check(&signal(), ExposureEffect::ReduceOnly, 110), JevGateDecision::AllowExistingDeterministicSignal);
+        assert_eq!(
+            gate.check(&signal(), ExposureEffect::Increase, 110),
+            JevGateDecision::HoldNewExposure
+        );
+        assert_eq!(
+            gate.check(&signal(), ExposureEffect::ReduceOnly, 110),
+            JevGateDecision::AllowExistingDeterministicSignal
+        );
     }
 
     #[test]
     fn matching_live_observation_can_only_approve_an_existing_signal() {
         let (producer, gate) = channel();
         producer.publish(observation(), 110).unwrap();
-        assert_eq!(gate.check(&signal(), ExposureEffect::Increase, 120), JevGateDecision::AllowExistingDeterministicSignal);
-        assert_eq!(gate.check(&signal(), ExposureEffect::Increase, 150), JevGateDecision::HoldNewExposure);
+        assert_eq!(
+            gate.check(&signal(), ExposureEffect::Increase, 120),
+            JevGateDecision::AllowExistingDeterministicSignal
+        );
+        assert_eq!(
+            gate.check(&signal(), ExposureEffect::Increase, 150),
+            JevGateDecision::HoldNewExposure
+        );
         producer.disconnect();
-        assert_eq!(gate.check(&signal(), ExposureEffect::Increase, 120), JevGateDecision::HoldNewExposure);
+        assert_eq!(
+            gate.check(&signal(), ExposureEffect::Increase, 120),
+            JevGateDecision::HoldNewExposure
+        );
     }
 
     #[test]
@@ -227,13 +233,25 @@ mod tests {
         producer.publish(observation(), 110).unwrap();
         let mut wrong = signal();
         wrong.score = -0.6;
-        assert_eq!(gate.check(&wrong, ExposureEffect::Increase, 120), JevGateDecision::HoldNewExposure);
+        assert_eq!(
+            gate.check(&wrong, ExposureEffect::Increase, 120),
+            JevGateDecision::HoldNewExposure
+        );
         wrong = signal();
         wrong.metadata = json!({"jev_source_event_ns":99});
-        assert_eq!(gate.check(&wrong, ExposureEffect::Increase, 120), JevGateDecision::HoldNewExposure);
+        assert_eq!(
+            gate.check(&wrong, ExposureEffect::Increase, 120),
+            JevGateDecision::HoldNewExposure
+        );
         let mut bad = observation();
         bad.probabilities.insert("up".into(), f64::NAN);
-        assert_eq!(producer.publish(bad, 111), Err(JevGateError::InvalidObservation));
-        assert_eq!(gate.check(&signal(), ExposureEffect::Increase, 112), JevGateDecision::HoldNewExposure);
+        assert_eq!(
+            producer.publish(bad, 111),
+            Err(JevGateError::InvalidObservation)
+        );
+        assert_eq!(
+            gate.check(&signal(), ExposureEffect::Increase, 112),
+            JevGateDecision::HoldNewExposure
+        );
     }
 }

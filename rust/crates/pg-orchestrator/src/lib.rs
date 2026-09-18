@@ -343,7 +343,10 @@ impl<S: RuntimeStore> DurableExecution<S> {
         let stream_id = format!("order:{}", input.client_order_id);
         let mut record = input.clone();
 
-        if matches!(record.state, OrderState::PendingSubmit | OrderState::Unknown) {
+        if matches!(
+            record.state,
+            OrderState::PendingSubmit | OrderState::Unknown
+        ) {
             let remote = adapter
                 .find_order_by_client_id(&record.client_order_id)
                 .await?;
@@ -555,12 +558,8 @@ impl<S: RuntimeStore> DurableExecution<S> {
             .map(|position| (position.asset, position.ownership))
             .collect::<BTreeMap<_, _>>();
         let venue_positions = adapter.positions().await?;
-        let positions = infer_position_ownership(
-            venue,
-            venue_positions,
-            &local_orders,
-            previous_ownership,
-        );
+        let positions =
+            infer_position_ownership(venue, venue_positions, &local_orders, previous_ownership);
         for position in &positions {
             self.store
                 .save_position_state(position, self.lease.fencing_token)
@@ -620,12 +619,8 @@ fn infer_position_ownership(
     let mut positions = Vec::with_capacity(snapshots.len() + previous.len());
     for snapshot in snapshots {
         let prior = previous.remove(&snapshot.asset);
-        let ownership = ownership_from_order_evidence(
-            &snapshot.asset,
-            snapshot.quantity,
-            orders,
-            prior,
-        );
+        let ownership =
+            ownership_from_order_evidence(&snapshot.asset, snapshot.quantity, orders, prior);
         positions.push(VenuePosition {
             venue,
             asset: snapshot.asset,
@@ -978,7 +973,10 @@ mod tests {
             .await
             .unwrap();
         assert!(recovery.items[0].resolved);
-        assert_eq!(recovery.items[0].venue_order_id.as_deref(), Some("venue-after-kill"));
+        assert_eq!(
+            recovery.items[0].venue_order_id.as_deref(),
+            Some("venue-after-kill")
+        );
         assert_eq!(adapter.submit_count.load(Ordering::SeqCst), 0);
     }
 

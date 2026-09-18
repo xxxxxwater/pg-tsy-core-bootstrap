@@ -79,8 +79,7 @@ fn time_ns(ms: u64) -> Result<u64, WireError> {
     if ms == 0 {
         return Err(WireError::InvalidTimestamp);
     }
-    ms.checked_mul(1_000_000)
-        .ok_or(WireError::InvalidTimestamp)
+    ms.checked_mul(1_000_000).ok_or(WireError::InvalidTimestamp)
 }
 
 fn decimal(value: &str, allow_zero: bool) -> Result<Decimal, WireError> {
@@ -98,8 +97,8 @@ pub fn decode_trade(bytes: &[u8], received_ns: u64) -> Result<MarketEvent, WireE
     if received_ns == 0 {
         return Err(WireError::InvalidTimestamp);
     }
-    let wire: TradeWire = serde_json::from_value(payload(bytes, TRADE_STREAM)?)
-        .map_err(|_| WireError::Malformed)?;
+    let wire: TradeWire =
+        serde_json::from_value(payload(bytes, TRADE_STREAM)?).map_err(|_| WireError::Malformed)?;
     if wire.event_type != "trade" || wire.symbol != SYMBOL {
         return Err(WireError::WrongSymbol);
     }
@@ -125,8 +124,8 @@ pub fn decode_bbo(bytes: &[u8], received_ns: u64) -> Result<MarketEvent, WireErr
     if received_ns == 0 {
         return Err(WireError::InvalidTimestamp);
     }
-    let wire: BboWire = serde_json::from_value(payload(bytes, BBO_STREAM)?)
-        .map_err(|_| WireError::Malformed)?;
+    let wire: BboWire =
+        serde_json::from_value(payload(bytes, BBO_STREAM)?).map_err(|_| WireError::Malformed)?;
     if wire.event_type != "bookTicker" || wire.symbol != SYMBOL {
         return Err(WireError::WrongSymbol);
     }
@@ -201,22 +200,36 @@ mod tests {
         let mut bridge = BinanceDepthBridge::new(SYMBOL);
         assert!(bridge.push(raw, 1).unwrap().is_none());
         let snapshot = decode_depth_snapshot(SYMBOL, SNAPSHOT).unwrap();
-        assert_eq!(bridge.install_snapshot(snapshot).unwrap().unwrap().sequence, Some(100));
+        assert_eq!(
+            bridge.install_snapshot(snapshot).unwrap().unwrap().sequence,
+            Some(100)
+        );
         assert!(bridge.is_ready());
     }
 
     #[test]
     fn wrong_stream_symbol_and_overlong_input_are_rejected() {
-        assert_eq!(decode_depth_snapshot("BTCUSDT", SNAPSHOT).err(), Some(WireError::WrongSymbol));
-        assert_eq!(decode_depth_delta(&vec![b'X'; 65537]).err(), Some(WireError::Malformed));
+        assert_eq!(
+            decode_depth_snapshot("BTCUSDT", SNAPSHOT).err(),
+            Some(WireError::WrongSymbol)
+        );
+        assert_eq!(
+            decode_depth_delta(&vec![b'X'; 65537]).err(),
+            Some(WireError::Malformed)
+        );
         let wrong = br#"{"stream":"btcusdt@depth@100ms","data":{"e":"depthUpdate","E":1,"s":"BTCUSDC","U":1,"u":2,"pu":0,"b":[],"a":[]}}"#;
-        assert_eq!(decode_depth_delta(wrong).err(), Some(WireError::WrongStream));
+        assert_eq!(
+            decode_depth_delta(wrong).err(),
+            Some(WireError::WrongStream)
+        );
     }
 
     #[test]
     fn trade_aggressor_and_bbo_are_normalized_without_fake_sequence() {
-        let sell = br#"{"e":"trade","s":"BTCUSDC","T":1700000000000,"p":"80000.1","q":"0.002","m":true}"#;
-        let buy = br#"{"e":"trade","s":"BTCUSDC","T":1700000000000,"p":"80000.1","q":"0.002","m":false}"#;
+        let sell =
+            br#"{"e":"trade","s":"BTCUSDC","T":1700000000000,"p":"80000.1","q":"0.002","m":true}"#;
+        let buy =
+            br#"{"e":"trade","s":"BTCUSDC","T":1700000000000,"p":"80000.1","q":"0.002","m":false}"#;
         match decode_trade(sell, 5).unwrap() {
             MarketEvent::Trade(t) => {
                 assert_eq!(t.aggressor, AggressorSide::Sell);
@@ -242,7 +255,13 @@ mod tests {
     #[test]
     fn crossed_bbo_and_missing_timestamp_cannot_publish() {
         let crossed = br#"{"e":"bookTicker","E":1700000000000,"s":"BTCUSDC","b":"80001","B":"1","a":"80000","A":"2"}"#;
-        assert_eq!(decode_bbo(crossed, 7).err(), Some(WireError::InvalidPriceOrSize));
-        assert_eq!(decode_trade(br#"{}"#, 0).err(), Some(WireError::InvalidTimestamp));
+        assert_eq!(
+            decode_bbo(crossed, 7).err(),
+            Some(WireError::InvalidPriceOrSize)
+        );
+        assert_eq!(
+            decode_trade(br#"{}"#, 0).err(),
+            Some(WireError::InvalidTimestamp)
+        );
     }
 }

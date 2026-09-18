@@ -2,12 +2,12 @@ use anyhow::{Context, Result, bail};
 use pg_marketdata::{InstrumentDescriptor, UniverseProvider, UniverseSnapshot};
 use pg_strategy::registry::StrategyRegistry;
 use pg_types::{AssetKey, Venue};
+#[cfg(feature = "ibkr-marketdata")]
+use std::time::Duration;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
 };
-#[cfg(feature = "ibkr-marketdata")]
-use std::time::Duration;
 
 #[cfg(feature = "hyperliquid-marketdata")]
 use pg_hyperliquid::{HyperliquidNetwork, HyperliquidUniverseProvider};
@@ -208,8 +208,7 @@ fn ibkr_scanner_from_env() -> Result<IbkrScannerConfig> {
     Ok(IbkrScannerConfig {
         number_of_rows: env_i32("IBKR_SCANNER_ROWS", 50)?,
         instrument: env::var("IBKR_SCANNER_INSTRUMENT").unwrap_or_else(|_| "STK".into()),
-        location_code: env::var("IBKR_SCANNER_LOCATION")
-            .unwrap_or_else(|_| "STK.US.MAJOR".into()),
+        location_code: env::var("IBKR_SCANNER_LOCATION").unwrap_or_else(|_| "STK.US.MAJOR".into()),
         scan_code: env::var("IBKR_SCANNER_CODE").unwrap_or_else(|_| "MOST_ACTIVE".into()),
         above_price: env_optional_f64("IBKR_SCANNER_ABOVE_PRICE")?,
         below_price: env_optional_f64("IBKR_SCANNER_BELOW_PRICE")?,
@@ -225,7 +224,11 @@ fn ibkr_scanner_from_env() -> Result<IbkrScannerConfig> {
 fn env_i32(name: &'static str, default: i32) -> Result<i32> {
     env::var(name)
         .ok()
-        .map(|value| value.parse::<i32>().with_context(|| format!("invalid {name}")))
+        .map(|value| {
+            value
+                .parse::<i32>()
+                .with_context(|| format!("invalid {name}"))
+        })
         .transpose()
         .map(|value| value.unwrap_or(default))
 }
@@ -235,7 +238,11 @@ fn env_optional_i32(name: &'static str) -> Result<Option<i32>> {
     env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .map(|value| value.parse::<i32>().with_context(|| format!("invalid {name}")))
+        .map(|value| {
+            value
+                .parse::<i32>()
+                .with_context(|| format!("invalid {name}"))
+        })
         .transpose()
 }
 
@@ -244,7 +251,11 @@ fn env_optional_f64(name: &'static str) -> Result<Option<f64>> {
     env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .map(|value| value.parse::<f64>().with_context(|| format!("invalid {name}")))
+        .map(|value| {
+            value
+                .parse::<f64>()
+                .with_context(|| format!("invalid {name}"))
+        })
         .transpose()
 }
 
@@ -252,7 +263,11 @@ fn env_optional_f64(name: &'static str) -> Result<Option<f64>> {
 fn env_u64(name: &'static str, default: u64) -> Result<u64> {
     env::var(name)
         .ok()
-        .map(|value| value.parse::<u64>().with_context(|| format!("invalid {name}")))
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("invalid {name}"))
+        })
         .transpose()
         .map(|value| value.unwrap_or(default))
 }

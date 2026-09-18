@@ -184,13 +184,9 @@ impl StrategyRegistry {
         instruments: &[AssetKey],
     ) -> Result<Vec<String>, StrategyRegistryError> {
         let path = path.as_ref().to_path_buf();
-        let definition = self
-            .dynamic_templates
-            .get(&path)
-            .cloned()
-            .ok_or_else(|| {
-                StrategyRegistryError::MissingDynamicTemplate(path.display().to_string())
-            })?;
+        let definition = self.dynamic_templates.get(&path).cloned().ok_or_else(|| {
+            StrategyRegistryError::MissingDynamicTemplate(path.display().to_string())
+        })?;
         let instances = definition.build_instances_for(instruments)?;
         let policy_instances = definition.build_policy_instances_for(instruments)?;
         let mut new_strategies = instances

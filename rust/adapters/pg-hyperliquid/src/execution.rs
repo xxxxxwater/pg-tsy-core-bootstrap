@@ -416,7 +416,10 @@ impl ExecutionAdapter for HyperliquidExecutionAdapter {
             buying_power: None,
             initial_margin: None,
             maintenance_margin: None,
-            margin_used: Some(parse_decimal(&margin.total_margin_used, "total_margin_used")?),
+            margin_used: Some(parse_decimal(
+                &margin.total_margin_used,
+                "total_margin_used",
+            )?),
             gross_position_value: Some(parse_decimal(&margin.total_ntl_pos, "total_ntl_pos")?),
             raw_usd: Some(parse_decimal(&margin.total_raw_usd, "total_raw_usd")?),
         })
@@ -439,7 +442,9 @@ fn base_url(network: HyperliquidNetwork) -> sdk::BaseUrl {
 
 fn parse_decimal(value: &str, field: &str) -> Result<Decimal, ExecutionError> {
     Decimal::from_str(value).map_err(|error| {
-        ExecutionError::Conversion(format!("invalid Hyperliquid {field} value {value}: {error}"))
+        ExecutionError::Conversion(format!(
+            "invalid Hyperliquid {field} value {value}: {error}"
+        ))
     })
 }
 

@@ -228,21 +228,17 @@ mod telegram_transport {
             }
 
             if command.is_refresh() {
-                if state
-                    .last_refresh
-                    .get(&user_id)
-                    .is_some_and(|instant| now.duration_since(*instant) < self.config.refresh_cooldown)
-                {
+                if state.last_refresh.get(&user_id).is_some_and(|instant| {
+                    now.duration_since(*instant) < self.config.refresh_cooldown
+                }) {
                     return Err("rate limit: /refresh cooldown is 15s");
                 }
                 state.last_refresh.insert(user_id, now);
             }
             if command.is_emergency() {
-                if state
-                    .last_emergency
-                    .get(&user_id)
-                    .is_some_and(|instant| now.duration_since(*instant) < self.config.emergency_cooldown)
-                {
+                if state.last_emergency.get(&user_id).is_some_and(|instant| {
+                    now.duration_since(*instant) < self.config.emergency_cooldown
+                }) {
                     return Err("rate limit: /emergency_exit cooldown is 30s");
                 }
                 state.last_emergency.insert(user_id, now);

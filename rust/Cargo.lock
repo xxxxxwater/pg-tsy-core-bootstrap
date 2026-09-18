@@ -2265,7 +2265,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.20.1",
  "uuid",
 ]
 
@@ -3096,8 +3096,18 @@ name = "pg-binance"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-util",
+ "hmac",
  "pg-execution",
+ "pg-marketdata",
  "pg-types",
+ "reqwest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
 ]
 
 [[package]]
@@ -3107,6 +3117,7 @@ dependencies = [
  "serde",
  "teloxide",
  "thiserror 2.0.20",
+ "tokio",
  "toml",
 ]
 
@@ -3121,6 +3132,7 @@ dependencies = [
  "pg-marketdata",
  "pg-oms",
  "pg-orchestrator",
+ "pg-reconcile",
  "pg-risk",
  "pg-runtime",
  "pg-store",
@@ -3290,6 +3302,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
  "toml",
  "uuid",
 ]
@@ -5101,7 +5114,23 @@ dependencies = [
  "native-tls",
  "tokio",
  "tokio-native-tls",
- "tungstenite",
+ "tungstenite 0.20.1",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite 0.28.0",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -5319,6 +5348,25 @@ dependencies = [
  "sha1",
  "thiserror 1.0.69",
  "url",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http 1.5.0",
+ "httparse",
+ "log",
+ "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
+ "sha1",
+ "thiserror 2.0.20",
  "utf-8",
 ]
 

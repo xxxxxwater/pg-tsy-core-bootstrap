@@ -36,8 +36,20 @@ fn filters() -> SymbolFilters {
 
 #[test]
 fn post_only_wire_fields_are_deterministic_and_btcusdc_only() {
-    let a = prepare_order(&intent(), &filters(), PositionMode::OneWay, OrderStyle::PostOnly).unwrap();
-    let b = prepare_order(&intent(), &filters(), PositionMode::OneWay, OrderStyle::PostOnly).unwrap();
+    let a = prepare_order(
+        &intent(),
+        &filters(),
+        PositionMode::OneWay,
+        OrderStyle::PostOnly,
+    )
+    .unwrap();
+    let b = prepare_order(
+        &intent(),
+        &filters(),
+        PositionMode::OneWay,
+        OrderStyle::PostOnly,
+    )
+    .unwrap();
     assert_eq!(a, b);
     assert_eq!(a.path, "/papi/v1/um/order");
     assert_eq!(a.get("symbol"), Some("BTCUSDC"));
@@ -67,7 +79,12 @@ fn invalid_exchange_info_and_wrong_contract_fail_closed() {
     let mut wrong = intent();
     wrong.asset = "BTCUSDT".to_owned();
     assert_eq!(
-        prepare_order(&wrong, &filters(), PositionMode::OneWay, OrderStyle::PostOnly),
+        prepare_order(
+            &wrong,
+            &filters(),
+            PositionMode::OneWay,
+            OrderStyle::PostOnly
+        ),
         Err(ProtocolError::WrongInstrument)
     );
 }
@@ -77,18 +94,33 @@ fn size_price_filters_and_notional_are_enforced() {
     let mut order = intent();
     order.quantity = Decimal::from_str("0.0105").unwrap();
     assert_eq!(
-        prepare_order(&order, &filters(), PositionMode::OneWay, OrderStyle::PostOnly),
+        prepare_order(
+            &order,
+            &filters(),
+            PositionMode::OneWay,
+            OrderStyle::PostOnly
+        ),
         Err(ProtocolError::InvalidQuantity)
     );
     order.quantity = Decimal::from_str("0.010").unwrap();
     order.limit_price = Some(Decimal::from_str("80000.05").unwrap());
     assert_eq!(
-        prepare_order(&order, &filters(), PositionMode::OneWay, OrderStyle::PostOnly),
+        prepare_order(
+            &order,
+            &filters(),
+            PositionMode::OneWay,
+            OrderStyle::PostOnly
+        ),
         Err(ProtocolError::InvalidPrice)
     );
     order.limit_price = Some(Decimal::from_str("100.0").unwrap());
     assert_eq!(
-        prepare_order(&order, &filters(), PositionMode::OneWay, OrderStyle::PostOnly),
+        prepare_order(
+            &order,
+            &filters(),
+            PositionMode::OneWay,
+            OrderStyle::PostOnly
+        ),
         Err(ProtocolError::InvalidQuantity)
     );
 }
@@ -102,7 +134,12 @@ fn hedge_mode_unverified_mode_and_exposure_increasing_market_are_refused() {
         );
     }
     assert_eq!(
-        prepare_order(&intent(), &filters(), PositionMode::OneWay, OrderStyle::ReduceOnlyMarket),
+        prepare_order(
+            &intent(),
+            &filters(),
+            PositionMode::OneWay,
+            OrderStyle::ReduceOnlyMarket
+        ),
         Err(ProtocolError::UnsupportedExposure)
     );
 }

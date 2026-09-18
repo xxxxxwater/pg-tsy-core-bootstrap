@@ -13,9 +13,7 @@ use pg_marketdata::{
 use pg_types::Venue;
 use reqwest::{Client, StatusCode};
 use tokio::{net::TcpStream, sync::mpsc, time::timeout};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message,
-};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 use crate::market_protocol::{
     BBO_STREAM, DEPTH_STREAM, SYMBOL, TRADE_STREAM, decode_bbo, decode_depth_delta,
@@ -28,7 +26,8 @@ const MAX_WS_FRAME: usize = 64 * 1024;
 type MarketSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 fn timestamp_ns() -> Result<u64, MarketDataError> {
-    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map_err(|_| MarketDataError::Conversion("invalid system clock".into()))?;
     u64::try_from(elapsed.as_nanos())
         .map_err(|_| MarketDataError::Conversion("clock overflow".into()))
@@ -37,7 +36,9 @@ fn timestamp_ns() -> Result<u64, MarketDataError> {
 /// Selecting an unsupported instrument or feed fails before opening a socket.
 pub fn public_stream(spec: &FeedSpec) -> Result<&'static str, MarketDataError> {
     if spec.venue != Venue::BinancePm || spec.asset != SYMBOL {
-        return Err(MarketDataError::Subscription("only Binance PM BTCUSDC is supported".into()));
+        return Err(MarketDataError::Subscription(
+            "only Binance PM BTCUSDC is supported".into(),
+        ));
     }
     match &spec.kind {
         FeedKind::Trades => Ok(TRADE_STREAM),
@@ -64,16 +65,25 @@ impl BinanceMarketDataSource {
         Ok(Self { http })
     }
 
-    async fn depth_snapshot(&self) -> Result<pg_marketdata::subscription::binance_depth::BinanceDepthSnapshot, MarketDataError> {
-        let response = self.http.get(DEPTH_REST).send().await
-            .map_err(|_| MarketDataError::Disconnected("depth snapshot REST transport failed".into()))?;
+    async fn depth_snapshot(
+        &self,
+    ) -> Result<pg_marketdata::subscription::binance_depth::BinanceDepthSnapshot, MarketDataError>
+    {
+        let response = self.http.get(DEPTH_REST).send().await.map_err(|_| {
+            MarketDataError::Disconnected("depth snapshot REST transport failed".into())
+        })?;
         if response.status() != StatusCode::OK
-            || response.content_length().is_some_and(|n| n > 2 * 1024 * 1024)
+            || response
+                .content_length()
+                .is_some_and(|n| n > 2 * 1024 * 1024)
         {
-            return Err(MarketDataError::Disconnected("depth snapshot unavailable or oversized".into()));
+            return Err(MarketDataError::Disconnected(
+                "depth snapshot unavailable or oversized".into(),
+            ));
         }
-        let bytes = response.bytes().await
-            .map_err(|_| MarketDataError::Disconnected("depth snapshot response incomplete".into()))?;
+        let bytes = response.bytes().await.map_err(|_| {
+            MarketDataError::Disconnected("depth snapshot response incomplete".into())
+        })?;
         decode_depth_snapshot(SYMBOL, &bytes)
             .map_err(|err| MarketDataError::Conversion(format!("invalid depth snapshot: {err:?}")))
     }
@@ -82,7 +92,8 @@ impl BinanceMarketDataSource {
         sink: &mpsc::Sender<MarketEvent>,
         event: MarketEvent,
     ) -> Result<(), MarketDataError> {
-        sink.send(event).await
+        sink.send(event)
+            .await
             .map_err(|_| MarketDataError::Disconnected("market-data consumer closed".into()))
     }
 
@@ -98,7 +109,11 @@ impl BinanceMarketDataSource {
             let event = match kind {
                 FeedKind::Trades => decode_trade(&payload, received_ns),
                 FeedKind::BestBidAsk => decode_bbo(&payload, received_ns),
-                _ => return Err(MarketDataError::Subscription("unsupported Binance feed".into())),
+                _ => {
+                    return Err(MarketDataError::Subscription(
+                        "unsupported Binance feed".into(),
+                    ));
+                }
             }
             .map_err(|err| MarketDataError::Conversion(format!("invalid Binance feed: {err:?}")))?;
             Self::publish(sink, event).await?;
@@ -116,7 +131,8 @@ impl BinanceMarketDataSource {
         let first = next_json(socket).await?;
         let delta = decode_depth_delta(&first)
             .map_err(|err| MarketDataError::Conversion(format!("invalid depth diff: {err:?}")))?;
-        bridge.push(delta, timestamp_ns()?)
+        bridge
+            .push(delta, timestamp_ns()?)
             .map_err(|err| MarketDataError::Conversion(err.to_string()))?;
 
         let snapshot_task = self.depth_snapshot();
@@ -162,7 +178,9 @@ impl MarketDataSource for BinanceMarketDataSource {
         let (mut socket, _) = timeout(Duration::from_secs(5), connect_async(&url))
             .await
             .map_err(|_| MarketDataError::Disconnected("public websocket connect timeout".into()))?
-            .map_err(|_| MarketDataError::Disconnected("public websocket handshake failed".into()))?;
+            .map_err(|_| {
+                MarketDataError::Disconnected("public websocket handshake failed".into())
+            })?;
         match &spec.kind {
             FeedKind::L2Book => self.stream_depth(&mut socket, &sink).await,
             kind => self.stream_simple(&mut socket, kind, &sink).await,
@@ -180,15 +198,23 @@ async fn next_json(socket: &mut MarketSocket) -> Result<Vec<u8>, MarketDataError
         match frame {
             Message::Text(text) => {
                 if text.is_empty() || text.len() > MAX_WS_FRAME {
-                    return Err(MarketDataError::Conversion("invalid websocket frame size".into()));
+                    return Err(MarketDataError::Conversion(
+                        "invalid websocket frame size".into(),
+                    ));
                 }
                 return Ok(text.as_bytes().to_vec());
             }
             Message::Ping(_) | Message::Pong(_) => {}
             Message::Close(_) => {
-                return Err(MarketDataError::Disconnected("public websocket closed".into()));
+                return Err(MarketDataError::Disconnected(
+                    "public websocket closed".into(),
+                ));
             }
-            _ => return Err(MarketDataError::Conversion("non-text market message".into())),
+            _ => {
+                return Err(MarketDataError::Conversion(
+                    "non-text market message".into(),
+                ));
+            }
         }
     }
 }
@@ -198,17 +224,39 @@ mod tests {
     use super::*;
 
     fn spec(asset: &str, venue: Venue, kind: FeedKind) -> FeedSpec {
-        FeedSpec { venue, asset: asset.into(), kind }
+        FeedSpec {
+            venue,
+            asset: asset.into(),
+            kind,
+        }
     }
 
     #[test]
     fn btcusdc_public_stream_selection_is_explicit_and_restricted() {
-        assert_eq!(public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::Trades)).unwrap(), TRADE_STREAM);
-        assert_eq!(public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::BestBidAsk)).unwrap(), BBO_STREAM);
-        assert_eq!(public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::L2Book)).unwrap(), DEPTH_STREAM);
+        assert_eq!(
+            public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::Trades)).unwrap(),
+            TRADE_STREAM
+        );
+        assert_eq!(
+            public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::BestBidAsk)).unwrap(),
+            BBO_STREAM
+        );
+        assert_eq!(
+            public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::L2Book)).unwrap(),
+            DEPTH_STREAM
+        );
         assert!(public_stream(&spec("BTCUSDT", Venue::BinancePm, FeedKind::Trades)).is_err());
         assert!(public_stream(&spec(SYMBOL, Venue::Hyperliquid, FeedKind::Trades)).is_err());
-        assert!(public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::Candle { interval_ns: 60_000_000_000 })).is_err());
+        assert!(
+            public_stream(&spec(
+                SYMBOL,
+                Venue::BinancePm,
+                FeedKind::Candle {
+                    interval_ns: 60_000_000_000
+                }
+            ))
+            .is_err()
+        );
     }
 
     #[test]

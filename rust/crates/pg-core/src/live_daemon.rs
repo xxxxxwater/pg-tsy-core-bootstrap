@@ -34,11 +34,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{
-    sync::mpsc,
-    task::JoinHandle,
-    time::MissedTickBehavior,
-};
+use tokio::{sync::mpsc, task::JoinHandle, time::MissedTickBehavior};
 
 #[cfg(feature = "hyperliquid-marketdata")]
 use pg_hyperliquid::{
@@ -256,7 +252,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         .await?;
     checklist.pass(StartupGate::RuntimeLeaseAcquired);
 
-    let configured_venues = configured_live_venues(&registry, &feeds, &dynamic_resolution.operational_pins);
+    let configured_venues =
+        configured_live_venues(&registry, &feeds, &dynamic_resolution.operational_pins);
     let BuiltAdapters {
         registry: adapters,
         #[cfg(feature = "ibkr-marketdata")]
@@ -334,11 +331,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             latest_positions.insert(position.key(), position);
         }
     }
-    let mut runtime_pins = derive_runtime_pins(
-        &latest_positions,
-        &latest_orders,
-        &reconcile_safe_hold,
-    );
+    let mut runtime_pins =
+        derive_runtime_pins(&latest_positions, &latest_orders, &reconcile_safe_hold);
 
     if dynamic_enabled {
         dynamic_resolution = refresh_dynamic_universe(
@@ -411,12 +405,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<FeedFatal>(256);
     let mut supervisor = SubscriptionSupervisor::new();
     let mut feed_tasks = FeedTaskManager::default();
-    feed_tasks.sync(
-        feeds.clone(),
-        &mut supervisor,
-        &event_tx,
-        &fatal_tx,
-    )?;
+    feed_tasks.sync(feeds.clone(), &mut supervisor, &event_tx, &fatal_tx)?;
 
     let max_staleness_ns = config.max_market_staleness_ms.saturating_mul(1_000_000);
     let reconcile_interval_ms = env_u64("PG_RECONCILE_INTERVAL_MS", 2_000)?;
@@ -802,7 +791,8 @@ fn derive_runtime_pins(
         match &position.ownership {
             Ownership::Strategy(_) => {
                 pins.strategy.insert(key.clone());
-                pins.strategy_positions.insert(key.clone(), position.quantity);
+                pins.strategy_positions
+                    .insert(key.clone(), position.quantity);
             }
             Ownership::Manual | Ownership::Unknown => {
                 // Never allow automation to merge into a position that emergency
@@ -815,7 +805,10 @@ fn derive_runtime_pins(
         let key = AssetKey::new(order.venue, order.asset.clone());
         pins.operational.insert(key.clone());
         pins.strategy.insert(key.clone());
-        if matches!(order.state, pg_oms::OrderState::Unknown | pg_oms::OrderState::PendingSubmit) {
+        if matches!(
+            order.state,
+            pg_oms::OrderState::Unknown | pg_oms::OrderState::PendingSubmit
+        ) {
             pins.safe_hold.insert(key);
         }
     }
@@ -877,9 +870,18 @@ async fn build_real_adapter_registry(
             )
             .await
             .context("failed to initialize Hyperliquid real execution adapter")?;
-            adapter.positions().await.context("Hyperliquid positions read failed")?;
-            adapter.open_orders().await.context("Hyperliquid open-orders read failed")?;
-            adapter.account_snapshot().await.context("Hyperliquid account snapshot failed")?;
+            adapter
+                .positions()
+                .await
+                .context("Hyperliquid positions read failed")?;
+            adapter
+                .open_orders()
+                .await
+                .context("Hyperliquid open-orders read failed")?;
+            adapter
+                .account_snapshot()
+                .await
+                .context("Hyperliquid account snapshot failed")?;
             registry.register(Venue::Hyperliquid, Arc::new(adapter));
         }
         #[cfg(not(feature = "hyperliquid-marketdata"))]
@@ -926,9 +928,18 @@ async fn build_real_adapter_registry(
                 bail!("IBKR venue enabled but discovery produced no account-capable instrument");
             }
             dynamic.sync_assets(&assets, descriptors).await?;
-            composite.positions().await.context("IBKR positions read failed")?;
-            composite.open_orders().await.context("IBKR open-orders read failed")?;
-            composite.account_snapshot().await.context("IBKR account snapshot failed")?;
+            composite
+                .positions()
+                .await
+                .context("IBKR positions read failed")?;
+            composite
+                .open_orders()
+                .await
+                .context("IBKR open-orders read failed")?;
+            composite
+                .account_snapshot()
+                .await
+                .context("IBKR account snapshot failed")?;
             registry.register(Venue::InteractiveBrokers, composite);
             ibkr_dynamic = Some(dynamic);
         }
@@ -937,7 +948,9 @@ async fn build_real_adapter_registry(
     }
 
     if venues.contains(&Venue::BinancePm) {
-        bail!("BINANCE_PM remains fail-closed: no production execution/recovery adapter is registered");
+        bail!(
+            "BINANCE_PM remains fail-closed: no production execution/recovery adapter is registered"
+        );
     }
 
     Ok(BuiltAdapters {

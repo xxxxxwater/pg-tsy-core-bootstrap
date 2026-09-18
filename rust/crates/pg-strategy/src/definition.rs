@@ -188,7 +188,8 @@ impl UniverseDefinition {
         let using_legacy = self.venue.is_some() || !self.assets.is_empty();
         let using_standard = !self.instruments.is_empty();
         let using_dynamic = self.is_dynamic();
-        let modes = usize::from(using_legacy) + usize::from(using_standard) + usize::from(using_dynamic);
+        let modes =
+            usize::from(using_legacy) + usize::from(using_standard) + usize::from(using_dynamic);
         if modes != 1 {
             return Err(StrategyDefinitionError::Invalid(
                 "universe must use exactly one of venue+assets, instruments, or dynamic sources"
@@ -726,7 +727,10 @@ mod tests {
             "dynamic-momentum:IBKR:NVDA"
         );
         assert_eq!(
-            definition.universe.dynamic_sources()[0].filter().unwrap().top_n,
+            definition.universe.dynamic_sources()[0]
+                .filter()
+                .unwrap()
+                .top_n,
             Some(10)
         );
     }

@@ -126,7 +126,10 @@ pub fn prepare_order(
             }
             .to_owned(),
         ),
-        ("type", if is_market { "MARKET" } else { "LIMIT" }.to_owned()),
+        (
+            "type",
+            if is_market { "MARKET" } else { "LIMIT" }.to_owned(),
+        ),
         ("positionSide", "BOTH".to_owned()),
         ("quantity", intent.quantity.to_string()),
         ("newClientOrderId", client_id.clone()),
@@ -151,9 +154,7 @@ pub fn prepare_order(
         if price <= Decimal::ZERO || !(price % tick).is_zero() {
             return Err(ProtocolError::InvalidPrice);
         }
-        if intent.effect == ExposureEffect::Increase
-            && price * intent.quantity < minimum_notional
-        {
+        if intent.effect == ExposureEffect::Increase && price * intent.quantity < minimum_notional {
             return Err(ProtocolError::InvalidQuantity);
         }
         params.push(("price", price.to_string()));
@@ -242,7 +243,9 @@ pub fn normalize_order(
     }
     let state = match raw.status {
         "NEW" if filled_quantity.is_zero() => VenueOrderState::Open,
-        "PARTIALLY_FILLED" if !filled_quantity.is_zero() && filled_quantity < requested_quantity => {
+        "PARTIALLY_FILLED"
+            if !filled_quantity.is_zero() && filled_quantity < requested_quantity =>
+        {
             VenueOrderState::PartiallyFilled
         }
         "FILLED" if filled_quantity == requested_quantity => VenueOrderState::Filled,

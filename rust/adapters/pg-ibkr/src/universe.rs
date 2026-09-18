@@ -76,7 +76,8 @@ impl IbkrUniverseProvider {
         &self,
         account: Option<&str>,
     ) -> Result<BTreeSet<String>, UniverseError> {
-        let account_matches = |candidate: &str| account.is_none_or(|expected| expected == candidate);
+        let account_matches =
+            |candidate: &str| account.is_none_or(|expected| expected == candidate);
         let mut assets = BTreeSet::new();
 
         let positions = self

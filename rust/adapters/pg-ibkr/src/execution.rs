@@ -540,10 +540,7 @@ impl ExecutionAdapter for IbkrExecutionAdapter {
             initial_margin: summary_decimal(&rows, AccountSummaryTags::INIT_MARGIN_REQ)?,
             maintenance_margin: summary_decimal(&rows, AccountSummaryTags::MAINT_MARGIN_REQ)?,
             margin_used: None,
-            gross_position_value: summary_decimal(
-                &rows,
-                AccountSummaryTags::GROSS_POSITION_VALUE,
-            )?,
+            gross_position_value: summary_decimal(&rows, AccountSummaryTags::GROSS_POSITION_VALUE)?,
             raw_usd: None,
         })
     }
