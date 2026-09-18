@@ -3,6 +3,7 @@
 //! Venue-specific request/response types stay in this crate. Network transport
 //! is isolated and is not yet registered in the production daemon. Live is disabled.
 
+pub mod execution_adapter;
 pub mod market_protocol;
 pub mod market_transport;
 pub mod order_protocol;
