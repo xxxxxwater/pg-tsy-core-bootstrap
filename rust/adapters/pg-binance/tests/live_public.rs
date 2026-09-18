@@ -63,6 +63,29 @@ async fn public_websocket_reconnect_and_rest_depth_bridge() {
         );
     }
 
+    // Report geo/IP/network restrictions explicitly instead of misdiagnosing
+    // them as a local L2 sequence bug. No account endpoints or API keys.
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let response = http
+        .get("https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDC&limit=1000")
+        .send()
+        .await
+        .expect("public depth HTTP transport");
+    println!(
+        "PUBLIC_DEPTH_REST_DIAGNOSTIC status={} content_length={:?}",
+        response.status(),
+        response.content_length()
+    );
+    assert!(
+        response.status().is_success(),
+        "Binance public depth REST is blocked from this runner: {}",
+        response.status()
+    );
+
     // This cannot publish from a REST snapshot alone. Reaching this event
     // means the real WS delta passed the real REST snapshot sequence bridge.
     let event = first_real_event(FeedKind::L2Book).await;
