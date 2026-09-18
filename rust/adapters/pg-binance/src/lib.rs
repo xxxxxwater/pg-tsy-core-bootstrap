@@ -1,9 +1,10 @@
 //! Binance adapter boundary.
 //!
-//! Venue-specific request/response types stay in this crate. REST transport is
-//! gated and is not yet registered in the production daemon. Live is disabled.
+//! Venue-specific request/response types stay in this crate. Network transport
+//! is isolated and is not yet registered in the production daemon. Live is disabled.
 
 pub mod market_protocol;
+pub mod market_transport;
 pub mod order_protocol;
 pub mod rest_transport;
 pub mod user_stream;
