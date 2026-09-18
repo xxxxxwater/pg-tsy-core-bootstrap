@@ -9,6 +9,7 @@ pub mod market_transport;
 pub mod order_protocol;
 pub mod rest_transport;
 pub mod user_stream;
+pub mod user_transport;
 
 use pg_types::OrderIntent;
 
