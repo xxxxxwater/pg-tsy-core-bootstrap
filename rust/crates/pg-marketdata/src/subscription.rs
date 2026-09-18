@@ -2,6 +2,11 @@ use std::collections::BTreeMap;
 
 use crate::{FeedKind, FeedSpec, MarketEvent};
 
+// Keep Binance venue snapshot/diff sequencing isolated from the generic
+// SequenceTracker (which incorrectly assumes every update increments by one).
+#[path = "binance_depth.rs"]
+pub mod binance_depth;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubscriptionState {
     Connected,
