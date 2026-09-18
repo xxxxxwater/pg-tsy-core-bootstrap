@@ -1,11 +1,11 @@
 //! Binance adapter boundary.
 //!
-//! Venue-specific request/response types must stay inside this crate. The
-//! production Portfolio Margin adapter is not implemented or wired up yet.
-//! These pure helpers neither submit orders nor enable live trading.
+//! Venue-specific request/response types stay in this crate. REST transport is
+//! gated and is not yet registered in the production daemon. Live is disabled.
 
 pub mod market_protocol;
 pub mod order_protocol;
+pub mod rest_transport;
 pub mod user_stream;
 
 use pg_types::OrderIntent;
@@ -140,7 +140,10 @@ mod tests {
     fn recovered_order_identity_matches_persisted_core_id() {
         let bytes = [0x42; 16];
         let venue = encode_intent_bytes(&bytes);
-        assert_eq!(durable_client_order_id(&venue), Some(format!("pg{}", "42".repeat(16))));
+        assert_eq!(
+            durable_client_order_id(&venue),
+            Some(format!("pg{}", "42".repeat(16)))
+        );
         assert_eq!(durable_client_order_id("manual-foreign"), None);
     }
 }
