@@ -1,0 +1,57 @@
+name: one-shot-rust-state-repair
+
+on:
+  push:
+    paths:
+      - '.github/workflows/repair-rust-state.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'xxxxxwater/pg-tsy-core-bootstrap' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - name: Resolve lockfile with pinned toolchain; format entire workspace
+        run: |
+          cargo metadata --format-version 1 > /dev/null
+          cargo fmt --all
+          cargo fmt --check
+          cargo metadata --locked --format-version 1 > /dev/null
+      - name: Binance offline contract regressions
+        run: |
+          cargo test -p pg-binance --all-targets
+          cargo test -p pg-marketdata binance_depth --lib
+          cargo clippy -p pg-binance -p pg-marketdata --all-targets -- -D warnings
+      - name: JEV gate regressions
+        run: |
+          cargo test -p pg-strategy jev_advisory --lib
+          cargo clippy -p pg-strategy --all-targets -- -D warnings
+      - name: All default workspace tests
+        run: cargo test --workspace
+      - name: Commit only after lock, formatting, and tests pass
+        run: |
+          git diff --check
+          git add Cargo.lock crates adapters
+          git diff --cached --check
+          git diff --cached --stat
+          if git diff --cached --quiet; then
+            echo 'No Rust lockfile/format changes required'
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'chore(rust): reconcile Cargo.lock and rustfmt after Binance and JEV integration'
+            git push origin HEAD:main
+          fi
