@@ -6,7 +6,7 @@
 
 use pg_marketdata::{
     AggressorSide, BestBidAsk, MarketEvent, TradeTick,
-    binance_depth::{BinanceDepthDelta, BinanceDepthSnapshot},
+    subscription::binance_depth::{BinanceDepthDelta, BinanceDepthSnapshot},
 };
 use pg_types::Venue;
 use rust_decimal::Decimal;
@@ -184,7 +184,7 @@ pub fn decode_depth_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pg_marketdata::binance_depth::BinanceDepthBridge;
+    use pg_marketdata::subscription::binance_depth::BinanceDepthBridge;
 
     const SNAPSHOT: &[u8] = br#"{"lastUpdateId":100,"bids":[["99","2"]],"asks":[["101","3"]]}"#;
     const DEPTH: &[u8] = br#"{"e":"depthUpdate","E":1700000000000,"s":"BTCUSDC","U":99,"u":100,"pu":98,"b":[["100","1"]],"a":[]}"#;
