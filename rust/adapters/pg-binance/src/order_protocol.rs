@@ -5,6 +5,7 @@
 
 use pg_execution::{VenueOrderSnapshot, VenueOrderState};
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
+use rust_decimal::Decimal;
 
 use crate::binance_client_order_id;
 
@@ -87,23 +88,18 @@ pub fn prepare_order(
     if mode != PositionMode::OneWay {
         return Err(ProtocolError::UnsupportedPositionMode);
     }
-    if intent.quantity.is_zero() || intent.quantity.is_sign_negative() {
+    if intent.quantity <= Decimal::ZERO {
         return Err(ProtocolError::InvalidQuantity);
     }
-    // The Decimal type is inferred from OrderIntent.quantity; no floating point.
     let step = filters
         .step_size
-        .parse()
+        .parse::<Decimal>()
         .map_err(|_| ProtocolError::InvalidFilters)?;
     let minimum_quantity = filters
         .min_quantity
-        .parse()
+        .parse::<Decimal>()
         .map_err(|_| ProtocolError::InvalidFilters)?;
-    if step.is_zero()
-        || step.is_sign_negative()
-        || minimum_quantity.is_zero()
-        || minimum_quantity.is_sign_negative()
-    {
+    if step <= Decimal::ZERO || minimum_quantity <= Decimal::ZERO {
         return Err(ProtocolError::InvalidFilters);
     }
     if !(intent.quantity % step).is_zero() || intent.quantity < minimum_quantity {
@@ -143,19 +139,16 @@ pub fn prepare_order(
         let price = intent.limit_price.ok_or(ProtocolError::InvalidPrice)?;
         let tick = filters
             .tick_size
-            .parse()
+            .parse::<Decimal>()
             .map_err(|_| ProtocolError::InvalidFilters)?;
         let minimum_notional = filters
             .min_notional
-            .parse()
+            .parse::<Decimal>()
             .map_err(|_| ProtocolError::InvalidFilters)?;
-        if tick.is_zero()
-            || tick.is_sign_negative()
-            || minimum_notional.is_sign_negative()
-        {
+        if tick <= Decimal::ZERO || minimum_notional < Decimal::ZERO {
             return Err(ProtocolError::InvalidFilters);
         }
-        if price.is_zero() || price.is_sign_negative() || !(price % tick).is_zero() {
+        if price <= Decimal::ZERO || !(price % tick).is_zero() {
             return Err(ProtocolError::InvalidPrice);
         }
         if intent.effect == ExposureEffect::Increase
@@ -230,20 +223,20 @@ pub fn normalize_order(
     };
     let requested_quantity = raw
         .original_quantity
-        .parse()
+        .parse::<Decimal>()
         .map_err(|_| ProtocolError::InvalidVenueOrder)?;
     let filled_quantity = raw
         .executed_quantity
-        .parse()
+        .parse::<Decimal>()
         .map_err(|_| ProtocolError::InvalidVenueOrder)?;
     let price = raw
         .price
-        .parse()
+        .parse::<Decimal>()
         .map_err(|_| ProtocolError::InvalidVenueOrder)?;
-    if requested_quantity <= filled_quantity - filled_quantity
-        || filled_quantity < filled_quantity - filled_quantity
+    if requested_quantity <= Decimal::ZERO
+        || filled_quantity < Decimal::ZERO
         || filled_quantity > requested_quantity
-        || price < price - price
+        || price < Decimal::ZERO
     {
         return Err(ProtocolError::InvalidVenueOrder);
     }
