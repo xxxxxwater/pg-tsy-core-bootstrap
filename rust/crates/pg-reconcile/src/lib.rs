@@ -1,4 +1,4 @@
-use pg_execution::VenueOrderSnapshot;
+use pg_execution::{VenueOrderSnapshot, VenueOrderState};
 use pg_oms::{OrderRecord, OrderState};
 use pg_types::{AssetKey, Venue};
 use rust_decimal::Decimal;
@@ -64,6 +64,18 @@ pub enum ReconcileIssue {
         local_filled: Decimal,
         venue_filled: Decimal,
     },
+    /// A matching cumulative fill never resolves an UNKNOWN venue/local state.
+    UnresolvedOrderState {
+        key: AssetKey,
+        client_order_id: String,
+    },
+    /// The same client ID cannot silently stand for a different instrument,
+    /// side, size or venue order ID. Legacy records without a side fail closed.
+    OrderContractMismatch {
+        key: AssetKey,
+        client_order_id: String,
+        venue_asset: String,
+    },
 }
 
 impl ReconcileIssue {
@@ -72,7 +84,9 @@ impl ReconcileIssue {
             Self::UnknownPositionOwnership { key, .. }
             | Self::LocalOrderMissingAtVenue { key, .. }
             | Self::VenueOrderMissingLocally { key, .. }
-            | Self::FilledQuantityMismatch { key, .. } => key,
+            | Self::FilledQuantityMismatch { key, .. }
+            | Self::UnresolvedOrderState { key, .. }
+            | Self::OrderContractMismatch { key, .. } => key,
         }
     }
 }
@@ -135,12 +149,51 @@ pub fn reconcile(
                     push_issue(
                         &mut report,
                         ReconcileIssue::FilledQuantityMismatch {
-                            key,
+                            key: key.clone(),
                             client_order_id: local.client_order_id.clone(),
                             local_filled: local.filled_quantity,
                             venue_filled: remote.filled_quantity,
                         },
                     );
+                }
+                if local.state == OrderState::Unknown || remote.state == VenueOrderState::Unknown {
+                    push_issue(
+                        &mut report,
+                        ReconcileIssue::UnresolvedOrderState {
+                            key: key.clone(),
+                            client_order_id: local.client_order_id.clone(),
+                        },
+                    );
+                }
+                if remote.asset != local.asset
+                    || local.side != Some(remote.side)
+                    || remote.requested_quantity != local.requested_quantity
+                    || local
+                        .venue_order_id
+                        .as_ref()
+                        .is_some_and(|id| id != &remote.venue_order_id)
+                    || remote.venue_order_id.is_empty()
+                {
+                    push_issue(
+                        &mut report,
+                        ReconcileIssue::OrderContractMismatch {
+                            key: key.clone(),
+                            client_order_id: local.client_order_id.clone(),
+                            venue_asset: remote.asset.clone(),
+                        },
+                    );
+                    // A mismatched remote asset is also untrusted: freeze both
+                    // instruments until ownership is independently verified.
+                    if remote.asset != local.asset {
+                        push_issue(
+                            &mut report,
+                            ReconcileIssue::OrderContractMismatch {
+                                key: AssetKey::new(venue, remote.asset.clone()),
+                                client_order_id: local.client_order_id.clone(),
+                                venue_asset: remote.asset.clone(),
+                            },
+                        );
+                    }
                 }
             }
             None => push_issue(
@@ -189,7 +242,6 @@ fn push_issue(report: &mut ReconcileReport, issue: ReconcileIssue) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pg_execution::VenueOrderState;
     use pg_types::{ExposureEffect, OrderIntent, Side};
     use uuid::Uuid;
 
@@ -247,30 +299,80 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn fill_drift_enters_asset_safe_hold() {
+    fn open_order_fixture() -> (OrderRecord, VenueOrderSnapshot) {
         let intent = intent("HYPE");
         let mut local = OrderRecord::from_intent(&intent);
         local.apply(pg_oms::OrderEvent::SubmitRequested).unwrap();
         local.accept("42").unwrap();
-        local.apply_fill(Decimal::from(3)).unwrap();
-
         let remote = VenueOrderSnapshot {
             venue_order_id: "42".into(),
             client_order_id: Some(intent.client_order_id()),
             asset: "HYPE".into(),
             side: Side::Buy,
             requested_quantity: Decimal::from(10),
-            filled_quantity: Decimal::from(5),
+            filled_quantity: Decimal::ZERO,
             limit_price: None,
-            state: VenueOrderState::PartiallyFilled,
+            state: VenueOrderState::Open,
         };
+        (local, remote)
+    }
 
+    #[test]
+    fn fill_drift_enters_asset_safe_hold() {
+        let (mut local, mut remote) = open_order_fixture();
+        local.apply_fill(Decimal::from(3)).unwrap();
+        remote.filled_quantity = Decimal::from(5);
+        remote.state = VenueOrderState::PartiallyFilled;
         let report = reconcile(Venue::Hyperliquid, &[local], &[remote], &[]);
         assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
         assert!(matches!(
             report.issues.first(),
             Some(ReconcileIssue::FilledQuantityMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn unknown_order_state_is_never_clean_even_if_fills_match() {
+        let (local, mut remote) = open_order_fixture();
+        assert!(reconcile(Venue::Hyperliquid, &[local.clone()], &[remote.clone()], &[]).clean());
+        remote.state = VenueOrderState::Unknown;
+        let report = reconcile(Venue::Hyperliquid, &[local.clone()], &[remote], &[]);
+        assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
+        assert!(matches!(
+            report.issues.first(),
+            Some(ReconcileIssue::UnresolvedOrderState { .. })
+        ));
+        let mut local = local;
+        local.state = OrderState::Unknown;
+        let mut known_remote = open_order_fixture().1;
+        known_remote.client_order_id = Some(local.client_order_id.clone());
+        assert!(reconcile(Venue::Hyperliquid, &[local], &[known_remote], &[]).blocks(Venue::Hyperliquid, "HYPE"));
+    }
+
+    #[test]
+    fn mismatched_remote_identity_freezes_both_assets() {
+        let (local, mut remote) = open_order_fixture();
+        remote.asset = "BTC".into();
+        let report = reconcile(Venue::Hyperliquid, &[local], &[remote], &[]);
+        assert!(report.blocks(Venue::Hyperliquid, "HYPE"));
+        assert!(report.blocks(Venue::Hyperliquid, "BTC"));
+        assert!(matches!(report.issues.first(), Some(ReconcileIssue::OrderContractMismatch { .. })));
+    }
+
+    #[test]
+    fn side_quantity_and_exchange_order_id_mismatch_hold() {
+        let (local, mut remote) = open_order_fixture();
+        remote.side = Side::Sell;
+        assert!(reconcile(Venue::Hyperliquid, &[local.clone()], &[remote.clone()], &[]).blocks(Venue::Hyperliquid, "HYPE"));
+        remote.side = Side::Buy;
+        remote.requested_quantity += Decimal::ONE;
+        assert!(reconcile(Venue::Hyperliquid, &[local.clone()], &[remote.clone()], &[]).blocks(Venue::Hyperliquid, "HYPE"));
+        remote.requested_quantity -= Decimal::ONE;
+        remote.venue_order_id = "999".into();
+        assert!(reconcile(Venue::Hyperliquid, &[local.clone()], &[remote], &[]).blocks(Venue::Hyperliquid, "HYPE"));
+        let mut missing_side = local;
+        missing_side.side = None;
+        let good_remote = open_order_fixture().1;
+        assert!(reconcile(Venue::Hyperliquid, &[missing_side], &[good_remote], &[]).blocks(Venue::Hyperliquid, "HYPE"));
     }
 }
