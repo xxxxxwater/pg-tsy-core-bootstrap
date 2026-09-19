@@ -20,6 +20,7 @@ This repository is designed to be maintained by one engineer with AI agents. Opt
 Before changing code:
 
 - Read `docs/ARCHITECTURE.md` and relevant ADRs.
+- For any TypeSafe/JEV work, read the project-installed `.agents/skills/typesafe-ai/SKILL.md` and the current provider documentation linked there. Keep model judgments advisory, calculations and risk deterministic, and API keys out of the repository, fixtures and logs.
 - Identify the owning module.
 - Write/adjust a test that describes the intended behavior.
 - Prefer extending an interface over cross-module imports.
