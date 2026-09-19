@@ -131,7 +131,10 @@ class JevClient:
                 }
             },
         }
-        body = json.dumps(request, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        try:
+            body = json.dumps(request, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise JevUnavailable("invalid inference request") from exc
         try:
             raw = self._transport(body, self._key, self._timeout_s)
             if len(raw) > 65536:
