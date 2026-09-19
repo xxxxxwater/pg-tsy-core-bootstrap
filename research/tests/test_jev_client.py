@@ -80,6 +80,19 @@ def test_invalid_provider_data_fails_closed(payload):
         client(payload).evaluate(STATE, source_event_ns=NOW - 100, ttl_ns=1000)
 
 
+@pytest.mark.parametrize(
+    "invalid", [float("nan"), float("inf"), object()]
+)
+def test_invalid_market_state_fails_closed_without_provider_call(invalid):
+    def transport(*_args):
+        raise AssertionError("invalid market state must not reach provider")
+
+    model = JevClient("test-key", transport=transport, clock_ns=lambda: NOW)
+    state = {**STATE, "invalid": invalid}
+    with pytest.raises(JevUnavailable, match="invalid inference request"):
+        model.evaluate(state, source_event_ns=NOW, ttl_ns=1000)
+
+
 def test_stale_or_future_snapshot_never_calls_provider():
     for timestamp in (NOW - 1000, NOW + 1, 0):
         with pytest.raises(JevUnavailable):
