@@ -18,19 +18,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt,clippy
-      - name: Correct unknown-state recovery condition only
+      - name: Correct state validation without losing ambiguous recovery
         run: |
           python3 - <<'PY'
           from pathlib import Path
           target = Path('rust/crates/pg-orchestrator/src/lib.rs')
           data = target.read_text()
-          before = 'snapshot.state == VenueOrderState::Unknown || record.state == OrderState::Unknown'
-          after = 'snapshot.state == VenueOrderState::Unknown'
-          if data.count(before) != 1:
-              raise SystemExit('Expected exact legacy recovery guard once; refusing mutation')
-          target.write_text(data.replace(before, after, 1))
+          replacements = {
+              'snapshot.state == VenueOrderState::Unknown || record.state == OrderState::Unknown': 'snapshot.state == VenueOrderState::Unknown',
+              '(record.state, snapshot.state),': '(record.state, snapshot.state.clone()),',
+          }
+          for before, after in replacements.items():
+              if data.count(before) != 1:
+                  raise SystemExit(f'Expected exact isolated target once: {before!r}')
+              data = data.replace(before, after, 1)
+          target.write_text(data)
           PY
-      - name: Format only reconciliation files
+      - name: Format Rust workspace
         working-directory: rust
         run: cargo fmt --all
       - name: Verify formatting
