@@ -1,7 +1,9 @@
+pub mod hot_cache;
 pub mod subscription;
 pub mod supervisor_runtime;
 pub mod universe;
 
+pub use hot_cache::HotMarketCache;
 pub use subscription::{SubscriptionState, SubscriptionStatus, SubscriptionSupervisor};
 pub use supervisor_runtime::SubscriptionRuntime;
 pub use universe::{
