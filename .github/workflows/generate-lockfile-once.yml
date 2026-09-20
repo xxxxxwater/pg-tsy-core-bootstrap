@@ -1,0 +1,19 @@
+name: generate-lockfile-once
+on:
+  push:
+    branches: [feat/python-rust-sim-orders-20260920]
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: regenerate lockfile
+        working-directory: rust
+        run: cargo generate-lockfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: rust/Cargo.lock
+          if-no-files-found: error
