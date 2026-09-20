@@ -1,0 +1,40 @@
+name: postgres-fill-ledger
+on:
+  push:
+  pull_request:
+jobs:
+  fenced-ledger:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pgtsy_ci
+          POSTGRES_PASSWORD: only-for-ci
+          POSTGRES_DB: pgtsy_fill_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pgtsy_ci -d pgtsy_fill_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_TEST_DATABASE_URL: postgres://pgtsy_ci:only-for-ci@localhost:5432/pgtsy_fill_test
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - run: cargo fmt --check
+      - name: Prove PostgreSQL URL is configured; never accept the skipped path
+        run: test -n "$PG_TEST_DATABASE_URL"
+      - name: Real database migration, deduplication, conflict, journal and fencing
+        run: cargo test -p pg-store --test fill_ledger_pg -- --nocapture
+      - name: Signed Binance trade-history contract and strict Clippy
+        run: |
+          cargo test -p pg-binance trade_history
+          cargo clippy -p pg-store -p pg-binance --all-targets -- -D warnings
