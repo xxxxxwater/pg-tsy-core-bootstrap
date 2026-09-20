@@ -15,6 +15,9 @@ mod live_daemon;
 mod secrets;
 mod unattended_guard;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use anyhow::{Context, Result, bail};
 use pg_risk::{RiskLimits, evaluate_signal};
 use pg_runtime::{RunConfig, RunMode};
