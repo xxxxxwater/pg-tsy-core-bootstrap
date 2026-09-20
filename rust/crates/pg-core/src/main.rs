@@ -1,4 +1,4 @@
-mod daemon;
+#[global_allocator]\nstatic GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;\n\nmod daemon;
 mod dynamic_universe;
 mod health;
 // The default pg-core build enables Hyperliquid but not IBKR. A small subset of
