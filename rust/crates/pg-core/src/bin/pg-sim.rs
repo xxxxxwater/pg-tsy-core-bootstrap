@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+#[global_allocator]\nstatic GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;\n\nuse anyhow::{Context, Result};
 use pg_execution::matching::{SessionPhase, TopOfBook, match_order};
 use pg_types::advanced_order::AdvancedOrderIntent;
 use rust_decimal::Decimal;
