@@ -210,12 +210,16 @@ pub fn match_order(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CompositeAction {
-    CancelPeer { client_order_id: String },
+    CancelPeer {
+        client_order_id: String,
+    },
     ResizePeer {
         client_order_id: String,
         new_quantity: Decimal,
     },
-    ActivateChild { client_order_id: String },
+    ActivateChild {
+        client_order_id: String,
+    },
 }
 
 /// Small deterministic coordinator for OCO/OUO/OTO semantics.
@@ -308,7 +312,7 @@ mod tests {
     use super::*;
     use pg_types::{
         Venue,
-        advanced_order::{OrderConstraints, CompositeInstruction},
+        advanced_order::{CompositeInstruction, OrderConstraints},
     };
     use uuid::Uuid;
 
@@ -373,13 +377,7 @@ mod tests {
     fn post_only_cross_is_rejected() {
         let mut value = order(TimeInForce::Gtc, 1, Some(100));
         value.constraints.post_only = true;
-        let result = match_order(
-            &value,
-            top(),
-            Decimal::ZERO,
-            1,
-            SessionPhase::Continuous,
-        );
+        let result = match_order(&value, top(), Decimal::ZERO, 1, SessionPhase::Continuous);
         assert_eq!(result.disposition, MatchDisposition::Rejected);
     }
 
