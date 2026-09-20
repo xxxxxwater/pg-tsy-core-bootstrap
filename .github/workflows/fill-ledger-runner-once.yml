@@ -1,0 +1,35 @@
+name: fill-ledger-runner-once
+on:
+  push:
+    branches: [feat/binance-fill-ledger-20260920]
+    paths: [.github/workflows/fill-ledger-runner-once.yml]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/binance-fill-ledger-20260920
+          persist-credentials: true
+      - name: Apply exact-match integration patch
+        run: python3 .github/scripts/apply_fill_ledger_once.py
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - name: Format and validate code
+        working-directory: rust
+        run: |
+          cargo fmt --all
+          cargo test -p pg-store --all-targets
+          cargo test -p pg-binance --all-targets
+          cargo clippy -p pg-store -p pg-binance --all-targets -- -D warnings
+          cargo metadata --locked --format-version 1 > /dev/null
+      - name: Commit validated production source
+        run: |
+          git config user.name pg-fill-ledger-ci
+          git config user.email pg-fill-ledger-ci@users.noreply.github.com
+          git add rust/crates/pg-store/src/lib.rs rust/crates/pg-store/src/fill_ledger.rs rust/crates/pg-store/Cargo.toml rust/crates/pg-store/migrations/0003_execution_fills.sql rust/crates/pg-store/tests/fill_ledger_pg.rs rust/adapters/pg-binance/src/lib.rs rust/adapters/pg-binance/src/trade_history.rs rust/adapters/pg-binance/src/rest_transport.rs .github/workflows/ci.yml
+          git commit -m 'feat(binance): persist deduplicated fills and validate signed trade history'
+          git push origin HEAD:feat/binance-fill-ledger-20260920
