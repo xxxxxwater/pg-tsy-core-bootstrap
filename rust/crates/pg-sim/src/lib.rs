@@ -215,9 +215,11 @@ impl MatchingEngine {
             record.filled_quantity += executable;
             let fill = Fill { order_id, quantity: executable, price: touch_price };
             let fully_filled = record.remaining() == Decimal::ZERO;
+            let reduction_exhausted =
+                record.order.reduce_only && executable == reducible && reducible < remaining;
             if fully_filled {
                 record.state = SimOrderState::Filled;
-            } else if record.order.time_in_force == TimeInForce::Ioc {
+            } else if record.order.time_in_force == TimeInForce::Ioc || reduction_exhausted {
                 record.state = SimOrderState::Canceled;
             } else {
                 record.state = SimOrderState::PartiallyFilled;
@@ -368,8 +370,10 @@ mod tests {
         let id = order.order_id;
         engine.submit(order, true).unwrap();
         let out = engine.match_once(id, market(MarketPhase::Continuous), d(3)).unwrap();
-        assert!(matches!(out, MatchOutcome::Filled(Fill { quantity, .. }) if quantity == d(3)));
-        assert_eq!(engine.record(id).unwrap().filled_quantity, d(3));
+        assert!(matches!(out, MatchOutcome::PartiallyFilled(Fill { quantity, .. }) if quantity == d(3)));
+        let record = engine.record(id).unwrap();
+        assert_eq!(record.filled_quantity, d(3));
+        assert_eq!(record.state, SimOrderState::Canceled);
     }
 
     #[test]
