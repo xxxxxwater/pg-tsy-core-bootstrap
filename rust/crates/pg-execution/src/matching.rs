@@ -53,7 +53,7 @@ impl MatchResult {
             filled_quantity: Decimal::ZERO,
             remaining_quantity: order.base.quantity,
             fill_price: None,
-            visible_quantity: order.visible_quantity(),
+            visible_quantity: Decimal::ZERO,
             reason: Some(reason.into()),
         }
     }
@@ -157,7 +157,7 @@ pub fn match_order(
                 filled_quantity: Decimal::ZERO,
                 remaining_quantity: order.base.quantity,
                 fill_price: None,
-                visible_quantity: order.visible_quantity(),
+                visible_quantity: Decimal::ZERO,
                 reason: Some("immediate order did not cross".into()),
             },
             _ => MatchResult {
@@ -210,10 +210,10 @@ pub fn match_order(
         filled_quantity: executable,
         remaining_quantity: remaining,
         fill_price: Some(price),
-        visible_quantity: if remaining.is_zero() {
-            Decimal::ZERO
-        } else {
+        visible_quantity: if disposition == MatchDisposition::Resting {
             order.visible_quantity().min(remaining)
+        } else {
+            Decimal::ZERO
         },
         reason: None,
     }
@@ -379,6 +379,7 @@ mod tests {
             result.disposition,
             MatchDisposition::PartiallyFilledAndCanceled
         );
+        assert_eq!(result.visible_quantity, Decimal::ZERO);
     }
 
     #[test]
