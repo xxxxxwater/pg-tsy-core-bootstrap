@@ -1,0 +1,66 @@
+name: simulator-benchmark-once
+on:
+  push:
+    branches: [feat/python-rust-sim-orders-20260920]
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: build release simulator
+        working-directory: rust
+        run: cargo build --locked -p pg-core --bin pg-sim --release
+      - name: install research layer
+        working-directory: research
+        run: pip install -e .
+      - name: run 10k Python-Rust interactions
+        working-directory: research
+        run: |
+          python - <<'PY'
+          import time
+          from pg_tsy.sim import RustSimClient, SimRequest
+
+          order = {
+              "base": {
+                  "intent_id": "018f7f2e-6f5c-7cc4-98e8-2cd9b5c67d0f",
+                  "strategy_id": "bench",
+                  "asset": "BTCUSDC",
+                  "venue": "BINANCE_PM",
+                  "side": "Buy",
+                  "quantity": "1",
+                  "limit_price": "100",
+                  "effect": "Increase",
+                  "source_signal_id": None,
+              },
+              "time_in_force": "IOC",
+              "constraints": {
+                  "post_only": False,
+                  "reduce_only": False,
+                  "iceberg_display_quantity": None,
+              },
+              "composite": {"kind": "SINGLE"},
+          }
+          top = {
+              "bid_price": "99",
+              "bid_quantity": "10",
+              "ask_price": "100",
+              "ask_quantity": "10",
+          }
+          request = SimRequest(order=order, top=top, now_ns=1)
+          n = 10_000
+          with RustSimClient("../rust/target/release/pg-sim") as client:
+              # Warmup includes protocol/allocator initialization but is excluded.
+              client.batch([request] * 256)
+              started = time.perf_counter()
+              results = client.batch([request] * n)
+              elapsed = time.perf_counter() - started
+          assert len(results) == n
+          assert all(item["disposition"] == "FILLED" for item in results)
+          rate = n / elapsed
+          print(f"BENCH interactions={n} elapsed_s={elapsed:.6f} steps_per_s={rate:.2f}")
+          PY
