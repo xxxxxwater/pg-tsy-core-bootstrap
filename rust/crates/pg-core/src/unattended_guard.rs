@@ -164,10 +164,8 @@ mod tests {
     fn only_reconciled_terminal_matching_order_clears_attempt() {
         let mut record = order("alpha", OrderState::Open);
         let client_id = record.client_order_id.clone();
-        let mut attempted = BTreeMap::from([(
-            "alpha".into(),
-            (Venue::Hyperliquid, client_id.clone()),
-        )]);
+        let mut attempted =
+            BTreeMap::from([("alpha".into(), (Venue::Hyperliquid, client_id.clone()))]);
         let mut orders = BTreeMap::from([(client_id.clone(), record.clone())]);
         assert!(policy_order_busy("alpha", &orders, &mut attempted));
         record.state = OrderState::Filled;
