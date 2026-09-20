@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import subprocess
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Self
 
 
 @dataclass(slots=True)
@@ -58,7 +59,7 @@ class RustSimClient:
                 self._process.kill()
                 self._process.wait(timeout=2)
 
-    def __enter__(self) -> "RustSimClient":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
