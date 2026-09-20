@@ -1,0 +1,30 @@
+name: lockfile-repair-once
+on:
+  push:
+    branches: [feat/binance-fill-ledger-20260920]
+    paths: [.github/workflows/lockfile-repair-once.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/binance-fill-ledger-20260920
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Refresh locked dependency graph and prove reproducibility
+        working-directory: rust
+        run: |
+          cargo metadata --format-version 1 >/dev/null
+          cargo metadata --locked --format-version 1 >/dev/null
+      - name: Commit only Cargo.lock; do not mutate workflow files
+        run: |
+          git config user.name pg-fill-ledger-ci
+          git config user.email pg-fill-ledger-ci@users.noreply.github.com
+          git add rust/Cargo.lock
+          git diff --cached --name-only | grep -qx 'rust/Cargo.lock'
+          test "$(git diff --cached --name-only | wc -l)" -eq 1
+          git commit -m 'build: commit refreshed Cargo.lock for fill-ledger dependencies'
+          git push origin HEAD:feat/binance-fill-ledger-20260920
