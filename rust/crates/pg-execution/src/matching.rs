@@ -29,6 +29,7 @@ pub struct TopOfBook {
 pub enum MatchDisposition {
     Filled,
     PartiallyFilledAndCanceled,
+    Canceled,
     Resting,
     Rejected,
     Expired,
@@ -152,7 +153,7 @@ pub fn match_order(
     if !crosses(order, top) {
         return match order.time_in_force {
             TimeInForce::Ioc | TimeInForce::Fok => MatchResult {
-                disposition: MatchDisposition::PartiallyFilledAndCanceled,
+                disposition: MatchDisposition::Canceled,
                 filled_quantity: Decimal::ZERO,
                 remaining_quantity: order.base.quantity,
                 fill_price: None,
@@ -175,11 +176,11 @@ pub fn match_order(
 
     if order.time_in_force == TimeInForce::Fok && executable < order.base.quantity {
         return MatchResult {
-            disposition: MatchDisposition::PartiallyFilledAndCanceled,
+            disposition: MatchDisposition::Canceled,
             filled_quantity: Decimal::ZERO,
             remaining_quantity: order.base.quantity,
             fill_price: None,
-            visible_quantity: order.visible_quantity(),
+            visible_quantity: Decimal::ZERO,
             reason: Some("FOK cannot fill entire quantity".into()),
         };
     }
@@ -383,6 +384,7 @@ mod tests {
             SessionPhase::Continuous,
         );
         assert_eq!(result.filled_quantity, Decimal::ZERO);
+        assert_eq!(result.disposition, MatchDisposition::Canceled);
     }
 
     #[test]
