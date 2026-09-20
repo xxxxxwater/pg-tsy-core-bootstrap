@@ -308,6 +308,30 @@ impl BinanceRestClient {
         .await
     }
 
+    /// Signed, bounded UM trade-history page. A short page does not prove older history coverage.
+    /// Only commit a cursor after all rows are ownership-matched and journaled.
+    pub async fn user_trades_page(
+        &self,
+        from_id: Option<u64>,
+        limit: u16,
+    ) -> Result<crate::trade_history::TradePage, ExecutionError> {
+        if !(1..=1000).contains(&limit) || from_id.is_some_and(|id| id > i64::MAX as u64) {
+            return Err(ExecutionError::Conversion(
+                "invalid UM history cursor or limit".into(),
+            ));
+        }
+        let mut params = vec![
+            ("symbol".into(), SYMBOL.into()),
+            ("limit".into(), limit.to_string()),
+        ];
+        if let Some(id) = from_id {
+            params.push(("fromId".into(), id.to_string()));
+        }
+        let raw = self.signed(Method::GET, TRADES_PATH, &params).await?;
+        crate::trade_history::decode_trade_page(&raw, from_id, usize::from(limit))
+            .map_err(|_| ExecutionError::Conversion("invalid UM trade-history evidence".into()))
+    }
+
     pub async fn position_risk(&self) -> Result<Value, ExecutionError> {
         self.signed(
             Method::GET,

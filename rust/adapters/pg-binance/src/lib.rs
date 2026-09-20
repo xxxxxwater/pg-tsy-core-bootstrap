@@ -8,6 +8,7 @@ pub mod market_protocol;
 pub mod market_transport;
 pub mod order_protocol;
 pub mod rest_transport;
+pub mod trade_history;
 pub mod user_stream;
 pub mod user_transport;
 

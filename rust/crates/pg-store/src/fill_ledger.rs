@@ -7,7 +7,6 @@ use pg_types::{Side, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::Row;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -63,7 +62,10 @@ impl ExecutionFill {
         }
         if self.symbol.is_empty()
             || self.symbol.len() > 32
-            || !self.symbol.bytes().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+            || !self
+                .symbol
+                .bytes()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
         {
             return Err(FillLedgerError::Invalid("invalid symbol"));
         }
@@ -79,10 +81,17 @@ impl ExecutionFill {
         if self.trade_id < 0 || self.trade_time_ms <= 0 {
             return Err(FillLedgerError::Invalid("invalid trade identity/time"));
         }
-        if self.venue_order_id.parse::<u64>().ok().filter(|id| *id > 0).is_none()
+        if self
+            .venue_order_id
+            .parse::<u64>()
+            .ok()
+            .filter(|id| *id > 0)
+            .is_none()
             || self.client_order_id.len() != 34
             || !self.client_order_id.starts_with("pg")
-            || !self.client_order_id[2..].bytes().all(|ch| ch.is_ascii_hexdigit())
+            || !self.client_order_id[2..]
+                .bytes()
+                .all(|ch| ch.is_ascii_hexdigit())
         {
             return Err(FillLedgerError::Invalid("invalid durable order identity"));
         }
@@ -90,7 +99,9 @@ impl ExecutionFill {
             || self.price <= Decimal::ZERO
             || self.commission < Decimal::ZERO
         {
-            return Err(FillLedgerError::Invalid("invalid quantity/price/commission"));
+            return Err(FillLedgerError::Invalid(
+                "invalid quantity/price/commission",
+            ));
         }
         Ok(())
     }
@@ -186,9 +197,13 @@ impl PostgresStore {
             {
                 return Err(FillLedgerError::Conflict);
             }
-            total = total.checked_add(old.quantity).ok_or(FillLedgerError::Conflict)?;
+            total = total
+                .checked_add(old.quantity)
+                .ok_or(FillLedgerError::Conflict)?;
         }
-        total = total.checked_add(fill.quantity).ok_or(FillLedgerError::Conflict)?;
+        total = total
+            .checked_add(fill.quantity)
+            .ok_or(FillLedgerError::Conflict)?;
         if total > order.requested_quantity {
             return Err(FillLedgerError::Conflict);
         }
@@ -242,7 +257,9 @@ impl PostgresStore {
         let mut quantity = Decimal::ZERO;
         for value in stored {
             let fill: ExecutionFill = serde_json::from_value(value)?;
-            quantity = quantity.checked_add(fill.quantity).ok_or(FillLedgerError::Conflict)?;
+            quantity = quantity
+                .checked_add(fill.quantity)
+                .ok_or(FillLedgerError::Conflict)?;
         }
         Ok(quantity)
     }

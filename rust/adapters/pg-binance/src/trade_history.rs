@@ -75,7 +75,9 @@ fn decimal(value: &Value, key: &str) -> Result<Decimal, HistoryError> {
 fn asset(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 32
-        && value.bytes().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        && value
+            .bytes()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
 }
 
 pub fn decode_um_trade(value: &Value) -> Result<UmTrade, HistoryError> {
@@ -176,7 +178,9 @@ impl UmTrade {
             || candidate.side != self.side
             || candidate.client_order_id.len() != 34
             || !candidate.client_order_id.starts_with("pg")
-            || !candidate.client_order_id[2..].bytes().all(|ch| ch.is_ascii_hexdigit())
+            || !candidate.client_order_id[2..]
+                .bytes()
+                .all(|ch| ch.is_ascii_hexdigit())
         {
             return Err(HistoryError::UnownedOrder);
         }
@@ -215,9 +219,18 @@ mod tests {
             venue_order_id: "123",
             side: Side::Buy,
         };
-        assert_eq!(trade.verified_durable_order(&candidate).unwrap(), candidate.client_order_id);
-        let wrong = OwnedOrder { venue_order_id: "999", ..candidate };
-        assert_eq!(trade.verified_durable_order(&wrong), Err(HistoryError::UnownedOrder));
+        assert_eq!(
+            trade.verified_durable_order(&candidate).unwrap(),
+            candidate.client_order_id
+        );
+        let wrong = OwnedOrder {
+            venue_order_id: "999",
+            ..candidate
+        };
+        assert_eq!(
+            trade.verified_durable_order(&wrong),
+            Err(HistoryError::UnownedOrder)
+        );
     }
 
     #[test]
@@ -228,7 +241,12 @@ mod tests {
         assert!(decode_trade_page(&json!([trade(9), trade(9)]), Some(9), 2).is_err());
         assert!(decode_trade_page(&json!([trade(8)]), Some(9), 2).is_err());
         assert!(decode_trade_page(&json!([trade(9), trade(13)]), Some(9), 1).is_err());
-        assert_eq!(decode_trade_page(&json!([]), Some(14), 100).unwrap().next_from_id, Some(14));
+        assert_eq!(
+            decode_trade_page(&json!([]), Some(14), 100)
+                .unwrap()
+                .next_from_id,
+            Some(14)
+        );
     }
 
     #[test]
@@ -241,6 +259,9 @@ mod tests {
         assert!(decode_um_trade(&value).is_err());
         value["commission"] = json!("0.1");
         value["symbol"] = json!("ETHUSDT");
-        assert_eq!(decode_um_trade(&value), Err(HistoryError::UnsupportedSymbol));
+        assert_eq!(
+            decode_um_trade(&value),
+            Err(HistoryError::UnsupportedSymbol)
+        );
     }
 }
