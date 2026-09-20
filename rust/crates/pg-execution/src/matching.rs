@@ -202,7 +202,11 @@ pub fn match_order(
         filled_quantity: executable,
         remaining_quantity: remaining,
         fill_price: Some(price),
-        visible_quantity: order.visible_quantity().min(remaining.max(executable)),
+        visible_quantity: if remaining.is_zero() {
+            Decimal::ZERO
+        } else {
+            order.visible_quantity().min(remaining)
+        },
         reason: None,
     }
 }
@@ -294,15 +298,23 @@ impl CompositeCoordinator {
                     })
                 })
                 .collect(),
-            CompositeInstruction::Single | CompositeInstruction::Oto { .. } => self
-                .children_by_parent
-                .get(client_order_id)
-                .into_iter()
-                .flatten()
-                .map(|child| CompositeAction::ActivateChild {
-                    client_order_id: child.clone(),
-                })
-                .collect(),
+            CompositeInstruction::Single | CompositeInstruction::Oto { .. } => {
+                let parent_complete = self
+                    .quantity_by_client
+                    .get(client_order_id)
+                    .is_some_and(|quantity| cumulative_filled >= *quantity);
+                if !parent_complete {
+                    return Vec::new();
+                }
+                self.children_by_parent
+                    .get(client_order_id)
+                    .into_iter()
+                    .flatten()
+                    .map(|child| CompositeAction::ActivateChild {
+                        client_order_id: child.clone(),
+                    })
+                    .collect()
+            }
         }
     }
 }
@@ -418,4 +430,44 @@ mod tests {
             }]
         );
     }
+    #[test]
+    fn fully_filled_iceberg_has_no_visible_remainder() {
+        let mut value = order(TimeInForce::Ioc, 2, Some(100));
+        value.constraints.iceberg_display_quantity = Some(Decimal::ONE);
+        let result = match_order(
+            &value,
+            TopOfBook {
+                ask_quantity: Decimal::from(2),
+                ..top()
+            },
+            Decimal::ZERO,
+            1,
+            SessionPhase::Continuous,
+        );
+        assert_eq!(result.disposition, MatchDisposition::Filled);
+        assert_eq!(result.visible_quantity, Decimal::ZERO);
+    }
+
+    #[test]
+    fn oto_child_waits_for_complete_parent_fill() {
+        let parent = order(TimeInForce::Gtc, 2, Some(100));
+        let parent_id = parent.base.client_order_id();
+        let mut child = order(TimeInForce::Gtc, 1, Some(101));
+        child.composite = CompositeInstruction::Oto {
+            parent_client_order_id: parent_id.clone(),
+        };
+        let child_id = child.base.client_order_id();
+        let mut coordinator = CompositeCoordinator::default();
+        coordinator.register(&parent);
+        coordinator.register(&child);
+
+        assert!(coordinator.on_fill(&parent_id, Decimal::ONE).is_empty());
+        assert_eq!(
+            coordinator.on_fill(&parent_id, Decimal::from(2)),
+            vec![CompositeAction::ActivateChild {
+                client_order_id: child_id
+            }]
+        );
+    }
+
 }
