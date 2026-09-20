@@ -13,6 +13,7 @@ mod health;
 #[allow(unused_assignments, clippy::vec_init_then_push)]
 mod live_daemon;
 mod secrets;
+mod unattended_guard;
 
 use anyhow::{Context, Result, bail};
 use pg_risk::{RiskLimits, evaluate_signal};

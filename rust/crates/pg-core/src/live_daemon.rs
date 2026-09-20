@@ -2,6 +2,7 @@ use crate::{
     dynamic_universe::{DynamicUniverseResolution, refresh_dynamic_universe},
     health::{ControlCommand, HealthSnapshot, HealthState},
     secrets::{bool_env, optional_secret, required_secret, required_value},
+    unattended_guard::{EntryGuard, policy_order_busy},
 };
 use anyhow::{Context, Result, bail};
 use pg_execution::{CompositeExecutionAdapter, ExecutionAdapter};
@@ -375,8 +376,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
 
     let auto_start = bool_env("PG_AUTO_START", config.mode == RunMode::Paper)?;
     let mut trading_started = auto_start && startup_clean && ambiguous_clean;
+    let mut entry_guard = EntryGuard::new(startup_clean && ambiguous_clean);
     let mut risk_limits = RiskLimits {
-        allow_new_exposure: trading_started,
+        allow_new_exposure: false,
         ..RiskLimits::default()
     };
 
@@ -470,16 +472,16 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                                 continue;
                             }
                             decisions = decisions.saturating_add(1);
-                            if submit_intent(
-                                execution.as_ref(),
-                                &risk_limits,
-                                &runtime_pins.safe_hold,
-                                &strategy_id,
-                                &intent,
-                            )
-                            .await
-                            .is_some()
-                            {
+                            if matches!(
+                                submit_intent(
+                                    execution.as_ref(),
+                                    &risk_limits,
+                                    &runtime_pins.safe_hold,
+                                    &strategy_id,
+                                    &intent,
+                                ).await,
+                                DispatchOutcome::Attempted { acknowledged: true, .. }
+                            ) {
                                 orders_journaled = orders_journaled.saturating_add(1);
                             }
                         }
@@ -492,29 +494,29 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
 
                 for routed in registry.route_live_policy_event(&event, &position) {
                     decisions = decisions.saturating_add(1);
-                    if strategy_is_busy(
-                        execution.as_ref(),
-                        &mut live_policy_intents,
+                    if policy_order_busy(
                         &routed.strategy_id,
-                    )
-                    .await
-                    {
+                        &latest_orders,
+                        &mut live_policy_intents,
+                    ) {
                         continue;
                     }
                     let Some(intent) = policy_intent(&registry, &routed, &position) else {
                         continue;
                     };
                     let strategy_id = routed.strategy_id.clone();
-                    if let Some(client_order_id) = submit_intent(
+                    if let DispatchOutcome::Attempted { client_order_id, acknowledged } = submit_intent(
                         execution.as_ref(),
                         &risk_limits,
                         &runtime_pins.safe_hold,
                         &strategy_id,
                         &intent,
-                    )
-                    .await
-                    {
-                        orders_journaled = orders_journaled.saturating_add(1);
+                    ).await {
+                        if acknowledged {
+                            orders_journaled = orders_journaled.saturating_add(1);
+                        }
+                        // Even a lost ACK may have placed a live order. Only a
+                        // cleanly reconciled matching terminal record may unlock.
                         live_policy_intents.insert(strategy_id, (intent.venue, client_order_id));
                     }
                 }
@@ -535,6 +537,21 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 let mut open_orders = 0_usize;
                 let mut clean = true;
                 for venue in venues.iter().copied() {
+                    match execution.recover_ambiguous(venue).await {
+                        Ok(recovery) => {
+                            for item in recovery.items {
+                                if !item.resolved {
+                                    clean = false;
+                                    cycle_safe_hold.insert(AssetKey::new(item.venue, item.asset));
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            clean = false;
+                            tracing::error!(?venue, %error, "ambiguous-order recovery failed; freezing new exposure");
+                            continue;
+                        }
+                    }
                     match execution.reconcile_once(venue).await {
                         Ok(cycle) => {
                             if !cycle.report.clean() {
@@ -579,8 +596,12 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         "continuous reconcile is not clean",
                     );
                 }
-                risk_limits.allow_new_exposure =
-                    trading_started && clean && supervisor.all_connected();
+                entry_guard.reconcile_result(clean);
+                risk_limits.allow_new_exposure = entry_guard.may_increase(
+                    trading_started,
+                    checklist.ready_for(config.mode),
+                    supervisor.all_connected(),
+                );
                 health.mutate(|snapshot| {
                     snapshot.open_orders = open_orders;
                     if !clean {
@@ -591,6 +612,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             }
             _ = universe_tick.tick(), if dynamic_enabled => {
                 risk_limits.allow_new_exposure = false;
+                entry_guard.begin_topology_change();
                 match refresh_dynamic_universe(
                     &mut registry,
                     &runtime_pins.strategy,
@@ -599,6 +621,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     Ok(next_resolution) => {
                         let next_feeds = registry.subscriptions();
                         let topology_result: Result<()> = async {
+                            if next_feeds.is_empty() {
+                                bail!("dynamic universe produced zero market-data feeds");
+                            }
                             validate_live_feeds(&next_feeds)?;
                             ensure_venues_registered(&next_feeds, &venues)?;
                             #[cfg(feature = "ibkr-marketdata")]
@@ -621,6 +646,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         }.await;
                         match topology_result {
                             Ok(()) => {
+                                entry_guard.topology_validated();
                                 feeds = next_feeds;
                                 dynamic_resolution = next_resolution;
                                 health.mutate(|snapshot| {
@@ -635,6 +661,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                                 );
                             }
                             Err(error) => {
+                                entry_guard.topology_failed(error.to_string());
                                 tracing::error!(%error, "dynamic topology apply failed; exposure remains frozen");
                                 health.mutate(|snapshot| {
                                     snapshot.ready = false;
@@ -644,6 +671,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         }
                     }
                     Err(error) => {
+                        entry_guard.topology_failed(error.to_string());
                         tracing::error!(%error, "dynamic universe refresh failed; exposure remains frozen");
                         health.mutate(|snapshot| {
                             snapshot.ready = false;
@@ -716,8 +744,15 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     );
                     risk_limits.allow_new_exposure = false;
                 }
-                let ready = checklist.ready_for(config.mode);
-                let blocking = blocking_gate_names(&checklist, config.mode);
+                let checklist_ready = checklist.ready_for(config.mode);
+                let ready = entry_guard.ready(checklist_ready);
+                let mut blocking = blocking_gate_names(&checklist, config.mode);
+                if let Some(reason) = entry_guard.topology_blocker() {
+                    blocking.push(format!("DynamicTopology: {reason}"));
+                }
+                risk_limits.allow_new_exposure = entry_guard.may_increase(
+                    trading_started, checklist_ready, supervisor.all_connected(),
+                );
                 health.mutate(|snapshot| {
                     snapshot.ready = ready;
                     snapshot.feeds_connected = supervisor.connected_count();
@@ -730,14 +765,46 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             Some(command) = control_rx.recv() => {
                 match command {
                     ControlCommand::ReloadStrategies => {
+                        // A failed reload can have partially changed the registry.
+                        // A passing periodic reconcile must never lift this pause.
+                        risk_limits.allow_new_exposure = false;
+                        entry_guard.begin_topology_change();
                         match reload_strategies(&mut registry, strategy_dir.as_deref()) {
                             Ok(ids) => {
-                                risk_limits.allow_new_exposure = false;
-                                tracing::info!(strategies = ?ids, "strategy definitions reloaded; waiting for topology refresh");
+                                if registry.has_dynamic_templates() != dynamic_enabled {
+                                    let reason = "strategy reload changed dynamic-template mode; restart required".to_string();
+                                    entry_guard.topology_failed(reason.clone());
+                                    health.mutate(|snapshot| snapshot.last_error = Some(reason)).await;
+                                } else if !dynamic_enabled {
+                                    let next_feeds = registry.subscriptions();
+                                    let applied: Result<()> = (|| {
+                                        if next_feeds.is_empty() {
+                                            bail!("strategy reload produced zero market-data feeds");
+                                        }
+                                        validate_live_feeds(&next_feeds)?;
+                                        ensure_venues_registered(&next_feeds, &venues)?;
+                                        feed_tasks.sync(next_feeds.clone(), &mut supervisor, &event_tx, &fatal_tx)?;
+                                        Ok(())
+                                    })();
+                                    match applied {
+                                        Ok(()) => {
+                                            feeds = next_feeds;
+                                            entry_guard.topology_validated();
+                                            health.mutate(|snapshot| snapshot.feeds_total = feeds.len()).await;
+                                        }
+                                        Err(error) => {
+                                            let reason = error.to_string();
+                                            entry_guard.topology_failed(reason.clone());
+                                            health.mutate(|snapshot| snapshot.last_error = Some(reason)).await;
+                                        }
+                                    }
+                                }
+                                tracing::info!(strategies = ?ids, "strategy definitions reloaded; exposure gated on topology and reconciliation");
                             }
                             Err(error) => {
                                 let reason = error.to_string();
-                                tracing::warn!(%reason, "strategy reload rejected");
+                                entry_guard.topology_failed(reason.clone());
+                                tracing::warn!(%reason, "strategy reload rejected; exposure remains frozen");
                                 health.mutate(|snapshot| snapshot.last_error = Some(reason)).await;
                             }
                         }
@@ -986,13 +1053,21 @@ fn ensure_venues_registered(feeds: &[FeedSpec], venues: &[Venue]) -> Result<()> 
     Ok(())
 }
 
+enum DispatchOutcome {
+    Rejected,
+    Attempted {
+        client_order_id: String,
+        acknowledged: bool,
+    },
+}
+
 async fn submit_intent(
     execution: &DurableExecution<PostgresStore>,
     limits: &RiskLimits,
     safe_hold_assets: &BTreeSet<AssetKey>,
     strategy_id: &str,
     intent: &OrderIntent,
-) -> Option<String> {
+) -> DispatchOutcome {
     let client_order_id = intent.client_order_id();
     if intent.effect == ExposureEffect::Increase
         && safe_hold_assets.contains(&AssetKey::new(intent.venue, intent.asset.clone()))
@@ -1004,7 +1079,7 @@ async fn submit_intent(
             venue = ?intent.venue,
             "SAFE_HOLD blocks new exposure"
         );
-        return None;
+        return DispatchOutcome::Rejected;
     }
     if let RiskDecision::Reject { code, reason } = evaluate_order(intent, limits) {
         tracing::warn!(
@@ -1014,7 +1089,7 @@ async fn submit_intent(
             %reason,
             "order intent rejected by risk gate"
         );
-        return None;
+        return DispatchOutcome::Rejected;
     }
     match execution.dispatch(intent).await {
         Ok(record) => {
@@ -1029,7 +1104,10 @@ async fn submit_intent(
                 state = ?record.state,
                 "order journaled and acknowledged by real venue"
             );
-            Some(client_order_id)
+            DispatchOutcome::Attempted {
+                client_order_id,
+                acknowledged: true,
+            }
         }
         Err(error) => {
             tracing::error!(
@@ -1038,45 +1116,10 @@ async fn submit_intent(
                 %error,
                 "real-venue dispatch failed; durable intent retained for reconciliation"
             );
-            None
-        }
-    }
-}
-
-async fn strategy_is_busy(
-    execution: &DurableExecution<PostgresStore>,
-    live: &mut BTreeMap<String, (Venue, String)>,
-    strategy_id: &str,
-) -> bool {
-    let Some((venue, client_order_id)) = live.get(strategy_id).cloned() else {
-        return false;
-    };
-    let Some(adapter) = execution.adapters().get(venue) else {
-        return true;
-    };
-    match adapter.find_order_by_client_id(&client_order_id).await {
-        Ok(Some(order))
-            if !matches!(
-                order.state,
-                pg_execution::VenueOrderState::Filled
-                    | pg_execution::VenueOrderState::Canceled
-                    | pg_execution::VenueOrderState::Rejected
-            ) =>
-        {
-            true
-        }
-        Ok(_) => {
-            live.remove(strategy_id);
-            false
-        }
-        Err(error) => {
-            tracing::warn!(
-                %strategy_id,
-                %client_order_id,
-                %error,
-                "cannot prove prior order is terminal; keeping strategy busy"
-            );
-            true
+            DispatchOutcome::Attempted {
+                client_order_id,
+                acknowledged: false,
+            }
         }
     }
 }
