@@ -1,7 +1,6 @@
 use crate::{OrderIntent, Side};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -52,19 +51,13 @@ pub struct AdvancedOrderIntent {
     pub composite: CompositeInstruction,
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AdvancedOrderError {
-    #[error("quantity must be positive")]
     NonPositiveQuantity,
-    #[error("post-only requires a limit price")]
     PostOnlyMarket,
-    #[error("iceberg display quantity must be positive and smaller than total quantity")]
     InvalidIceberg,
-    #[error("GTD expiry must be non-zero")]
     InvalidGtd,
-    #[error("composite group/id must not be empty")]
     EmptyCompositeId,
-    #[error("reduce-only constraint disagrees with base order effect")]
     ReduceOnlyMismatch,
 }
 
@@ -171,3 +164,20 @@ mod tests {
         order.validate().unwrap();
     }
 }
+
+
+impl std::fmt::Display for AdvancedOrderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::NonPositiveQuantity => "quantity must be positive",
+            Self::PostOnlyMarket => "post-only requires a limit price",
+            Self::InvalidIceberg => "iceberg display quantity must be positive and smaller than total quantity",
+            Self::InvalidGtd => "GTD expiry must be non-zero",
+            Self::EmptyCompositeId => "composite group/id must not be empty",
+            Self::ReduceOnlyMismatch => "reduce-only constraint disagrees with base order effect",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for AdvancedOrderError {}
