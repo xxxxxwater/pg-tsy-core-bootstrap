@@ -1,7 +1,9 @@
+pub mod latest_cache;
 pub mod subscription;
 pub mod supervisor_runtime;
 pub mod universe;
 
+pub use latest_cache::LatestEventCache;
 pub use subscription::{SubscriptionState, SubscriptionStatus, SubscriptionSupervisor};
 pub use supervisor_runtime::SubscriptionRuntime;
 pub use universe::{
@@ -10,7 +12,7 @@ pub use universe::{
 };
 
 use async_trait::async_trait;
-use pg_types::Venue;
+use pg_types::{AssetKey, Venue};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -123,6 +125,15 @@ pub enum MarketEvent {
 }
 
 impl MarketEvent {
+    pub fn asset_key(&self) -> AssetKey {
+        match self {
+            Self::Trade(event) => AssetKey::new(event.venue, event.asset.clone()),
+            Self::BestBidAsk(event) => AssetKey::new(event.venue, event.asset.clone()),
+            Self::L2Book(event) => AssetKey::new(event.venue, event.asset.clone()),
+            Self::Candle(event) => AssetKey::new(event.venue, event.asset.clone()),
+        }
+    }
+
     pub fn ts_recv_ns(&self) -> u64 {
         match self {
             Self::Trade(event) => event.ts_recv_ns,
