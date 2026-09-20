@@ -29,6 +29,8 @@ class SimRequest:
 
 
 class RustSimClient:
+    _BATCH_CHUNK = 64
+
     """Persistent bridge to the Rust matching engine.
 
     One subprocess is kept alive for an entire experiment. This removes process
@@ -97,27 +99,29 @@ class RustSimClient:
         if self._process.stdin is None or self._process.stdout is None:
             raise RuntimeError("pg-sim pipes are unavailable")
 
-        request_ids = list(range(self._next_id, self._next_id + len(batch)))
-        self._next_id += len(batch)
-
-        for request_id, request in zip(request_ids, batch, strict=True):
-            self._process.stdin.write(
-                json.dumps(request.payload(request_id), separators=(",", ":")) + "\n"
-            )
-        self._process.stdin.flush()
-
         results: list[dict[str, Any]] = []
-        for expected_id in request_ids:
-            line = self._process.stdout.readline()
-            if not line:
-                raise RuntimeError("pg-sim returned EOF during batch")
-            response = json.loads(line)
-            if response.get("request_id") != expected_id:
-                raise RuntimeError(
-                    "pg-sim response mismatch: "
-                    f"expected {expected_id}, got {response.get('request_id')}"
+        for start in range(0, len(batch), self._BATCH_CHUNK):
+            chunk = batch[start : start + self._BATCH_CHUNK]
+            request_ids = list(range(self._next_id, self._next_id + len(chunk)))
+            self._next_id += len(chunk)
+
+            for request_id, request in zip(request_ids, chunk, strict=True):
+                self._process.stdin.write(
+                    json.dumps(request.payload(request_id), separators=(",", ":")) + "\n"
                 )
-            results.append(response["result"])
+            self._process.stdin.flush()
+
+            for expected_id in request_ids:
+                line = self._process.stdout.readline()
+                if not line:
+                    raise RuntimeError("pg-sim returned EOF during batch")
+                response = json.loads(line)
+                if response.get("request_id") != expected_id:
+                    raise RuntimeError(
+                        "pg-sim response mismatch: "
+                        f"expected {expected_id}, got {response.get('request_id')}"
+                    )
+                results.append(response["result"])
         return results
 
 
