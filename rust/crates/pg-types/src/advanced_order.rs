@@ -9,7 +9,9 @@ pub enum TimeInForce {
     Gtc,
     Ioc,
     Fok,
-    Gtd { expires_at_ns: u64 },
+    Gtd {
+        expires_at_ns: u64,
+    },
     Day,
     AtTheOpen,
     AtTheClose,
@@ -165,13 +167,14 @@ mod tests {
     }
 }
 
-
 impl std::fmt::Display for AdvancedOrderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::NonPositiveQuantity => "quantity must be positive",
             Self::PostOnlyMarket => "post-only requires a limit price",
-            Self::InvalidIceberg => "iceberg display quantity must be positive and smaller than total quantity",
+            Self::InvalidIceberg => {
+                "iceberg display quantity must be positive and smaller than total quantity"
+            }
             Self::InvalidGtd => "GTD expiry must be non-zero",
             Self::EmptyCompositeId => "composite group/id must not be empty",
             Self::ReduceOnlyMismatch => "reduce-only constraint disagrees with base order effect",
