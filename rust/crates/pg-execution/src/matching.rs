@@ -3,9 +3,11 @@ use pg_types::{
     advanced_order::{AdvancedOrderIntent, CompositeInstruction, TimeInForce},
 };
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionPhase {
     PreOpen,
     OpenAuction,
@@ -14,7 +16,7 @@ pub enum SessionPhase {
     Closed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopOfBook {
     pub bid_price: Decimal,
     pub bid_quantity: Decimal,
@@ -22,7 +24,8 @@ pub struct TopOfBook {
     pub ask_quantity: Decimal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MatchDisposition {
     Filled,
     PartiallyFilledAndCanceled,
@@ -32,7 +35,7 @@ pub enum MatchDisposition {
     WaitingForParent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchResult {
     pub disposition: MatchDisposition,
     pub filled_quantity: Decimal,
@@ -204,7 +207,8 @@ pub fn match_order(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CompositeAction {
     CancelPeer { client_order_id: String },
     ResizePeer {
