@@ -1,3 +1,5 @@
+pub mod fill_ledger;
+
 use pg_oms::OrderRecord;
 use pg_reconcile::{ReconcileReport, VenuePosition};
 use pg_types::Venue;
@@ -81,6 +83,9 @@ impl PostgresStore {
             .execute(&self.pool)
             .await?;
         sqlx::raw_sql(include_str!("../migrations/0002_trading_state.sql"))
+            .execute(&self.pool)
+            .await?;
+        sqlx::raw_sql(include_str!("../migrations/0003_execution_fills.sql"))
             .execute(&self.pool)
             .await?;
         Ok(())

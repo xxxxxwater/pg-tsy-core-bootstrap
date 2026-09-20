@@ -8,7 +8,9 @@ license.workspace = true
 pg-oms = { path = "../pg-oms" }
 pg-reconcile = { path = "../pg-reconcile" }
 pg-types = { path = "../pg-types" }
+serde.workspace = true
 serde_json.workspace = true
+rust_decimal.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
