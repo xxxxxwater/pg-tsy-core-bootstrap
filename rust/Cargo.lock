@@ -3285,6 +3285,8 @@ dependencies = [
  "pg-oms",
  "pg-reconcile",
  "pg-types",
+ "rust_decimal",
+ "serde",
  "serde_json",
  "sqlx",
  "thiserror 2.0.20",
