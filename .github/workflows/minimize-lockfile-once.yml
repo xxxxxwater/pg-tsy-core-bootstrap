@@ -6,6 +6,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: minimize-lockfile-feat-python-rust-sim-orders-20260920
+  cancel-in-progress: true
+
 jobs:
   lockfile:
     runs-on: ubuntu-latest
@@ -29,4 +33,5 @@ jobs:
             exit 0
           fi
           git commit -m "chore(rust): minimize lockfile for mimalloc"
+          git pull --rebase origin feat/python-rust-sim-orders-20260920
           git push origin HEAD:feat/python-rust-sim-orders-20260920
