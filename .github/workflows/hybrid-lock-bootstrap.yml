@@ -1,0 +1,26 @@
+name: hybrid-lock-bootstrap
+on:
+  push:
+    branches: [feat/hybrid-sim-rl-orders-20260920]
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: Emit lockfile
+        run: |
+          echo "LOCKFILE_BASE64_BEGIN"
+          base64 -w0 Cargo.lock
+          echo
+          echo "LOCKFILE_BASE64_END"
+      - name: Simulator tests
+        run: cargo test -p pg-sim --all-targets
+      - name: Simulator throughput smoke
+        run: cargo run --release -p pg-sim --example throughput
