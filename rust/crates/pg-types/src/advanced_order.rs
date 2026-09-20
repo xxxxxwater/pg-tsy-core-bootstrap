@@ -27,19 +27,14 @@ pub struct OrderConstraints {
     pub iceberg_display_quantity: Option<Decimal>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CompositeInstruction {
+    #[default]
     Single,
     Oco { group_id: String },
     Ouo { group_id: String },
     Oto { parent_client_order_id: String },
-}
-
-impl Default for CompositeInstruction {
-    fn default() -> Self {
-        Self::Single
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,10 +66,10 @@ impl AdvancedOrderIntent {
         if self.constraints.post_only && self.base.limit_price.is_none() {
             return Err(AdvancedOrderError::PostOnlyMarket);
         }
-        if let Some(display) = self.constraints.iceberg_display_quantity {
-            if display <= Decimal::ZERO || display >= self.base.quantity {
-                return Err(AdvancedOrderError::InvalidIceberg);
-            }
+        if let Some(display) = self.constraints.iceberg_display_quantity
+            && (display <= Decimal::ZERO || display >= self.base.quantity)
+        {
+            return Err(AdvancedOrderError::InvalidIceberg);
         }
         if matches!(self.time_in_force, TimeInForce::Gtd { expires_at_ns: 0 }) {
             return Err(AdvancedOrderError::InvalidGtd);
