@@ -172,7 +172,14 @@ pub fn match_order(
     }
 
     let (book_available, price) = available(order, top);
-    let executable = book_available.min(capacity).min(order.base.quantity);
+    let order_slice = order
+        .constraints
+        .iceberg_display_quantity
+        .unwrap_or(order.base.quantity);
+    let executable = book_available
+        .min(capacity)
+        .min(order.base.quantity)
+        .min(order_slice);
 
     if order.time_in_force == TimeInForce::Fok && executable < order.base.quantity {
         return MatchResult {
@@ -433,21 +440,23 @@ mod tests {
         );
     }
     #[test]
-    fn fully_filled_iceberg_has_no_visible_remainder() {
-        let mut value = order(TimeInForce::Ioc, 2, Some(100));
+    fn iceberg_executes_only_current_display_slice() {
+        let mut value = order(TimeInForce::Gtc, 3, Some(100));
         value.constraints.iceberg_display_quantity = Some(Decimal::ONE);
         let result = match_order(
             &value,
             TopOfBook {
-                ask_quantity: Decimal::from(2),
+                ask_quantity: Decimal::from(3),
                 ..top()
             },
             Decimal::ZERO,
             1,
             SessionPhase::Continuous,
         );
-        assert_eq!(result.disposition, MatchDisposition::Filled);
-        assert_eq!(result.visible_quantity, Decimal::ZERO);
+        assert_eq!(result.filled_quantity, Decimal::ONE);
+        assert_eq!(result.remaining_quantity, Decimal::from(2));
+        assert_eq!(result.visible_quantity, Decimal::ONE);
+        assert_eq!(result.disposition, MatchDisposition::Resting);
     }
 
     #[test]
