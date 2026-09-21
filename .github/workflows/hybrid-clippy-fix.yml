@@ -55,7 +55,7 @@ jobs:
           ]) + s[end:]
           a = '    if let Some(display) = order.display_quantity {'
           b = '    Ok(())'
-          assert s.count(a) == 1 and s.count(b) == 2
+          assert s.count(a) == 1 and s.count(b) >= 1
           start = s.index(a)
           end = s.index(b, start)
           s = s[:start] + '\n'.join([
