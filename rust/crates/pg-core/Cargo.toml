@@ -13,6 +13,7 @@ ibkr-marketdata = ["dep:pg-ibkr", "pg-ibkr/sdk"]
 
 [dependencies]
 anyhow.workspace = true
+mimalloc.workspace = true
 pg-execution = { path = "../pg-execution" }
 pg-hyperliquid = { path = "../../adapters/pg-hyperliquid", optional = true }
 pg-ibkr = { path = "../../adapters/pg-ibkr", optional = true }

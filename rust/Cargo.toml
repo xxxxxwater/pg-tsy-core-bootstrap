@@ -12,6 +12,7 @@ members = [
   "crates/pg-reconcile",
   "crates/pg-journal",
   "crates/pg-replay",
+  "crates/pg-sim",
   "crates/pg-control",
   "crates/pg-orchestrator",
   "crates/pg-core",
@@ -28,6 +29,7 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+mimalloc = "0.1"
 rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
