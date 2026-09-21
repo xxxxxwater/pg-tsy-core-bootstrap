@@ -21,61 +21,51 @@ jobs:
           from pathlib import Path
           p = Path('crates/pg-sim/src/lib.rs')
           s = p.read_text()
-          substitutions = [
-              ('''        if let Some(peer) = activate_peer {
-                      if let Some(record) = self.orders.get_mut(&peer) {
-                          if record.state == SimOrderState::Dormant {
-                              record.state = SimOrderState::Resting;
-                          }
-                      }
-                  }''', '''        if let Some(peer) = activate_peer
-                      && let Some(record) = self.orders.get_mut(&peer)
-                      && record.state == SimOrderState::Dormant
-                  {
-                      record.state = SimOrderState::Resting;
-                  }'''),
-              ('''        if let Some((peer, delta)) = resize_peer {
-                      if let Some(record) = self.orders.get_mut(&peer) {
-                          if !matches!(
-                              record.state,
-                              SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
-                          ) {
-                              record.order.quantity =
-                                  (record.order.quantity - delta).max(record.filled_quantity);
-                              if record.remaining() == Decimal::ZERO {
-                                  record.state = SimOrderState::Canceled;
-                              }
-                          }
-                      }
-                  }''', '''        if let Some((peer, delta)) = resize_peer
-                      && let Some(record) = self.orders.get_mut(&peer)
-                      && !matches!(
-                          record.state,
-                          SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
-                      )
-                  {
-                      record.order.quantity =
-                          (record.order.quantity - delta).max(record.filled_quantity);
-                      if record.remaining() == Decimal::ZERO {
-                          record.state = SimOrderState::Canceled;
-                      }
-                  }'''),
-              ('''    if let Some(display) = order.display_quantity {
-                    if display <= Decimal::ZERO || display > order.quantity {
-                        return Err(SimError::InvalidDisplayQuantity);
-                    }
-                }''', '''    if let Some(display) = order.display_quantity
-                    && (display <= Decimal::ZERO || display > order.quantity)
-                {
-                    return Err(SimError::InvalidDisplayQuantity);
-                }'''),
-          ]
-          import textwrap
-          for old, new in substitutions:
-              old, new = textwrap.dedent(old), textwrap.dedent(new)
-              if s.count(old) != 1:
-                  raise SystemExit(f'expected exactly one source match, found {s.count(old)}: {old[:90]!r}')
-              s = s.replace(old, new, 1)
+          a = '        if let Some(peer) = activate_peer {'
+          b = '        if let Some((peer, delta)) = resize_peer {'
+          assert s.count(a) == 1 and s.count(b) == 1
+          start, end = s.index(a), s.index(b)
+          s = s[:start] + '\n'.join([
+              '        if let Some(peer) = activate_peer',
+              '            && let Some(record) = self.orders.get_mut(&peer)',
+              '            && record.state == SimOrderState::Dormant',
+              '        {',
+              '            record.state = SimOrderState::Resting;',
+              '        }',
+              '',
+          ]) + s[end:]
+          a = '        if let Some((peer, delta)) = resize_peer {'
+          b = '\n\n        Ok(outcome)'
+          assert s.count(a) == 1 and s.count(b) == 1
+          start, end = s.index(a), s.index(b, s.index(a))
+          s = s[:start] + '\n'.join([
+              '        if let Some((peer, delta)) = resize_peer',
+              '            && let Some(record) = self.orders.get_mut(&peer)',
+              '            && !matches!(',
+              '                record.state,',
+              '                SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected',
+              '            )',
+              '        {',
+              '            record.order.quantity =',
+              '                (record.order.quantity - delta).max(record.filled_quantity);',
+              '            if record.remaining() == Decimal::ZERO {',
+              '                record.state = SimOrderState::Canceled;',
+              '            }',
+              '        }',
+          ]) + s[end:]
+          a = '    if let Some(display) = order.display_quantity {'
+          b = '    Ok(())'
+          assert s.count(a) == 1 and s.count(b) == 2
+          start = s.index(a)
+          end = s.index(b, start)
+          s = s[:start] + '\n'.join([
+              '    if let Some(display) = order.display_quantity',
+              '        && (display <= Decimal::ZERO || display > order.quantity)',
+              '    {',
+              '        return Err(SimError::InvalidDisplayQuantity);',
+              '    }',
+              '',
+          ]) + s[end:]
           p.write_text(s)
           PY
           cargo fmt --all
