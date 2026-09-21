@@ -1,0 +1,97 @@
+name: hybrid-clippy-fix
+on:
+  push:
+    branches: [feat/hybrid-sim-rl-orders-20260920]
+permissions:
+  contents: write
+jobs:
+  fix-and-verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - name: Apply exact targeted corrections to pg-sim
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('crates/pg-sim/src/lib.rs')
+          s = p.read_text()
+          substitutions = [
+              ('''        if let Some(peer) = activate_peer {
+                      if let Some(record) = self.orders.get_mut(&peer) {
+                          if record.state == SimOrderState::Dormant {
+                              record.state = SimOrderState::Resting;
+                          }
+                      }
+                  }''', '''        if let Some(peer) = activate_peer
+                      && let Some(record) = self.orders.get_mut(&peer)
+                      && record.state == SimOrderState::Dormant
+                  {
+                      record.state = SimOrderState::Resting;
+                  }'''),
+              ('''        if let Some((peer, delta)) = resize_peer {
+                      if let Some(record) = self.orders.get_mut(&peer) {
+                          if !matches!(
+                              record.state,
+                              SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
+                          ) {
+                              record.order.quantity =
+                                  (record.order.quantity - delta).max(record.filled_quantity);
+                              if record.remaining() == Decimal::ZERO {
+                                  record.state = SimOrderState::Canceled;
+                              }
+                          }
+                      }
+                  }''', '''        if let Some((peer, delta)) = resize_peer
+                      && let Some(record) = self.orders.get_mut(&peer)
+                      && !matches!(
+                          record.state,
+                          SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
+                      )
+                  {
+                      record.order.quantity =
+                          (record.order.quantity - delta).max(record.filled_quantity);
+                      if record.remaining() == Decimal::ZERO {
+                          record.state = SimOrderState::Canceled;
+                      }
+                  }'''),
+              ('''    if let Some(display) = order.display_quantity {
+                    if display <= Decimal::ZERO || display > order.quantity {
+                        return Err(SimError::InvalidDisplayQuantity);
+                    }
+                }''', '''    if let Some(display) = order.display_quantity
+                    && (display <= Decimal::ZERO || display > order.quantity)
+                {
+                    return Err(SimError::InvalidDisplayQuantity);
+                }'''),
+          ]
+          import textwrap
+          for old, new in substitutions:
+              old, new = textwrap.dedent(old), textwrap.dedent(new)
+              if s.count(old) != 1:
+                  raise SystemExit(f'expected exactly one source match, found {s.count(old)}: {old[:90]!r}')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          cargo fmt --all
+          cargo fmt --check
+      - name: Simulator Clippy and tests
+        run: |
+          cargo clippy -p pg-sim --all-targets -- -D warnings
+          cargo test -p pg-sim --all-targets
+      - name: Commit validated correction
+        run: |
+          if git diff --quiet -- crates/pg-sim/src/lib.rs; then
+            echo 'No source changes'
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add crates/pg-sim/src/lib.rs
+            git commit -m 'fix(sim): resolve Clippy nested-condition warnings'
+            git push
+          fi
