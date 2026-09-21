@@ -5,19 +5,43 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SimSide { Buy, Sell }
+pub enum SimSide {
+    Buy,
+    Sell,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OrderKind { Market, Limit }
+pub enum OrderKind {
+    Market,
+    Limit,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TimeInForce { Ioc, Fok, Gtc, Gtd, Day, AtTheOpen, AtTheClose }
+pub enum TimeInForce {
+    Ioc,
+    Fok,
+    Gtc,
+    Gtd,
+    Day,
+    AtTheOpen,
+    AtTheClose,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MarketPhase { PreOpen, Opening, Continuous, Closing, Closed }
+pub enum MarketPhase {
+    PreOpen,
+    Opening,
+    Continuous,
+    Closing,
+    Closed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContingencyKind { Oco, Oto, Ouo }
+pub enum ContingencyKind {
+    Oco,
+    Oto,
+    Ouo,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contingency {
@@ -42,7 +66,14 @@ pub struct SimOrder {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SimOrderState { Dormant, Resting, PartiallyFilled, Filled, Canceled, Rejected }
+pub enum SimOrderState {
+    Dormant,
+    Resting,
+    PartiallyFilled,
+    Filled,
+    Canceled,
+    Rejected,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimOrderRecord {
@@ -111,11 +142,18 @@ impl MatchingEngine {
         if self.orders.contains_key(&order.order_id) {
             return Err(SimError::DuplicateOrder(order.order_id));
         }
-        self.orders.insert(order.order_id, SimOrderRecord {
-            order,
-            state: if active { SimOrderState::Resting } else { SimOrderState::Dormant },
-            filled_quantity: Decimal::ZERO,
-        });
+        self.orders.insert(
+            order.order_id,
+            SimOrderRecord {
+                order,
+                state: if active {
+                    SimOrderState::Resting
+                } else {
+                    SimOrderState::Dormant
+                },
+                filled_quantity: Decimal::ZERO,
+            },
+        );
         Ok(())
     }
 
@@ -124,8 +162,14 @@ impl MatchingEngine {
     }
 
     pub fn cancel(&mut self, order_id: Uuid) -> Result<(), SimError> {
-        let record = self.orders.get_mut(&order_id).ok_or(SimError::UnknownOrder(order_id))?;
-        if !matches!(record.state, SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected) {
+        let record = self
+            .orders
+            .get_mut(&order_id)
+            .ok_or(SimError::UnknownOrder(order_id))?;
+        if !matches!(
+            record.state,
+            SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
+        ) {
             record.state = SimOrderState::Canceled;
         }
         Ok(())
@@ -142,12 +186,18 @@ impl MatchingEngine {
         let mut resize_peer = None;
 
         let outcome = {
-            let record = self.orders.get_mut(&order_id).ok_or(SimError::UnknownOrder(order_id))?;
+            let record = self
+                .orders
+                .get_mut(&order_id)
+                .ok_or(SimError::UnknownOrder(order_id))?;
 
             if record.state == SimOrderState::Dormant {
                 return Ok(MatchOutcome::Dormant);
             }
-            if matches!(record.state, SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected) {
+            if matches!(
+                record.state,
+                SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
+            ) {
                 return Ok(match record.state {
                     SimOrderState::Canceled => MatchOutcome::Canceled,
                     SimOrderState::Rejected => MatchOutcome::Rejected("already rejected"),
@@ -176,7 +226,9 @@ impl MatchingEngine {
             };
             if record.order.post_only && crosses {
                 record.state = SimOrderState::Rejected;
-                return Ok(MatchOutcome::Rejected("post-only order would take liquidity"));
+                return Ok(MatchOutcome::Rejected(
+                    "post-only order would take liquidity",
+                ));
             }
             if !crosses {
                 return Ok(MatchOutcome::Resting);
@@ -194,10 +246,16 @@ impl MatchingEngine {
             };
             if record.order.reduce_only && reducible <= Decimal::ZERO {
                 record.state = SimOrderState::Rejected;
-                return Ok(MatchOutcome::Rejected("reduce-only order would not reduce current position"));
+                return Ok(MatchOutcome::Rejected(
+                    "reduce-only order would not reduce current position",
+                ));
             }
 
-            let displayed = record.order.display_quantity.unwrap_or(remaining).min(remaining);
+            let displayed = record
+                .order
+                .display_quantity
+                .unwrap_or(remaining)
+                .min(remaining);
             let executable = remaining.min(available).min(displayed).min(reducible);
 
             if record.order.time_in_force == TimeInForce::Fok && executable < remaining {
@@ -213,7 +271,11 @@ impl MatchingEngine {
             }
 
             record.filled_quantity += executable;
-            let fill = Fill { order_id, quantity: executable, price: touch_price };
+            let fill = Fill {
+                order_id,
+                quantity: executable,
+                price: touch_price,
+            };
             let fully_filled = record.remaining() == Decimal::ZERO;
             let reduction_exhausted =
                 record.order.reduce_only && executable == reducible && reducible < remaining;
@@ -228,13 +290,19 @@ impl MatchingEngine {
             if let Some(link) = &record.order.contingency {
                 match link.kind {
                     ContingencyKind::Oco if fully_filled => cancel_peer = Some(link.peer_order_id),
-                    ContingencyKind::Oto if fully_filled => activate_peer = Some(link.peer_order_id),
+                    ContingencyKind::Oto if fully_filled => {
+                        activate_peer = Some(link.peer_order_id)
+                    }
                     ContingencyKind::Ouo => resize_peer = Some((link.peer_order_id, executable)),
                     _ => {}
                 }
             }
 
-            if fully_filled { MatchOutcome::Filled(fill) } else { MatchOutcome::PartiallyFilled(fill) }
+            if fully_filled {
+                MatchOutcome::Filled(fill)
+            } else {
+                MatchOutcome::PartiallyFilled(fill)
+            }
         };
 
         if let Some(peer) = cancel_peer {
@@ -249,8 +317,12 @@ impl MatchingEngine {
         }
         if let Some((peer, delta)) = resize_peer {
             if let Some(record) = self.orders.get_mut(&peer) {
-                if !matches!(record.state, SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected) {
-                    record.order.quantity = (record.order.quantity - delta).max(record.filled_quantity);
+                if !matches!(
+                    record.state,
+                    SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
+                ) {
+                    record.order.quantity =
+                        (record.order.quantity - delta).max(record.filled_quantity);
                     if record.remaining() == Decimal::ZERO {
                         record.state = SimOrderState::Canceled;
                     }
@@ -285,7 +357,9 @@ fn validate_order(order: &SimOrder) -> Result<(), SimError> {
 
 fn is_expired(order: &SimOrder, market: MarketSnapshot) -> bool {
     match order.time_in_force {
-        TimeInForce::Gtd => order.expire_at_ns.is_some_and(|deadline| market.now_ns >= deadline),
+        TimeInForce::Gtd => order
+            .expire_at_ns
+            .is_some_and(|deadline| market.now_ns >= deadline),
         TimeInForce::Day => market.phase == MarketPhase::Closed,
         _ => false,
     }
@@ -303,13 +377,18 @@ fn phase_allows(order: &SimOrder, phase: MarketPhase) -> bool {
 mod tests {
     use super::*;
 
-    fn d(v: i64) -> Decimal { Decimal::from(v) }
+    fn d(v: i64) -> Decimal {
+        Decimal::from(v)
+    }
 
     fn market(phase: MarketPhase) -> MarketSnapshot {
         MarketSnapshot {
-            bid_price: d(99), bid_quantity: d(5),
-            ask_price: d(100), ask_quantity: d(5),
-            phase, now_ns: 100,
+            bid_price: d(99),
+            bid_quantity: d(5),
+            ask_price: d(100),
+            ask_quantity: d(5),
+            phase,
+            now_ns: 100,
         }
     }
 
@@ -335,7 +414,9 @@ mod tests {
         let order = limit(SimSide::Buy, 10, 101, TimeInForce::Ioc);
         let id = order.order_id;
         engine.submit(order, true).unwrap();
-        let out = engine.match_once(id, market(MarketPhase::Continuous), d(0)).unwrap();
+        let out = engine
+            .match_once(id, market(MarketPhase::Continuous), d(0))
+            .unwrap();
         assert!(matches!(out, MatchOutcome::PartiallyFilled(_)));
         let record = engine.record(id).unwrap();
         assert_eq!(record.filled_quantity, d(5));
@@ -348,7 +429,12 @@ mod tests {
         let order = limit(SimSide::Buy, 10, 101, TimeInForce::Fok);
         let id = order.order_id;
         engine.submit(order, true).unwrap();
-        assert_eq!(engine.match_once(id, market(MarketPhase::Continuous), d(0)).unwrap(), MatchOutcome::Canceled);
+        assert_eq!(
+            engine
+                .match_once(id, market(MarketPhase::Continuous), d(0))
+                .unwrap(),
+            MatchOutcome::Canceled
+        );
         assert_eq!(engine.record(id).unwrap().filled_quantity, Decimal::ZERO);
     }
 
@@ -359,7 +445,12 @@ mod tests {
         order.post_only = true;
         let id = order.order_id;
         engine.submit(order, true).unwrap();
-        assert!(matches!(engine.match_once(id, market(MarketPhase::Continuous), d(0)).unwrap(), MatchOutcome::Rejected(_)));
+        assert!(matches!(
+            engine
+                .match_once(id, market(MarketPhase::Continuous), d(0))
+                .unwrap(),
+            MatchOutcome::Rejected(_)
+        ));
     }
 
     #[test]
@@ -369,8 +460,12 @@ mod tests {
         order.reduce_only = true;
         let id = order.order_id;
         engine.submit(order, true).unwrap();
-        let out = engine.match_once(id, market(MarketPhase::Continuous), d(3)).unwrap();
-        assert!(matches!(out, MatchOutcome::PartiallyFilled(Fill { quantity, .. }) if quantity == d(3)));
+        let out = engine
+            .match_once(id, market(MarketPhase::Continuous), d(3))
+            .unwrap();
+        assert!(
+            matches!(out, MatchOutcome::PartiallyFilled(Fill { quantity, .. }) if quantity == d(3))
+        );
         let record = engine.record(id).unwrap();
         assert_eq!(record.filled_quantity, d(3));
         assert_eq!(record.state, SimOrderState::Canceled);
@@ -383,8 +478,12 @@ mod tests {
         order.display_quantity = Some(d(2));
         let id = order.order_id;
         engine.submit(order, true).unwrap();
-        let out = engine.match_once(id, market(MarketPhase::Continuous), d(0)).unwrap();
-        assert!(matches!(out, MatchOutcome::PartiallyFilled(Fill { quantity, .. }) if quantity == d(2)));
+        let out = engine
+            .match_once(id, market(MarketPhase::Continuous), d(0))
+            .unwrap();
+        assert!(
+            matches!(out, MatchOutcome::PartiallyFilled(Fill { quantity, .. }) if quantity == d(2))
+        );
     }
 
     #[test]
@@ -393,8 +492,18 @@ mod tests {
         let order = limit(SimSide::Buy, 1, 101, TimeInForce::AtTheOpen);
         let id = order.order_id;
         engine.submit(order, true).unwrap();
-        assert_eq!(engine.match_once(id, market(MarketPhase::Continuous), d(0)).unwrap(), MatchOutcome::Resting);
-        assert!(matches!(engine.match_once(id, market(MarketPhase::Opening), d(0)).unwrap(), MatchOutcome::Filled(_)));
+        assert_eq!(
+            engine
+                .match_once(id, market(MarketPhase::Continuous), d(0))
+                .unwrap(),
+            MatchOutcome::Resting
+        );
+        assert!(matches!(
+            engine
+                .match_once(id, market(MarketPhase::Opening), d(0))
+                .unwrap(),
+            MatchOutcome::Filled(_)
+        ));
     }
 
     #[test]
@@ -403,11 +512,17 @@ mod tests {
         let mut a = limit(SimSide::Buy, 1, 101, TimeInForce::Gtc);
         let b = limit(SimSide::Sell, 1, 98, TimeInForce::Gtc);
         let b_id = b.order_id;
-        a.contingency = Some(Contingency { group_id: Uuid::new_v4(), kind: ContingencyKind::Oco, peer_order_id: b_id });
+        a.contingency = Some(Contingency {
+            group_id: Uuid::new_v4(),
+            kind: ContingencyKind::Oco,
+            peer_order_id: b_id,
+        });
         let a_id = a.order_id;
         engine.submit(a, true).unwrap();
         engine.submit(b, true).unwrap();
-        engine.match_once(a_id, market(MarketPhase::Continuous), d(0)).unwrap();
+        engine
+            .match_once(a_id, market(MarketPhase::Continuous), d(0))
+            .unwrap();
         assert_eq!(engine.record(b_id).unwrap().state, SimOrderState::Canceled);
     }
 
@@ -417,12 +532,21 @@ mod tests {
         let child = limit(SimSide::Sell, 1, 98, TimeInForce::Gtc);
         let child_id = child.order_id;
         let mut parent = limit(SimSide::Buy, 1, 101, TimeInForce::Gtc);
-        parent.contingency = Some(Contingency { group_id: Uuid::new_v4(), kind: ContingencyKind::Oto, peer_order_id: child_id });
+        parent.contingency = Some(Contingency {
+            group_id: Uuid::new_v4(),
+            kind: ContingencyKind::Oto,
+            peer_order_id: child_id,
+        });
         let parent_id = parent.order_id;
         engine.submit(parent, true).unwrap();
         engine.submit(child, false).unwrap();
-        engine.match_once(parent_id, market(MarketPhase::Continuous), d(0)).unwrap();
-        assert_eq!(engine.record(child_id).unwrap().state, SimOrderState::Resting);
+        engine
+            .match_once(parent_id, market(MarketPhase::Continuous), d(0))
+            .unwrap();
+        assert_eq!(
+            engine.record(child_id).unwrap().state,
+            SimOrderState::Resting
+        );
     }
 
     #[test]
@@ -432,11 +556,17 @@ mod tests {
         let peer_id = peer.order_id;
         let mut primary = limit(SimSide::Buy, 10, 101, TimeInForce::Gtc);
         primary.display_quantity = Some(d(2));
-        primary.contingency = Some(Contingency { group_id: Uuid::new_v4(), kind: ContingencyKind::Ouo, peer_order_id: peer_id });
+        primary.contingency = Some(Contingency {
+            group_id: Uuid::new_v4(),
+            kind: ContingencyKind::Ouo,
+            peer_order_id: peer_id,
+        });
         let primary_id = primary.order_id;
         engine.submit(primary, true).unwrap();
         engine.submit(peer, true).unwrap();
-        engine.match_once(primary_id, market(MarketPhase::Continuous), d(0)).unwrap();
+        engine
+            .match_once(primary_id, market(MarketPhase::Continuous), d(0))
+            .unwrap();
         assert_eq!(engine.record(peer_id).unwrap().order.quantity, d(8));
     }
 }

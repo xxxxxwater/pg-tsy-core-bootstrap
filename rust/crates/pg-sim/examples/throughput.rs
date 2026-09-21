@@ -1,4 +1,6 @@
-use pg_sim::{MarketPhase, MarketSnapshot, MatchingEngine, OrderKind, SimOrder, SimSide, TimeInForce};
+use pg_sim::{
+    MarketPhase, MarketSnapshot, MatchingEngine, OrderKind, SimOrder, SimSide, TimeInForce,
+};
 use rust_decimal::Decimal;
 use std::time::Instant;
 use uuid::Uuid;
