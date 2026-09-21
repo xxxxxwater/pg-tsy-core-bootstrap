@@ -308,25 +308,22 @@ impl MatchingEngine {
         if let Some(peer) = cancel_peer {
             let _ = self.cancel(peer);
         }
-        if let Some(peer) = activate_peer {
-            if let Some(record) = self.orders.get_mut(&peer) {
-                if record.state == SimOrderState::Dormant {
-                    record.state = SimOrderState::Resting;
-                }
-            }
+        if let Some(peer) = activate_peer
+            && let Some(record) = self.orders.get_mut(&peer)
+            && record.state == SimOrderState::Dormant
+        {
+            record.state = SimOrderState::Resting;
         }
-        if let Some((peer, delta)) = resize_peer {
-            if let Some(record) = self.orders.get_mut(&peer) {
-                if !matches!(
-                    record.state,
-                    SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
-                ) {
-                    record.order.quantity =
-                        (record.order.quantity - delta).max(record.filled_quantity);
-                    if record.remaining() == Decimal::ZERO {
-                        record.state = SimOrderState::Canceled;
-                    }
-                }
+        if let Some((peer, delta)) = resize_peer
+            && let Some(record) = self.orders.get_mut(&peer)
+            && !matches!(
+                record.state,
+                SimOrderState::Filled | SimOrderState::Canceled | SimOrderState::Rejected
+            )
+        {
+            record.order.quantity = (record.order.quantity - delta).max(record.filled_quantity);
+            if record.remaining() == Decimal::ZERO {
+                record.state = SimOrderState::Canceled;
             }
         }
 
@@ -347,10 +344,10 @@ fn validate_order(order: &SimOrder) -> Result<(), SimError> {
     if order.time_in_force == TimeInForce::Gtd && order.expire_at_ns.is_none() {
         return Err(SimError::MissingExpiry);
     }
-    if let Some(display) = order.display_quantity {
-        if display <= Decimal::ZERO || display > order.quantity {
-            return Err(SimError::InvalidDisplayQuantity);
-        }
+    if let Some(display) = order.display_quantity
+        && (display <= Decimal::ZERO || display > order.quantity)
+    {
+        return Err(SimError::InvalidDisplayQuantity);
     }
     Ok(())
 }
