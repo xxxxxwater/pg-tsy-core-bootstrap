@@ -24,7 +24,7 @@ pub struct TopOfBook {
     pub ask_quantity: Decimal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MatchDisposition {
     Filled,
