@@ -1,0 +1,119 @@
+name: publish-v0.1.0-rc.1-once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/publish-v0.1.0-rc.1-once.yml
+
+# This workflow publishes a SOURCE-ONLY research/shadow prerelease. It does not
+# import exchange credentials, connect to a trading account, run a daemon, deploy
+# an image or enable real-order routing. The only token is GitHub's short-lived
+# repository-scoped GITHUB_TOKEN, used for GitHub release publication.
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-pg-tsy-v0.1.0-rc.1
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'xxxxxwater/pg-tsy-core-bootstrap'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ce7defe22c6b385aa0b1da14f7f45611ae60e136
+      RELEASE_TAG: v0.1.0-rc.1
+    steps:
+      - name: Require green full CI and PostgreSQL on exact source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          for run_id in 35720316693 35720316754; do
+            run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '[.head_sha,.status,.conclusion] | @tsv')
+            IFS=$'\t' read -r sha status conclusion <<< "$run"
+            echo "Run ${run_id}: ${sha} ${status} ${conclusion}"
+            test "$sha" = "$SOURCE_SHA"
+            test "$status" = completed
+            test "$conclusion" = success
+          done
+      - name: Check out exact reviewed release source
+        uses: actions/checkout@v4
+        with:
+          ref: ce7defe22c6b385aa0b1da14f7f45611ae60e136
+          persist-credentials: false
+      - name: Verify checkout and source-only release boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(grep -c 'version = "0.1.0"' rust/Cargo.toml)" -ge 1
+          test -f docs/RELEASE_READINESS.md
+          test -f docs/ARCHITECTURE.md
+          test -f docs/EXCHANGES.md
+          test -f docs/OPERATIONS.md
+          test -z "${PG_BINANCE_PM_API_KEY:-}${HYPERLIQUID_PRIVATE_KEY:-}${IBKR_TWS_PASSWORD:-}"
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+      - name: Clean release build of shipped Rust core
+        working-directory: rust
+        run: cargo build --locked --release -p pg-core --features ibkr-marketdata
+      - name: Credential-free replay smoke (never serve or submit)
+        working-directory: rust
+        env:
+          PG_INSTANCE_ID: release-source-smoke
+          PG_RUN_MODE: shadow
+          PG_LIVE_TRADING: 'false'
+          PG_STRATEGY_DIR: ../data/replay/strategies
+        run: |
+          set -euo pipefail
+          test -x target/release/pg-core
+          ./target/release/pg-core --replay-policy-features ../data/replay/policy_features.jsonl > /tmp/pg-tsy-release-replay.jsonl
+          test -s /tmp/pg-tsy-release-replay.jsonl
+      - name: Write accurate prerelease notes
+        shell: bash
+        run: |
+          cat > /tmp/pg-tsy-release-notes.md <<'EOF'
+          # PG-TSY Core v0.1.0-rc.1 — research/shadow source prerelease
+
+          First **source-only release candidate** of the contract-first Python/Rust quant framework. This is a prerelease, not a stable 1.0 release, production image or deployed service.
+
+          **Included:** normalized three-venue contracts; Python research and Rust strategy/risk/OMS/journal/reconciliation components; Hyperliquid and IBKR adapter code; Binance PM isolated parsing/history/ledger primitives; deterministic `pg-sim` library and offline strategy replay; safety gates and source-verified architecture/runbooks.
+
+          **Execution boundary:** `shadow` uses simulated execution. The separate `paper/live` entry points construct external Hyperliquid/IBKR adapters and are **not accepted for production**. Hyperliquid paper requires Testnet, while IBKR paper account identity is not proven fail-closed. Binance PM real runtime registration is explicitly blocked. This release does not authorize real orders, unattended trading or deployment to any production host.
+
+          **Known gaps:** `pg-sim` currently has no binary entrypoint, so Python `RustSimClient` persistent JSONL subprocess is NOT a working release feature; real-account end-to-end fill/fee/OMS/position reconciliation, emergency flatten, fault-injection acceptance and integrated `pg-observability` snapshot/events routes are not complete. Source tests and offline replay do not prove HFT profits or live safety.
+
+          **Evidence:** [exact-commit CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35720316693), [isolated PostgreSQL CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35720316754), and this workflow's release build/offline replay smoke. Full limitations and remaining gates: [release readiness](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/blob/ce7defe22c6b385aa0b1da14f7f45611ae60e136/docs/RELEASE_READINESS.md).
+
+          No exchange API keys or trading account credentials are used by this release workflow. No prebuilt Docker image or binary artifacts are attached; GitHub source archives are the deliverable.
+          EOF
+      - name: Publish GitHub prerelease on frozen source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite it"
+            exit 1
+          fi
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists; refusing to re-use or move it"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title 'PG-TSY Core v0.1.0-rc.1 (Research/Shadow Prerelease)' \
+            --notes-file /tmp/pg-tsy-release-notes.md \
+            --prerelease
+      - name: Verify remote publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '[.tag_name, .prerelease, .draft, .target_commitish, .html_url] | @tsv'
+          actual=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')
+          test "$actual" = "$SOURCE_SHA"
