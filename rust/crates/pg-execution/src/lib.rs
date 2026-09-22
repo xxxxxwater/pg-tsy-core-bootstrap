@@ -1,4 +1,5 @@
 mod composite;
+pub mod matching;
 mod shadow;
 
 pub use composite::CompositeExecutionAdapter;
