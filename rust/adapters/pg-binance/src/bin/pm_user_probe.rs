@@ -53,9 +53,8 @@ async fn run() -> Result<(), &'static str> {
             attempt + 1,
             raw_order_events
         );
-        match finished {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(_)) | Err(_) => {}
+        if let Ok(Ok(())) = finished {
+            return Ok(());
         }
         if attempt < 2 {
             sleep(Duration::from_secs(1_u64 << attempt)).await;
