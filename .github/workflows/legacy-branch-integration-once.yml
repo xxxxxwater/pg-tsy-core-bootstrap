@@ -1,0 +1,32 @@
+name: legacy-branch-integration-once
+on:
+  push:
+    paths:
+      - .github/workflows/legacy-branch-integration-once.yml
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Recheck exact legacy heads and create isolated merge candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin '+refs/heads/feat/runtime-observability-v1:refs/remotes/origin/feat/runtime-observability-v1' '+refs/heads/feat/python-rust-sim-orders-20260920:refs/remotes/origin/feat/python-rust-sim-orders-20260920'
+          test "$(git rev-parse origin/feat/runtime-observability-v1)" = c31af718f46c15d65ed7fdf5efeac9fab8171dbb
+          test "$(git rev-parse origin/feat/python-rust-sim-orders-20260920)" = 714b0985c5db7356698494fb3e21b260dd92603f
+          git checkout -b integration/legacy-branches-20260922 "$GITHUB_SHA"
+          git merge --no-ff -X ours -m 'merge: integrate legacy observability history in isolated candidate' origin/feat/runtime-observability-v1
+          git merge --no-ff -X ours -m 'merge: integrate alternate simulator history in isolated candidate' origin/feat/python-rust-sim-orders-20260920
+          echo 'Changes relative to current main:'
+          git diff --stat "$GITHUB_SHA" HEAD
+          git diff --name-status "$GITHUB_SHA" HEAD
+          git push origin HEAD:refs/heads/integration/legacy-branches-20260922
