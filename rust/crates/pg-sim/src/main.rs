@@ -45,10 +45,11 @@ fn parse_phase(value: &str) -> Result<MarketPhase, &'static str> {
 }
 
 fn simulate(request: WireRequest) -> Result<Value, String> {
+    let _validated_request_id = request.request_id;
     // Accept direct SimOrder and {"base": SimOrder} research envelopes.
     let base = request.order.get("base").unwrap_or(&request.order);
-    let order: SimOrder = serde_json::from_value(base.clone())
-        .map_err(|error| format!("invalid order: {error}"))?;
+    let order: SimOrder =
+        serde_json::from_value(base.clone()).map_err(|error| format!("invalid order: {error}"))?;
     let phase = parse_phase(&request.session).map_err(str::to_owned)?;
     let top = request.top;
     if top.bid_price <= Decimal::ZERO
@@ -57,7 +58,9 @@ fn simulate(request: WireRequest) -> Result<Value, String> {
         || top.bid_quantity < Decimal::ZERO
         || top.ask_quantity < Decimal::ZERO
     {
-        return Err("invalid top of book: require positive noncrossed prices and nonnegative sizes".into());
+        return Err(
+            "invalid top of book: require positive noncrossed prices and nonnegative sizes".into(),
+        );
     }
     let market = MarketSnapshot {
         bid_price: top.bid_price,
@@ -69,7 +72,9 @@ fn simulate(request: WireRequest) -> Result<Value, String> {
     };
     // Persistent process for batching; isolated matching state per counterfactual.
     let mut engine = MatchingEngine::default();
-    engine.submit(order.clone(), true).map_err(|error| error.to_string())?;
+    engine
+        .submit(order.clone(), true)
+        .map_err(|error| error.to_string())?;
     let outcome = engine
         .match_once(order.order_id, market, request.position)
         .map_err(|error| error.to_string())?;
