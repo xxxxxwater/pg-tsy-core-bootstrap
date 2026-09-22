@@ -27,6 +27,7 @@ The repository is no longer a scaffold, but it is also **not yet an unattended-p
 - Venue-aware startup validation: a derived subscription no build can serve fails startup instead of reconnecting forever. Binance PM has no runtime feed.
 - Candle resolution is a venue capability table (`supported_candle_intervals`, `candle_interval_supported`, `default_candle_interval`, `describe_candle_interval`). An explicitly configured `candle_interval_ns` a venue cannot serve fails at strategy load; when omitted, each instrument uses its own venue default (Hyperliquid 1m, IBKR 5s) instead of a global 5s.
 - Explicit rule that feeds without trustworthy venue sequence data keep `sequence=None` rather than fabricating gap evidence.
+- Subscription supervisor/runtime primitives for required feed ownership, reconnect and health transitions.
 
 ### OMS / execution
 
