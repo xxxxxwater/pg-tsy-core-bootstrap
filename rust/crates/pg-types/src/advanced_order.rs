@@ -9,7 +9,9 @@ pub enum TimeInForce {
     Gtc,
     Ioc,
     Fok,
-    Gtd { expires_at_ns: u64 },
+    Gtd {
+        expires_at_ns: u64,
+    },
     Day,
     AtTheOpen,
     AtTheClose,
@@ -30,9 +32,15 @@ pub struct OrderConstraints {
 pub enum CompositeInstruction {
     #[default]
     Single,
-    Oco { group_id: String },
-    Ouo { group_id: String },
-    Oto { parent_client_order_id: String },
+    Oco {
+        group_id: String,
+    },
+    Ouo {
+        group_id: String,
+    },
+    Oto {
+        parent_client_order_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
