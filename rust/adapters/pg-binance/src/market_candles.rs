@@ -83,7 +83,7 @@ fn validated_candle(
     let interval_ms = interval_ns / MS_TO_NS;
     if interval_ms == 0
         || start_ms == 0
-        || start_ms % interval_ms != 0
+        || !start_ms.is_multiple_of(interval_ms)
         || start_ms
             .checked_add(interval_ms)
             .and_then(|t| t.checked_sub(1))
