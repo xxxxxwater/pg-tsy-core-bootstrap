@@ -11,16 +11,18 @@ Scope: `POST /admin/reload` in `rust/crates/pg-core/src/health.rs`. This operati
 
 ## Operational boundaries
 
-The existing Compose templates do **not** forward `PG_ADMIN_TOKEN` into the container: their admin endpoint therefore stays disabled by default. An operator needing reload must deliberately inject the secret into **the pg-core process environment** through a deployment-managed secret configuration (not into committed YAML, `.env.example`, GitHub Actions or a pasted Compose config dump), then ensure the listener is reachable only on a trusted management path. A token alone is not a substitute for network isolation or TLS when traversing untrusted networks. The existing listener defaults to `0.0.0.0:8080`; production Compose binds the published host port to `127.0.0.1` but does not isolate other containers sharing its Docker bridge network.
+The existing Compose templates do **not** forward `PG_ADMIN_TOKEN` into the container: their admin endpoint therefore stays disabled by default. An operator needing reload must deliberately inject the secret into **the pg-core process environment** through a deployment-managed secret configuration (not into committed YAML, `.env.example`, GitHub Actions or a pasted Compose config dump), then ensure the listener is reachable only on a trusted management path. A token alone is not a substitute for network isolation or TLS when traversing untrusted networks. The listener defaults to `0.0.0.0:8080`; production Compose binds the published host port to `127.0.0.1` but does not isolate other containers sharing its Docker bridge network.
 
-Example invocation *only from an already-trusted management shell with an already-injected secret*:
+For manual verification, use a trusted management client which sends `POST /admin/reload` with exactly one `Authorization: Bearer` header. Load the token from a protected secret store into that client without putting it in URL parameters, process command-line arguments, terminal history, debugging output or access logs. Do **not** use `curl -H "Authorization: Bearer ${PG_ADMIN_TOKEN}"` on a shared host: shell expansion can expose the expanded header in the process argument list. Confirm these statuses with the control channel observed separately:
 
-```bash
-curl --fail-with-body --silent --show-error \
-  --request POST \
-  --header "Authorization: Bearer ${PG_ADMIN_TOKEN}" \
-  http://127.0.0.1:8080/admin/reload
-```
+| Request | Status | Enqueued commands |
+| --- | --- | --- |
+| POST with unset or invalid process secret | 403 | Zero |
+| POST with missing, incorrect or duplicate Bearer header | 401 | Zero |
+| GET with any credentials | 405 | Zero |
+| POST with valid single Bearer header and attached channel | 202 | Exactly `ReloadStrategies` |
+| Valid POST but disconnected control channel | 503 | Zero delivered |
+| GET `/healthz` without token | 200 when healthy | Zero |
 
 Do not enable this operation on a publicly exposed plaintext HTTP listener. Prefer a private network with authenticated TLS reverse proxy or local tunnel, and protect process environment inspection. For multi-user or remotely operated deployments, implement granular identities, audit trails, replay controls and rate limits before calling the entire control plane production-ready.
 
