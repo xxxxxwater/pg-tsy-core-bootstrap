@@ -1,8 +1,6 @@
-//! Credential-free, one-request-per-simulation JSONL bridge. This binary never
-//! imports a venue SDK, connects to an exchange, or sends real orders.
-use pg_sim::{
-    MarketPhase, MarketSnapshot, MatchOutcome, MatchingEngine, SimOrder,
-};
+//! Credential-free deterministic one-request-per-simulation JSONL bridge.
+//! No venue SDK, network socket, exchange credentials or real-order authority.
+use pg_sim::{MarketPhase, MarketSnapshot, MatchOutcome, MatchingEngine, SimOrder};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -47,8 +45,7 @@ fn parse_phase(value: &str) -> Result<MarketPhase, &'static str> {
 }
 
 fn simulate(request: WireRequest) -> Result<Value, String> {
-    // Accept the direct SimOrder schema and the documented {"base": SimOrder}
-    // envelope. The latter is used by callers that attach research metadata.
+    // Accept direct SimOrder and {"base": SimOrder} research envelopes.
     let base = request.order.get("base").unwrap_or(&request.order);
     let order: SimOrder = serde_json::from_value(base.clone())
         .map_err(|error| format!("invalid order: {error}"))?;
@@ -70,9 +67,7 @@ fn simulate(request: WireRequest) -> Result<Value, String> {
         phase,
         now_ns: request.now_ns,
     };
-    // Each request is its own independent counterfactual. The PROCESS is kept
-    // alive for batching, but neither orders nor account positions leak between
-    // vectorized experiments. The caller supplies the explicit initial position.
+    // Persistent process for batching; isolated matching state per counterfactual.
     let mut engine = MatchingEngine::default();
     engine.submit(order.clone(), true).map_err(|error| error.to_string())?;
     let outcome = engine
@@ -81,7 +76,7 @@ fn simulate(request: WireRequest) -> Result<Value, String> {
     let record = engine
         .record(order.order_id)
         .ok_or_else(|| "simulation order record unavailable".to_owned())?;
-    let (outcome_name, fill, reason) = match outcome {
+    let (name, fill, reason) = match outcome {
         MatchOutcome::Filled(fill) => (
             "Filled",
             Some(json!({"quantity": fill.quantity.to_string(), "price": fill.price.to_string()})),
@@ -99,7 +94,7 @@ fn simulate(request: WireRequest) -> Result<Value, String> {
     };
     Ok(json!({
         "ok": true,
-        "outcome": outcome_name,
+        "outcome": name,
         "state": format!("{:?}", record.state),
         "order_id": order.order_id,
         "filled_quantity": record.filled_quantity.to_string(),
@@ -137,10 +132,9 @@ fn main() -> io::Result<()> {
         } else {
             handle_line(&line)
         };
-        serde_json::to_writer(&mut stdout, &response)?;
+        serde_json::to_writer(&mut stdout, &response).map_err(io::Error::other)?;
         stdout.write_all(b"\n")?;
-        // The Python client writes a batch then reads in order. Flush every
-        // record so a single request never waits for process termination.
+        // Flush each record: Python writes batches and reads responses in order.
         stdout.flush()?;
     }
     Ok(())
@@ -155,15 +149,10 @@ mod tests {
             "request_id": 7,
             "order": {
                 "order_id": "f4c8c02e-5e3a-4076-8714-69137e7dcd2e",
-                "side": "Buy",
-                "kind": "Limit",
-                "quantity": "2",
-                "limit_price": "101",
-                "time_in_force": "Ioc",
-                "expire_at_ns": null,
-                "post_only": false,
-                "reduce_only": false,
-                "display_quantity": null,
+                "side": "Buy", "kind": "Limit", "quantity": "2",
+                "limit_price": "101", "time_in_force": "Ioc",
+                "expire_at_ns": null, "post_only": false,
+                "reduce_only": false, "display_quantity": null,
                 "contingency": null
             },
             "top": {
