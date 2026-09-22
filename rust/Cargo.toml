@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/pg-types",
   "crates/pg-runtime",
+  "crates/pg-observability",
   "crates/pg-store",
   "crates/pg-marketdata",
   "crates/pg-risk",

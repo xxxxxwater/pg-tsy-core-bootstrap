@@ -19,15 +19,20 @@ mod unattended_guard;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::{Context, Result, bail};
+use pg_marketdata::FeedKind;
+use pg_observability::{
+    FeedSnapshot, ObservabilityConfig, ObservabilityServer, RuntimeObservatory, VenueSnapshot,
+};
 use pg_risk::{RiskLimits, evaluate_signal};
 use pg_runtime::{RunConfig, RunMode};
 use pg_strategy::StrategyDecision;
 use pg_strategy::policy::{FeatureFrame, PositionView};
 use pg_strategy::registry::StrategyRegistry;
-use pg_types::{AssetKey, RiskDecision, Signal};
+use pg_types::{AssetKey, RiskDecision, Signal, Venue};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
+    collections::BTreeSet,
     env, fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -262,6 +267,7 @@ async fn main() -> Result<()> {
         return Ok(());
     };
 
+    let path = &args[0];
     let signal: Signal = serde_json::from_str(&fs::read_to_string(path)?)?;
     let limits = RiskLimits {
         allow_new_exposure: config.routes_to_real_venue(),
