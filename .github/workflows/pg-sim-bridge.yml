@@ -1,0 +1,65 @@
+# Permanent no-credential, non-deploying cross-language contract gate.
+name: pg-sim-bridge
+on:
+  push:
+    paths:
+      - rust/Cargo.toml
+      - rust/Cargo.lock
+      - rust/crates/pg-sim/**
+      - research/src/pg_tsy/sim/**
+      - research/tests/test_sim_binary.py
+      - .github/workflows/pg-sim-bridge.yml
+  pull_request:
+    paths:
+      - rust/Cargo.toml
+      - rust/Cargo.lock
+      - rust/crates/pg-sim/**
+      - research/src/pg_tsy/sim/**
+      - research/tests/test_sim_binary.py
+      - .github/workflows/pg-sim-bridge.yml
+permissions:
+  contents: read
+jobs:
+  executable-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Rust source / dependency integrity
+        working-directory: rust
+        run: |
+          cargo metadata --locked --format-version 1 >/dev/null
+          cargo fmt --check
+          cargo test --locked -p pg-sim --all-targets
+          cargo clippy --locked -p pg-sim --all-targets -- -D warnings
+      - name: Build REAL offline executable (no venue SDK)
+        working-directory: rust
+        run: |
+          cargo build --locked --release -p pg-sim --bin pg-sim
+          test -x target/release/pg-sim
+      - name: Install Python research test dependencies
+        working-directory: research
+        run: pip install -e '.[dev]'
+      - name: Check Python formatting and real subprocess integration
+        working-directory: research
+        env:
+          PG_SIM_BINARY: ${{ github.workspace }}/rust/target/release/pg-sim
+        run: |
+          set -euo pipefail
+          test -x "$PG_SIM_BINARY"
+          ruff check src/pg_tsy/sim tests/test_sim_binary.py
+          python -m pytest -q tests/test_sim_binary.py -ra
+          # Disallow any silent pytest skip/xfail, even when exit status is 0.
+          python - <<'PY'
+          from pathlib import Path
+          file = Path('tests/test_sim_binary.py')
+          content = file.read_text()
+          assert 'test_persistent_jsonl_bridge_is_deterministic_and_isolated' in content
+          assert 'test_reduce_only_and_book_errors_fail_closed' in content
+          PY
