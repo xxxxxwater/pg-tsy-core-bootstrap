@@ -1,6 +1,8 @@
 //! A trade is immutable venue evidence, not a cumulative order-status estimate.
-//! This module does not mutate OMS orders, positions or authorize new exposure.
+//! This module does not independently authorize new exposure.
 //! All writes are fenced, ownership-checked, deduplicated and journaled atomically.
+
+pub mod settlement;
 
 use pg_oms::OrderRecord;
 use pg_types::{Side, Venue};
