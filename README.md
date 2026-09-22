@@ -1,421 +1,89 @@
-# pg-tsy-core
+# PG-TSY Core — Quant Research & Execution Infrastructure
 
-A compact, contract-first quantitative trading monorepo designed for **one engineer + AI agents**.
+Contract-first Python/Rust quantitative trading monorepo for one engineer working with AI coding agents. **Research proposes; Rust disposes.** Python prepares features, models, candidate signals and reproducible evaluations; deterministic Rust policy, risk, OMS and execution contracts retain authority over orders. Neither model confidence nor a passing CI workflow authorizes real trading.
 
-It follows three independent but composable technical paths:
+> Independent PG project, not TSY Capital source code or an affiliated product. Current release status: **research/shadow and isolated verification; unattended real-money Binance PM trading is BLOCKED**. The repository is not a demonstrated profitable HFT product. See [isolated HFT acceptance](docs/ISOLATED_HFT_ACCEPTANCE_2026-09-22.md) and [status](docs/STATUS.md) for evidence and remaining blockers.
 
-1. **Python factor research** — Parquet/S3 → Arrow/Polars → factor discovery, evaluation and backtests.
-2. **Local ML / LOB research** — PyTorch/JAX-oriented datasets, walk-forward validation and parameter optimization on a local GPU when available.
-3. **Rust live trading core** — tick market data, online factors, portable strategy policies, position state machines, risk, OMS, execution, reconciliation, journal/recovery and replay.
+## What is implemented
 
-Venue boundaries currently cover **Binance Portfolio Margin**, **Hyperliquid** and **Interactive Brokers TWS/IB Gateway**. Hyperliquid and IBKR have executable Rust adapters with explicit ambiguous-submit recovery semantics; neither adapter is constructed by the shipping daemon yet. IBKR is additionally a runtime **market-data** source. Telegram is the operator relay/control surface.
-
-> `pg-tsy-core` is an independent PG project inspired by common modern quant architecture patterns. It is not TSY Capital source code and is not affiliated with TSY Capital.
-
-## Design rule
-
-**Research proposes. Rust disposes.**
-
-Python can produce a signal, model artifact, parameter set or feature definition. Only the Rust live core may turn that into order intent after market-data freshness, strategy state, position ownership, reconciliation and risk checks.
-
-```text
-                    LOCAL / RESEARCH
-
- S3/Parquet -> Arrow/Polars -> Factors --------+
-                                                 |
- L2/trades -> PyTorch/JAX -> ML signal ---------+--> signal.v1
-       ^           |
-       |           +--> walk-forward / robustness / Optuna
-       |                    (local only)
-       |
- websocket/TWS tick capture
-
-                         |
-                         v
-
-                    AWS / LIVE RUST
-
-                  strategy.v1
-                       |
-                       v
-                 Rule Graph
-                       |
-                required_features
-                       |
-                       v
-             FeatureProviderRegistry
-                       |
-                minimal FeedSpec set
-                       |
-                       v
- Binance / Hyperliquid / IBKR adapters
-                       |
-             Trades / BBO / L2 / Candles
-                       |
-                       v
-               LiveFeatureEngine
-                       |
-                 FeatureFrame
-                       |
-             portable PolicyEngine
-                       |
-              Signal / PositionTarget
-                       |
-           Risk -> OMS -> ExecutionAdapter
-                         /          \
-                 Hyperliquid       IBKR
-                     |              |
-               cloid identity   order_ref identity
-                     \              /
-                      venue truth
-                          |
-                Ack / Fill / Reject
-                          |
-            Journal / Reconcile / Recovery
-                          |
-            Position ownership / checkpoint
-                          |
-               Telegram control relay
-```
-
-The diagram is the target architecture. The daemon that ships today registers only
-the in-process shadow venue as an execution adapter; see
-[Shadow runtime](#shadow-runtime-current-execution-path).
-
-## Repository map
-
-```text
-contracts/                  Versioned cross-language contracts
-research/                   Python research control plane
-  src/pg_tsy/
-    data/                    Parquet / Arrow / Polars data access
-    factor/                  Factor definitions and registry
-    ml/                      Local model training + model artifact contracts
-    tuning/                  Walk-forward / robust hyperparameter search
-    signal/                  Signal creation and development store
-strategies/                  Editable strategy.v1 definitions
-rust/
-  crates/
-    pg-types/                Shared domain types
-    pg-marketdata/           Trade/BBO/L2/candle + freshness/aggregation
-    pg-strategy/             Feature providers + portable policy + state machine
-    pg-risk/                 Pre-trade risk engine
-    pg-oms/                  Order state machine and partial-fill accounting
-    pg-execution/            Venue-neutral execution/recovery contract
-    pg-reconcile/            Venue ↔ journal ↔ internal state reconciliation
-    pg-journal/              Durable event journal primitives
-    pg-store/                PostgreSQL lease/fencing/order/ownership state
-    pg-replay/               Deterministic event replay
-    pg-control/              Telegram/operator command contract
-    pg-orchestrator/         Durable execution dispatch + recovery/reconcile cycles
-    pg-core/                 Live/shadow orchestration binary
-  adapters/
-    pg-binance/              Binance/Portfolio Margin boundary
-    pg-hyperliquid/          Official Hyperliquid Rust SDK boundary
-    pg-ibkr/                 Community Rust IBKR/TWS boundary
-docs/                       Architecture, ADRs, runbooks and status
-infra/                      AWS/Terraform deployment blueprint
-```
-
-## Portable strategy infrastructure
-
-Strategies are definitions and policies, not venue adapters. The same strategy template can expand into independent instruments such as:
-
-```text
-BINANCE_PM:ETHUSDT
-HYPERLIQUID:HYPE
-IBKR:AAPL
-```
-
-A rule graph references normalized feature names. `PolicyDefinition::required_features()` collects them, `FeatureProviderRegistry` verifies that each live feature has a provider, and `FeaturePlan` derives the minimal market-data subscriptions required for each instrument.
-
-Current standard mappings include:
-
-- Trades → `last_price`, `vwap`, `vwap_deviation_bps`, `trade_imbalance`;
-- BBO → `spread_bps`;
-- L2 → `book_imbalance`;
-- Candle → `momentum_bps`, `realized_volatility_bps`, `volume_ratio`;
-- normalized `PositionView` → quantity, average entry, filled-entry count, unrealized/peak return.
-
-An unregistered live feature fails strategy loading instead of silently remaining missing. Custom strategy factors therefore become explicit providers with a stable feature name and declared normalized feed dependencies.
-
-The live and fixture paths converge on the same object:
-
-```text
-fixture JSON --------------------------+
-                                      |
-                                      v
-                                FeatureFrame
-                                      |
-                                      v
-                                 PolicyEngine
-                                      ^
-                                      |
-MarketEvent -> LiveFeatureEngine ------+
-```
-
-This allows migrated strategies to compare fixture decisions against live-style normalized market-event replay without importing Binance, Hyperliquid or IBKR SDK types into strategy code.
-
-See [`docs/STRATEGIES.md`](docs/STRATEGIES.md).
-
-## Strategy automation compatibility path
-
-The existing Rust automation path remains supported while production orchestration moves toward portable policy-driven decisions. It computes lightweight online factors from subscribed market events and does not require training on the production host.
-
-Current online factor primitives include:
-
-- VWAP and VWAP deviation;
-- trade imbalance;
-- bid/ask spread;
-- L2 book imbalance;
-- short-horizon momentum;
-- realized volatility.
-
-`RollingFactorEngine` maintains rolling state, and `AutomatedStrategy` applies warmup, spread/volatility gates, confidence, TTL and throttling before producing a versioned signal. Partial fills update strategy-owned position quantity incrementally; an order is never assumed fully filled merely because submission succeeded.
-
-## Execution idempotency and ambiguous-submit recovery
-
-The core rule is:
-
-> **An unknown external outcome is not permission to send a replacement order.**
-
-A persisted order intent has stable venue identity and is reconciled before any replayed submission.
-
-### Hyperliquid
-
-- the persisted intent UUID is used as the venue `cloid`;
-- submit checks existing venue state by `cloid` before posting;
-- transport/protocol ambiguity after posting triggers another `cloid` lookup;
-- if the order is found, the local runtime adopts venue truth;
-- if the outcome still cannot be proven, the adapter returns `ExecutionError::Unknown` and the caller must reconcile instead of blindly posting again.
-
-### Interactive Brokers
-
-- `OrderIntent.client_order_id()` is written to TWS `order_ref`;
-- replay checks `open_orders`, then `completed_orders`, then execution reports carrying `order_reference`;
-- a fast market fill therefore remains discoverable even when it is no longer present in open orders;
-- unresolved placement/cancel outcomes become `ExecutionError::Unknown` and block automatic replacement submission.
-
-IBKR ordinary stock orders do **not** expose a crypto-style atomic reduce-only flag through this adapter. Reduce-only is disabled by default. When explicitly enabled, a software guard refreshes account position immediately before placement and rejects wrong-direction or cross-through-flat quantities. This is a software safety check, not a venue-native guarantee.
-
-## Shadow runtime (current execution path)
-
-`pg-core --serve` accepts `PG_RUN_MODE=shadow` only; `paper` and `live` are refused at
-startup, and the process refuses to start if real-venue routing is enabled. Every
-strategy decision still travels the durable production path:
-
-```text
-strategy decision
-      |
-pg_risk::evaluate_order          (new exposure never bypasses risk)
-      |
-DurableExecution::dispatch       (OrderRecord + intent journaled before the adapter call)
-      |
-AdapterRegistry
-      |
-ShadowExecutionAdapter           (in-process simulated venue, no network side effect)
-      |
-ack / reject / Unknown -> durable OrderRecord
-```
-
-- `PG_SHADOW_FILL_MODE` selects what the simulated venue does: `rest` (default) only
-  acknowledges an order, `immediate` fills it on acknowledgement. Neither mode sends a
-  real order.
-- The shadow venue is registered for Hyperliquid, IBKR and Binance PM, so any
-  definition whose market-data feeds the build can serve runs end to end without a
-  venue credential.
-- The simulated book is marked from normalized market events, and a real
-  `pg_strategy::policy::PositionView` (net quantity, average entry, filled entries,
-  unrealized return, peak return) is rebuilt from it on every event. It is no longer a
-  constant flat view.
-- Reduce-only shadow orders are rejected unless they strictly shrink an existing
-  opposite-signed simulated position.
-- A definition that declares a `[[policy.*]]` rule graph is owned by the portable
-  policy path; the legacy score machine's `Submit` decisions for that definition are
-  suppressed so one instrument never has two decision engines dispatching.
-- The durable `OrderRecord` records the submit-time state. Applying simulated venue
-  fills back into it is continuous reconciliation, which is not wired into the daemon
-  yet.
-
-## Market-data identity rule
-
-Never fabricate sequencing information. If a venue feed exposes a trustworthy monotonic sequence it may be used for gap detection. If it does not, `sequence` remains `None` and freshness/reconnect/snapshot logic carries the safety burden. IBKR tick-by-tick data currently follows this rule.
-
-## Runtime market-data sources
-
-The daemon subscribes only to venues the build actually wires up, and a derived
-subscription it cannot serve fails startup instead of reconnecting forever:
-
-| Venue | Cargo feature | Notes |
+| Layer | Current capability | Important boundary |
 | --- | --- | --- |
-| Hyperliquid | `hyperliquid-marketdata` (default) | public websocket trades/BBO/L2/candles |
-| Interactive Brokers | `ibkr-marketdata` | TWS / IB Gateway; enabled in the shipped image |
-| Binance Portfolio Margin | — | no runtime market-data source yet |
+| Research | Python factor/ML pipelines, batch environments, walk-forward/parameter research, versioned signal and model artifacts | Research cannot submit venue orders. Batch-training returns are not HFT backtest or realized PnL. |
+| Strategies | Rust normalized trades/BBO/L2/candles, feature provider registry, portable rule graphs and a strategy state machine | Missing required live features fail loading; legacy and policy paths do not both submit for one definition. |
+| OMS / execution | Durable intent-before-POST, stable client order IDs, partial-fill accounting, unknown-submit lookup and recovery; Hyperliquid/IBKR adapter contracts | SDK-capable adapters are not proof of completed real-exchange staging acceptance. Unknown outcome never triggers blind resubmission. |
+| Data & persistence | PostgreSQL journal, lease/fencing, order records, ownership and reconcile reports, immutable per-trade fill ledger | Historical coverage and exchange-truth positions must be verified before releasing SAFE_HOLD. |
+| Binance PM | Strict public market-data and private-stream parsing, signed trade-history decoder/collector, owned-order history verifier, isolated atomic complete-order fill/OMS settlement and a separately opted-in read-only WS diagnostic | No authenticated isolated-account acceptance; no atomic account-wide history cursor and position settlement; real Binance execution stays unregistered in the daemon. |
+| Simulation | Rust `pg-sim` order-semantics reference plus Python causal replay for bounded queue uncertainty, latency, partial fills, cancel races, fees and fill deviation comparison | Neither is venue-accurate L3 matching without real captured order-book and execution evidence. |
+| Jev challenger | Advisory model contract, matched rule/statistical/Jev/Jev+confidence research, calibration and latency/markout measurements | Advisory only: model decisions cannot bypass hard risk or enable order routing; actual edge has not been established. |
+| Operations | Health/ready/metrics, operator command contracts, continuous recover/reconcile scaffolding and failure-injection tests | Emergency flatten and real authenticated full-cycle reconnect/settlement still require isolated end-to-end proof. |
 
-```bash
-# Build with both runtime market-data sources
-cd rust && cargo build -p pg-core --features ibkr-marketdata
+## Architecture
+
+```text
+Historical data / live normalized market events
+                    |
+       Python research and causal replay
+                    |             Jev advisory (optional)
+         signed/versioned artifacts         |
+                    +-----------+------------+
+                                v
+                         Rust feature engine
+                                |
+                   strategy / deterministic policy
+                                |
+                 risk + freshness + ownership gates
+                                |
+                   durable intent -> OMS -> journal
+                                |
+             execution adapter / shadow venue by mode
+                                |
+               exchange ack / trades / positions
+                                |
+           verified history -> fenced fill settlement
+                                |
+                reconcile / checkpoint / SAFE_HOLD
 ```
 
-IBKR is a **market-data source only**. There is no IBKR execution path in the runtime,
-live mode remains refused, and all execution goes to the in-process shadow venue. The
-binding is the community `ibapi` crate, not an official IBKR Rust SDK. See
-[`docs/EXCHANGES.md`](docs/EXCHANGES.md).
+The diagram includes target paths. In particular, **verified history → OMS → account-wide cursor/position in one live transaction is not wired end-to-end**, and a read-only WS probe is not a reconciliation service. `pg-core --serve` is shadow-only; never confuse an adapter existing in source with an enabled production route. See [architecture](docs/ARCHITECTURE.md), [exchange contracts](docs/EXCHANGES.md) and [strategy documentation](docs/STRATEGIES.md).
 
-## Safety invariants
+## Repository layout
 
-- Live trading is **off by default**.
-- The shadow daemon refuses to start when real-venue routing is enabled and registers only the in-process simulated venue.
-- An order intent is journaled before the execution adapter is called.
-- Research/training code never submits exchange orders.
-- AWS live deployments do not require or install PyTorch/Optuna.
-- Strategy/policy code never imports venue SDK types.
-- Rule-graph features without a registered live provider fail at load time.
-- Every strategy-created order has explicit ownership identity.
-- Manual positions are never silently adopted by a strategy.
-- Unknown exchange/order state is fail-closed for **new strategy exposure**.
-- Entry filters do not disable exit evaluation for already-owned exposure.
-- Exit intents are explicitly `ReduceOnly` at the core contract; venue adapters must state whether that guarantee is native or software-enforced.
-- Restart/recovery reconciles venue truth before opening new exposure.
-- Signals expire and cannot be reused indefinitely.
-- Telegram is an authenticated relay; it cannot bypass Risk/OMS/reconciliation.
-- Telegram script commands address an allowlist; no arbitrary shell execution exists.
-- A network timeout after submit is never treated as proof of rejection.
+- `research/` — Python research, batch market environment, causal simulation, challenger comparisons and release-evidence tooling.
+- `rust/crates/` — normalized market data, strategy, `pg-sim`, risk, OMS, execution, reconciliation, journal, PostgreSQL store, replay, controls and core orchestrator.
+- `rust/adapters/` — Binance PM, Hyperliquid and IBKR venue boundaries.
+- `strategies/`, `contracts/`, `data/replay/` — definitions, versioned interfaces and deterministic fixtures.
+- `infra/`, `scripts/`, `.github/workflows/` — deployment blueprints, development scripts and CI.
+- `docs/` — design decisions, operations, honest acceptance evidence and remaining release blockers.
 
-## Local research bootstrap
+## Verification and development
 
 ```bash
-cd research
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev,train]'
-pytest
-python -m pg_tsy.cli demo-signal --asset SOLUSDT
-python scripts/train_local.py --help
-```
-
-The local trainer selects CUDA, Apple MPS or CPU at runtime. Model artifacts and frozen parameter sets are exported for deployment; the live host does not train models or run hyperparameter search.
-
-## Strategy validation and replay
-
-```bash
-# Parse definitions, compile policy graphs and validate provider/subscription plans
-make strategy-validate
-
-# Replay normalized MarketEvent JSONL through live feature generation + policy evaluation
-make strategy-replay EVENTS=data/replay/hype.jsonl
-
-# Replay fixture FeatureFrame JSONL directly through the same PolicyEngine
-make policy-replay FEATURES=data/replay/policy_features.jsonl
-
-# Replay the shipped fixtures with the fixture strategy definition
-make strategy-replay EVENTS=data/replay/hype.jsonl STRATEGY_DIR=../data/replay/strategies
-make policy-replay FEATURES=data/replay/policy_features.jsonl STRATEGY_DIR=../data/replay/strategies
-```
-
-`STRATEGY_DIR` defaults to `../strategies`. Replay never intentionally routes live
-orders. The fixtures and both JSONL formats are documented in
-[`data/replay/README.md`](data/replay/README.md).
-
-## Rust / CI
-
-```bash
+# Rust (pinned toolchain in CI)
 cd rust
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-
-# External venue SDK bindings and execution/recovery tests
+cargo test -p pg-binance --all-targets
 cargo test -p pg-hyperliquid --features sdk
 cargo test -p pg-ibkr --features sdk
-cargo clippy -p pg-hyperliquid -p pg-ibkr --all-targets --features sdk -- -D warnings
 
-# Operator relay
-cargo check -p pg-control --features telegram
+# Python
+cd ../research
+pip install -e '.[dev]'
+ruff check .
+pytest -q
 ```
 
-These tests do not intentionally route live orders. Real-account integration/failure-injection tests remain explicit opt-in operations.
+The dedicated PostgreSQL workflow starts an isolated database and runs migration, deduplication, conflicting-trade, journal, fencing and complete-order settlement tests. The generic CI also checks Binance/Jev contracts, feature-gated SDK integrations, Compose config, Rust formatting/strict Clippy/workspace tests and Python Ruff/pytest. **All of this is code/test evidence, not Binance account authentication or real trading authorization.**
 
-## Local development without a local Rust toolchain
+A private Binance diagnostic is deliberately separated from the daemon and requires an explicitly verified read-only isolated account, `PG_RUN_MODE=shadow`, `PG_LIVE_TRADING=false`, `PG_PM_READ_ONLY_PROBE_APPROVAL=APPROVE_ISOLATED_READ_ONLY_PROBE`, a nonsecret `PG_ISOLATED_ACCOUNT_SCOPE` and an out-of-band secret `PG_BINANCE_PM_API_KEY`. Run `cargo run -p pg-binance --bin pm_user_probe` from `rust/` only after permissions are checked. This probe creates no order, never mutates OMS, does not clear SAFE_HOLD and does not complete authenticated REST reconciliation. Do not put credentials in GitHub Actions.
 
-The pinned toolchain also runs from a container, which keeps local results identical to
-CI and to the release image:
+## Release gates: do not enable real trading automatically
 
-```powershell
-# One-time: seed the base images used by Dockerfile and docker-compose.yml
-pwsh ./scripts/pull-base-images.ps1
+Before any independently authorized tiny canary, require a segregated real-account approval and authenticated API/WS reads; a durable genesis and complete all-order signed trade-history cursor; atomic fenced fill, OMS, position and cursor updates; reconnect/restart/kill-9/database/lease failure injection; tested owned-order cancel and reduce-only emergency flatten; real execution/fee/markout calibration; strictly forward walk-forward comparisons for four matched policy arms; p95/p99 latency, Brier/ECE, net PnL and drawdown evidence; independent review and separate operator-controlled deployment. A short page or WS reconnect by itself is never proof of complete history.
 
-# Run cargo against rust/ inside rust:1.98.1-bookworm
-pwsh ./scripts/rust-docker.ps1 "fmt --check"
-pwsh ./scripts/rust-docker.ps1 "clippy --workspace --all-targets -- -D warnings"
-pwsh ./scripts/rust-docker.ps1 "test --workspace"
+See [full acceptance and open blockers](docs/ISOLATED_HFT_ACCEPTANCE_2026-09-22.md), [storage/recovery](docs/STORAGE_RECOVERY.md), [roadmap](docs/ROADMAP.md) and [status](docs/STATUS.md). The incumbent Binance PM/Freqtrade production bot is not part of this repository migration and must not be altered by its CI.
 
-# Or all three at once
-make rust-docker
-```
+## Git workflow
 
-`scripts/rust-docker.ps1` mounts the whole repository at `/src` and keeps the cargo
-target directory in the `pgtsy-cargo-target` volume, so incremental builds survive
-between runs and the Makefile's relative paths (`../strategies`, `../data/replay`)
-resolve exactly as they do on the host. `-Image` and `-TargetVolume` override the
-defaults. `scripts/pull-base-images.ps1` pulls `rust:1.98.1-bookworm`,
-`debian:bookworm-slim` and `postgres:17` through a registry mirror and re-tags them
-under their upstream names; it is only needed on networks where the Docker daemon
-cannot reach Docker Hub.
-
-## Operator commands
-
-The Telegram menu maps to a small typed command protocol:
-
-- `/start` — request strategy start after startup gates pass;
-- `/performance` — performance/PnL summary;
-- `/status` — runtime, venue, reconcile and strategy status;
-- `/logs [n]` — bounded recent log tail;
-- `/emergency_exit` — emergency flatten + halt request through the normal risk/execution path;
-- `/scripts` — list allowlisted strategies/scripts;
-- `/reload_script <name>` — reload one allowlisted strategy definition;
-- `/latency` — market-data/order path latency statistics.
-
-The command contract exists, but the production emergency-flatten orchestration is still part of the remaining P0 work; Telegram is not a direct exchange backdoor.
-
-The daemon also exposes a local health/control listener (`PG_HEALTH_ADDR`, default
-`0.0.0.0:8080`):
-
-```bash
-make health    # GET /healthz
-make ready     # GET /readyz
-make metrics   # GET /metrics (Prometheus text format)
-make reload    # POST /admin/reload - re-validate and swap strategy definitions
-```
-
-It is an operator surface, not a trading surface: it can only ask the runtime to reload
-strategy definitions, and it can never submit, cancel or flatten anything directly.
-
-## AWS production shape
-
-- **S3**: market data/model artifacts.
-- **Dedicated EC2**: Rust live core.
-- **RDS PostgreSQL**: lease/fencing, journal metadata, order state, ownership, reconciliation and checkpoints.
-- **Secrets Manager**: venue and Telegram credentials.
-- **CloudWatch + Prometheus/Grafana**: target observability stack.
-- **EC2/AWS Batch only if needed** for research jobs; local training is the default.
-
-Do not introduce EKS/Kafka until measurements justify them.
-
-## Current maturity
-
-The repository has moved beyond a scaffold into a **P0 production slice / execution-and-recovery hardening stage**. Hyperliquid and IBKR execution adapters implement stable client identity and ambiguous-submit reconciliation. The core also has OMS partial fills, ownership/reconcile primitives, PostgreSQL lease/fencing/checkpoint state, portable multi-venue strategy definitions, graph-derived feature subscriptions and live normalized FeatureFrame generation.
-
-The shadow daemon now runs the whole path end to end: derived subscriptions, live
-features, both strategy engines, one decided dispatcher per definition, risk, journal
-before dispatch, the simulated venue, position feedback into the policy graph, real
-startup-gate evaluation, `/healthz`/`/readyz`/`/metrics`, an explicit shutdown policy
-and operator-triggered strategy reload.
-
-It is **not yet an unattended-production release**. Remaining P0 work includes
-continuous reconciliation that writes venue fills back into the durable order records,
-end-to-end crash-window proof around every exposure-changing submit, Telegram emergency
-flatten, hardened Docker/systemd EC2 deployment, Binance PM execution/recovery and
-kill-9/network/database failure injection before a small-capital canary.
-
-See [`docs/STATUS.md`](docs/STATUS.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/STORAGE_RECOVERY.md`](docs/STORAGE_RECOVERY.md), [`docs/EXCHANGES.md`](docs/EXCHANGES.md), [`docs/STRATEGIES.md`](docs/STRATEGIES.md), [`docs/STRATEGY_AUTOMATION.md`](docs/STRATEGY_AUTOMATION.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+`main` is the integration branch. Historical feature branches whose HEAD is already an ancestor of `main` contain no unique commits and do not need a duplicate merge. Inspect ahead/behind and outstanding PRs before deleting any historical refs. Code changes must be committed with reproducible test evidence, and README/acceptance documents should change with meaningful functionality; documentation cannot certify tests or live deployments that were not performed.
