@@ -4,7 +4,10 @@
 //! publishing new WS bars; historical REST bars are NEVER live entry signals.
 //! The daemon owns bounded reconnect/backoff; no market data authorizes orders.
 
-use std::{collections::BTreeMap, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -18,7 +21,10 @@ use tokio::{net::TcpStream, sync::mpsc, time::timeout};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 use crate::{
-    market_candles::{CandleContinuity, REST_KLINES, decode_rest_closed, decode_ws_closed, interval_name, ws_stream},
+    market_candles::{
+        CandleContinuity, REST_KLINES, decode_rest_closed, decode_ws_closed, interval_name,
+        ws_stream,
+    },
     market_protocol::{
         BBO_STREAM, DEPTH_STREAM, SYMBOL, TRADE_STREAM, decode_bbo, decode_depth_delta,
         decode_depth_snapshot, decode_trade,
@@ -84,7 +90,9 @@ impl BinanceMarketDataSource {
             MarketDataError::Disconnected("depth snapshot REST transport failed".into())
         })?;
         if response.status() != StatusCode::OK
-            || response.content_length().is_some_and(|n| n > MAX_REST_FRAME as u64)
+            || response
+                .content_length()
+                .is_some_and(|n| n > MAX_REST_FRAME as u64)
         {
             return Err(MarketDataError::Disconnected(
                 "depth snapshot unavailable or oversized".into(),
@@ -108,24 +116,42 @@ impl BinanceMarketDataSource {
     ) -> Result<Vec<Candle>, MarketDataError> {
         public_stream(spec)?;
         let FeedKind::Candle { interval_ns } = &spec.kind else {
-            return Err(MarketDataError::Subscription("REST backfill requires candle feed".into()));
+            return Err(MarketDataError::Subscription(
+                "REST backfill requires candle feed".into(),
+            ));
         };
         if !(2..=1500).contains(&limit) {
-            return Err(MarketDataError::Subscription("REST kline limit must be 2..=1500".into()));
+            return Err(MarketDataError::Subscription(
+                "REST kline limit must be 2..=1500".into(),
+            ));
         }
         let interval = interval_name(*interval_ns)
             .ok_or_else(|| MarketDataError::Subscription("unsupported candle interval".into()))?;
-        let response = self.http.get(REST_KLINES)
-            .query(&[("symbol", SYMBOL), ("interval", interval), ("limit", &limit.to_string())])
-            .send().await
-            .map_err(|_| MarketDataError::Disconnected("public kline REST request failed".into()))?;
+        let response = self
+            .http
+            .get(REST_KLINES)
+            .query(&[
+                ("symbol", SYMBOL),
+                ("interval", interval),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|_| {
+                MarketDataError::Disconnected("public kline REST request failed".into())
+            })?;
         if response.status() != StatusCode::OK
-            || response.content_length().is_some_and(|n| n > MAX_REST_FRAME as u64)
+            || response
+                .content_length()
+                .is_some_and(|n| n > MAX_REST_FRAME as u64)
         {
-            return Err(MarketDataError::Disconnected("public kline REST unavailable or oversized".into()));
+            return Err(MarketDataError::Disconnected(
+                "public kline REST unavailable or oversized".into(),
+            ));
         }
-        let bytes = response.bytes().await
-            .map_err(|_| MarketDataError::Disconnected("public kline REST response incomplete".into()))?;
+        let bytes = response.bytes().await.map_err(|_| {
+            MarketDataError::Disconnected("public kline REST response incomplete".into())
+        })?;
         decode_rest_closed(&bytes, SYMBOL, *interval_ns, timestamp_ns()?)
     }
 
@@ -176,13 +202,16 @@ impl BinanceMarketDataSource {
         // request are buffered by the socket and checked against the seed.
         let recent = self.fetch_recent_closed(&spec, 3).await?;
         let latest = recent.last().ok_or_else(|| {
-            MarketDataError::Disconnected("no closed USD-M candle to establish REST baseline".into())
+            MarketDataError::Disconnected(
+                "no closed USD-M candle to establish REST baseline".into(),
+            )
         })?;
         if let Some(previous) = self.last_closed.get(&interval_ns).copied()
             && previous != latest.start_ns
         {
             return Err(MarketDataError::Disconnected(
-                "closed candles changed during disconnect; explicit historical replay required".into(),
+                "closed candles changed during disconnect; explicit historical replay required"
+                    .into(),
             ));
         }
         let mut cursor = CandleContinuity::default();
@@ -266,10 +295,14 @@ impl MarketDataSource for BinanceMarketDataSource {
         let (mut socket, _) = timeout(Duration::from_secs(5), connect_async(&url))
             .await
             .map_err(|_| MarketDataError::Disconnected("public websocket connect timeout".into()))?
-            .map_err(|_| MarketDataError::Disconnected("public websocket handshake failed".into()))?;
+            .map_err(|_| {
+                MarketDataError::Disconnected("public websocket handshake failed".into())
+            })?;
         match spec.kind {
             FeedKind::L2Book => self.stream_depth(&mut socket, &sink).await,
-            FeedKind::Candle { interval_ns } => self.stream_candles(&mut socket, interval_ns, &sink).await,
+            FeedKind::Candle { interval_ns } => {
+                self.stream_candles(&mut socket, interval_ns, &sink).await
+            }
             ref kind => self.stream_simple(&mut socket, kind, &sink).await,
         }
     }
@@ -335,14 +368,26 @@ mod tests {
         assert!(public_stream(&spec("BTCUSDT", Venue::BinancePm, FeedKind::Trades)).is_err());
         assert!(public_stream(&spec(SYMBOL, Venue::Hyperliquid, FeedKind::Trades)).is_err());
         assert_eq!(
-            public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::Candle {
-                interval_ns: 60_000_000_000
-            })).unwrap(),
+            public_stream(&spec(
+                SYMBOL,
+                Venue::BinancePm,
+                FeedKind::Candle {
+                    interval_ns: 60_000_000_000
+                }
+            ))
+            .unwrap(),
             "btcusdc@kline_1m"
         );
-        assert!(public_stream(&spec(SYMBOL, Venue::BinancePm, FeedKind::Candle {
-            interval_ns: 5_000_000_000
-        })).is_err());
+        assert!(
+            public_stream(&spec(
+                SYMBOL,
+                Venue::BinancePm,
+                FeedKind::Candle {
+                    interval_ns: 5_000_000_000
+                }
+            ))
+            .is_err()
+        );
     }
 
     #[test]
