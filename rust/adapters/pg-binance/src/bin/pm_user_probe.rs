@@ -1,12 +1,12 @@
 //! Explicitly opted-in, read-only PM private stream diagnostic.
 //! Never submits/cancels orders or writes OMS; every reconnect is unreconciled.
 //! An operator must independently verify isolated account API permissions.
-use pg_binance::{
-    user_stream::UserEvent,
-    user_transport::BinanceUserStream,
-};
+use pg_binance::{user_stream::UserEvent, user_transport::BinanceUserStream};
 use std::{env, process::ExitCode, time::Duration};
-use tokio::{sync::mpsc, time::{sleep, timeout}};
+use tokio::{
+    sync::mpsc,
+    time::{sleep, timeout},
+};
 
 fn permitted(approval: &str, mode: &str, live: &str, scope: &str, key: &str) -> bool {
     approval == "APPROVE_ISOLATED_READ_ONLY_PROBE"
@@ -82,9 +82,33 @@ mod tests {
     #[test]
     fn unauthorised_or_live_probe_cannot_open_a_network_session() {
         assert!(!permitted("", "shadow", "false", "isolated", "key"));
-        assert!(!permitted("APPROVE_ISOLATED_READ_ONLY_PROBE", "live", "false", "isolated", "key"));
-        assert!(!permitted("APPROVE_ISOLATED_READ_ONLY_PROBE", "shadow", "true", "isolated", "key"));
-        assert!(!permitted("APPROVE_ISOLATED_READ_ONLY_PROBE", "shadow", "false", "", "key"));
-        assert!(permitted("APPROVE_ISOLATED_READ_ONLY_PROBE", "shadow", "false", "isolated", "key"));
+        assert!(!permitted(
+            "APPROVE_ISOLATED_READ_ONLY_PROBE",
+            "live",
+            "false",
+            "isolated",
+            "key"
+        ));
+        assert!(!permitted(
+            "APPROVE_ISOLATED_READ_ONLY_PROBE",
+            "shadow",
+            "true",
+            "isolated",
+            "key"
+        ));
+        assert!(!permitted(
+            "APPROVE_ISOLATED_READ_ONLY_PROBE",
+            "shadow",
+            "false",
+            "",
+            "key"
+        ));
+        assert!(permitted(
+            "APPROVE_ISOLATED_READ_ONLY_PROBE",
+            "shadow",
+            "false",
+            "isolated",
+            "key"
+        ));
     }
 }
