@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from itertools import pairwise
 from typing import Literal
 
 Side = Literal["buy", "sell"]
@@ -116,7 +117,7 @@ def replay_quote(tape: list[TapeEvent], order: PassiveOrder, queue: Queue) -> Re
     """
     if queue not in ("front", "back") or not tape:
         raise ValueError("queue scenario must be front/back and tape nonempty")
-    if any(a.ts_ns >= b.ts_ns for a, b in zip(tape, tape[1:])):
+    if any(a.ts_ns >= b.ts_ns for a, b in pairwise(tape)):
         raise ValueError("tape events must have strictly increasing timestamps")
     arrival = next((i for i, event in enumerate(tape) if event.ts_ns >= order.arrival_ns), None)
     if arrival is None:
@@ -160,7 +161,7 @@ def replay_quote(tape: list[TapeEvent], order: PassiveOrder, queue: Queue) -> Re
     fills = []
     complete = True
     for ts, quantity, price in raw:
-        mark = next((e.mid for e in tape if e.ts_ns >= ts + order.markout_ns), None)
+        mark = next((e.mid for e in tape if e.ts_ns > ts and e.ts_ns >= ts + order.markout_ns), None)
         if mark is None:
             complete = False
             continue
