@@ -9,9 +9,7 @@ pub enum TimeInForce {
     Gtc,
     Ioc,
     Fok,
-    Gtd {
-        expires_at_ns: u64,
-    },
+    Gtd { expires_at_ns: u64 },
     Day,
     AtTheOpen,
     AtTheClose,
@@ -32,15 +30,9 @@ pub struct OrderConstraints {
 pub enum CompositeInstruction {
     #[default]
     Single,
-    Oco {
-        group_id: String,
-    },
-    Ouo {
-        group_id: String,
-    },
-    Oto {
-        parent_client_order_id: String,
-    },
+    Oco { group_id: String },
+    Ouo { group_id: String },
+    Oto { parent_client_order_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +104,24 @@ impl AdvancedOrderIntent {
     }
 }
 
+impl std::fmt::Display for AdvancedOrderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::NonPositiveQuantity => "quantity must be positive",
+            Self::PostOnlyMarket => "post-only requires a limit price",
+            Self::InvalidIceberg => {
+                "iceberg display quantity must be positive and smaller than total quantity"
+            }
+            Self::InvalidGtd => "GTD expiry must be non-zero",
+            Self::EmptyCompositeId => "composite group/id must not be empty",
+            Self::ReduceOnlyMismatch => "reduce-only constraint disagrees with base order effect",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for AdvancedOrderError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,21 +177,3 @@ mod tests {
         order.validate().unwrap();
     }
 }
-
-impl std::fmt::Display for AdvancedOrderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let message = match self {
-            Self::NonPositiveQuantity => "quantity must be positive",
-            Self::PostOnlyMarket => "post-only requires a limit price",
-            Self::InvalidIceberg => {
-                "iceberg display quantity must be positive and smaller than total quantity"
-            }
-            Self::InvalidGtd => "GTD expiry must be non-zero",
-            Self::EmptyCompositeId => "composite group/id must not be empty",
-            Self::ReduceOnlyMismatch => "reduce-only constraint disagrees with base order effect",
-        };
-        f.write_str(message)
-    }
-}
-
-impl std::error::Error for AdvancedOrderError {}
