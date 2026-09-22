@@ -35,7 +35,10 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
     let mut order = OrderRecord::from_intent(&intent);
     order.venue_order_id = Some("123".into());
     order.state = OrderState::Open;
-    store.save_order_record(&order, lease.fencing_token).await.unwrap();
+    store
+        .save_order_record(&order, lease.fencing_token)
+        .await
+        .unwrap();
     let first = ExecutionFill {
         account_scope: format!("test:{nonce}"),
         venue: Venue::BinancePm,
@@ -59,20 +62,25 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
         authoritative_state: OrderState::PartiallyFilled,
         trades: vec![first.clone()],
     };
-    let first_result = store.settle_complete_order_history(&lease, &history).await.unwrap();
+    let first_result = store
+        .settle_complete_order_history(&lease, &history)
+        .await
+        .unwrap();
     assert_eq!(first_result.inserted_trades, 1);
     assert_eq!(first_result.filled_quantity, Decimal::new(4, 3));
-    let state: serde_json::Value = sqlx::query_scalar(
-        "SELECT state FROM order_records WHERE client_order_id=$1",
-    )
-    .bind(&order.client_order_id)
-    .fetch_one(store.pool())
-    .await
-    .unwrap();
+    let state: serde_json::Value =
+        sqlx::query_scalar("SELECT state FROM order_records WHERE client_order_id=$1")
+            .bind(&order.client_order_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
     let observed: OrderRecord = serde_json::from_value(state).unwrap();
     assert_eq!(observed.state, OrderState::PartiallyFilled);
     assert_eq!(observed.filled_quantity, Decimal::new(4, 3));
-    let replay = store.settle_complete_order_history(&lease, &history).await.unwrap();
+    let replay = store
+        .settle_complete_order_history(&lease, &history)
+        .await
+        .unwrap();
     assert_eq!(replay.inserted_trades, 0);
 
     let mut tampered = history.clone();
@@ -87,18 +95,23 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
     history.trades.push(second);
     history.authoritative_state = OrderState::Filled;
     history.authoritative_filled = Decimal::new(10, 3);
-    let finished = store.settle_complete_order_history(&lease, &history).await.unwrap();
+    let finished = store
+        .settle_complete_order_history(&lease, &history)
+        .await
+        .unwrap();
     assert_eq!(finished.inserted_trades, 1);
     assert_eq!(finished.filled_quantity, Decimal::new(10, 3));
-    let total = store.recorded_fill_quantity(&lease, &order.client_order_id).await.unwrap();
+    let total = store
+        .recorded_fill_quantity(&lease, &order.client_order_id)
+        .await
+        .unwrap();
     assert_eq!(total, Decimal::new(10, 3));
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM execution_fills WHERE client_order_id=$1",
-    )
-    .bind(&order.client_order_id)
-    .fetch_one(store.pool())
-    .await
-    .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM execution_fills WHERE client_order_id=$1")
+            .bind(&order.client_order_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
     assert_eq!(count, 2);
     let journal_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM event_journal WHERE stream_id=$1 AND event_type='order.fill.recorded'",
@@ -117,13 +130,12 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
         store.settle_complete_order_history(&lease, &history).await,
         Err(FillLedgerError::Conflict)
     ));
-    let state: serde_json::Value = sqlx::query_scalar(
-        "SELECT state FROM order_records WHERE client_order_id=$1",
-    )
-    .bind(&order.client_order_id)
-    .fetch_one(store.pool())
-    .await
-    .unwrap();
+    let state: serde_json::Value =
+        sqlx::query_scalar("SELECT state FROM order_records WHERE client_order_id=$1")
+            .bind(&order.client_order_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
     let observed: OrderRecord = serde_json::from_value(state).unwrap();
     assert_eq!(observed.state, OrderState::Filled);
     assert_eq!(observed.filled_quantity, Decimal::new(10, 3));
