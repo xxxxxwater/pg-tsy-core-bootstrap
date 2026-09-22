@@ -1,14 +1,15 @@
-"""Binary integration contract: run with PG_SIM_BINARY pointing at built pg-sim.
+"""Python/Rust binary integration: require PG_SIM_BINARY in the dedicated gate.
 
-This test intentionally does not skip when the binary is absent: the dedicated
-hardening CI must build the binary before declaring Python/Rust parity.
+The general Python-only CI intentionally does not build Rust; it may skip this
+binary-specific file. The hardening workflow exports PG_SIM_BINARY and MUST run
+these tests without skips after building the real executable.
 """
 
 import os
 from pathlib import Path
+from unittest import SkipTest
 
 from pg_tsy.sim import RustSimClient, SimRequest
-
 
 ORDER = {
     "order_id": "f4c8c02e-5e3a-4076-8714-69137e7dcd2e",
@@ -27,12 +28,9 @@ TOP = {"bid_price": "99", "bid_quantity": "4", "ask_price": "100", "ask_quantity
 
 
 def _binary() -> Path:
-    path = Path(
-        os.environ.get(
-            "PG_SIM_BINARY",
-            str(Path(__file__).resolve().parents[2] / "rust" / "target" / "release" / "pg-sim"),
-        )
-    )
+    if "PG_SIM_BINARY" not in os.environ:
+        raise SkipTest("PG_SIM_BINARY is required by the dedicated Rust/Python integration gate")
+    path = Path(os.environ["PG_SIM_BINARY"])
     assert path.is_file(), f"pg-sim executable missing: {path}"
     return path
 
