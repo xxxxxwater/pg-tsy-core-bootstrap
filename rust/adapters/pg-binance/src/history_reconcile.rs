@@ -238,18 +238,15 @@ mod tests {
         let snapshot = snapshot(5);
         let orders = owner(&snapshot);
         assert_eq!(
-            verify_trade_history(9, &[page(vec![trade(9, 5)], 10, false)], &orders)
-                .unwrap_err(),
+            verify_trade_history(9, &[page(vec![trade(9, 5)], 10, false)], &orders).unwrap_err(),
             HistoryGateError::IncompletePagination
         );
         assert_eq!(
-            verify_trade_history(9, &[page(vec![trade(9, 5)], 11, true)], &orders)
-                .unwrap_err(),
+            verify_trade_history(9, &[page(vec![trade(9, 5)], 11, true)], &orders).unwrap_err(),
             HistoryGateError::InvalidCursor
         );
         assert_eq!(
-            verify_trade_history(0, &[page(vec![trade(9, 5)], 10, true)], &orders)
-                .unwrap_err(),
+            verify_trade_history(0, &[page(vec![trade(9, 5)], 10, true)], &orders).unwrap_err(),
             HistoryGateError::MissingAnchor
         );
     }
@@ -274,8 +271,7 @@ mod tests {
             HistoryGateError::UnownedTrade
         );
         assert_eq!(
-            verify_trade_history(9, &[page(vec![trade(9, 4)], 10, true)], &orders)
-                .unwrap_err(),
+            verify_trade_history(9, &[page(vec![trade(9, 4)], 10, true)], &orders).unwrap_err(),
             HistoryGateError::FillMismatch
         );
     }
@@ -289,7 +285,7 @@ mod tests {
                 .unwrap_err(),
             HistoryGateError::ConflictingOrder
         );
-        let snapshot = snapshot(5);
+        let snapshot = self::snapshot(5);
         assert_eq!(
             verify_trade_history(
                 9,
