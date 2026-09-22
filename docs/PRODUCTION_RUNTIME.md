@@ -1,177 +1,103 @@
-# Production runtime contract
+# Runtime and deployment contract — code-verified 2026-09-22
 
-The live binary has three explicit execution modes. They are not aliases.
+> **Not a production authorization.** `pg-core` has shadow, paper and live code paths. Only source/tests have been reviewed here; there is no accepted multi-venue real-account end-to-end proof. Review [ARCHITECTURE](ARCHITECTURE.md), [EXCHANGES](EXCHANGES.md) and [RELEASE_READINESS](RELEASE_READINESS.md). Never run these commands with an incumbent Binance PM/Freqtrade production account.
 
-| Mode | Real market data | Real account reconcile | Sends real orders |
+## 1. Actual CLI entry point
+
+`rust/crates/pg-core/src/main.rs` dispatches `pg-core --serve` by `RunConfig::mode`:
+
+| `PG_RUN_MODE` | Entry | Adapter construction | External order risk |
 | --- | --- | --- | --- |
-| `shadow` | yes | optional | never |
-| `paper` | yes | optional | never; simulated execution only |
-| `live` | yes | required | only after every startup gate passes |
+| `shadow` | `daemon::serve` | in-process `ShadowExecutionAdapter` for three venue identities | Simulated execution only; Hyperliquid/IBKR may supply real market data |
+| `paper` | `live_daemon::serve` | **real Hyperliquid/IBKR adapters**, never falls back to shadow | **Can submit external orders** to the configured testnet/paper **or live account if misconfigured** |
+| `live` | `live_daemon::serve` | real Hyperliquid/IBKR adapters | Real orders possible after gates/start; `PG_LIVE_TRADING=true` required |
 
-`PG_RUN_MODE=live` is insufficient by itself. `PG_LIVE_TRADING=true` is a second deliberate key and production startup also requires fencing/lease ownership, fresh market data, venue/account truth, ownership reconciliation and a loaded strategy allowlist.
+In all modes Binance PM runtime market-data subscriptions are unsupported; in `paper/live`, its real adapter registration deliberately fails with `BINANCE_PM remains fail-closed`. Do not describe paper as a simulated venue, or describe the daemon as shadow-only.
 
-**The current daemon is shadow-only.** `pg-core --serve` refuses `paper` and `live`
-outright, and refuses any configuration where `routes_to_real_venue()` is true. `paper`
-and `live` rows above describe the intended contract, not a shipped path.
+`RunConfig::routes_to_real_venue()` evaluates `mode == live && live_trading_enabled`; **this is a configuration predicate, not an enforcement that paper has no side effects**. In `live_daemon`, Hyperliquid paper requires `HYPERLIQUID_NETWORK=testnet`. The IBKR adapter is built using the supplied TWS/Gateway connection; no code-level assertion in `build_real_adapter_registry` establishes the account is IBKR paper. Keep order-capable IBKR paper runs blocked until that is independently enforced and tested. Live IBKR additionally requires `IBKR_ALLOW_SOFTWARE_REDUCE_ONLY=true`, which is a software position guard, **not** venue-native atomic reduce-only.
 
-## Execution path
+## 2. Component wiring
 
-```text
-strategy decision (legacy score machine OR portable rule graph, never both)
-      |
-pg_risk::evaluate_order
-      |
-DurableExecution::dispatch
-      |  assert lease/fencing
-      |  save OrderRecord + append order.intent.persisted
-      |  OMS SubmitRequested + append order.dispatch.started
-      |  assert lease/fencing again
-      v
-AdapterRegistry -> venue adapter
-      |
-ack  -> OMS accept, persisted + order.dispatch.acknowledged
-unknown/transport -> OMS LostState, persisted + order.dispatch.unknown
-reject -> OMS Rejected, persisted + order.dispatch.rejected
+```mermaid
+flowchart TD
+  CFG[RunConfig + StrategyRegistry] --> MODE{mode?}
+  MODE -->|shadow| SIM[daemon.rs: shadow adapter registry]
+  MODE -->|paper/live| REAL[live_daemon.rs: build_real_adapter_registry]
+  REAL --> HL[Hyperliquid real SDK]
+  REAL --> IB[IBKR real TWS API]
+  REAL -. explicit error .-> BN[Binance PM not registered]
+  SIM --> EX[DurableExecution]
+  REAL --> EX
+  EX --> DB[(Postgres lease/fencing/orders/journal)]
+  EX --> VEN[ExecutionAdapter.submit/read/cancel]
+  VEN --> REC[recover_ambiguous + reconcile_once]
+  REC --> DB
+  REC --> GUARD[EntryGuard / scoped SAFE_HOLD / checklist]
+  GUARD --> EX
 ```
 
-The journal write happens **before** the adapter call, so a crash after that point can
-recover by stable client order id instead of inventing a new intent. `Unknown` is
-distinct from `Rejected`: it means the runtime cannot prove whether the external side
-effect occurred.
+The source order for `DurableExecution::dispatch`: assert lease -> save `OrderRecord` -> append `order.intent.persisted` -> mark `SubmitRequested` -> save and append `order.dispatch.started` -> assert fencing -> invoke adapter -> persist known ACK, rejection or ambiguous outcome. A lease token protects local store writes, not a venue POST already accepted during failover. Stable client identity and exchange lookups must prevent blind duplicate submissions. This invariant needs real fault testing before unattended use.
 
-Which engine dispatches is decided per definition, not per tick. A definition whose
-compiled rule graph is defined (`PolicyEngine::is_defined`, i.e. it declares at least
-one entry or exit rule) is owned by the portable policy path, and the legacy score
-machine's `Submit` is suppressed. A definition with only `[automation]` keeps the legacy
-path.
+## 3. Startup and periodic operation
 
-## Shadow venue
+Live checklist contains 11 gates: journal writable, database reachable, lease/fencing owned, venue authenticated, fresh/synchronized market data, open orders loaded, positions/balances loaded, ownership reconciled, unknown outcomes cleared, strategy allowlist loaded, deliberate live key. `shadow/paper` require subsets (see `pg-runtime::required_gates`), **not the full live checklist**. `live_daemon` also requires nonempty derived feeds, registered venues and operator start. `PG_AUTO_START` defaults to `true` in paper and `false` in live unless overridden; this alone is no substitute for account segregation.
 
-`PG_RUN_MODE=shadow` registers an in-process `ShadowExecutionAdapter` for Hyperliquid,
-IBKR and Binance PM through the same `AdapterRegistry` the durable path uses. Nothing in
-this configuration opens a venue connection for execution.
+The real daemon acquires a PostgreSQL lease and heartbeat; builds venue adapters; reads account/orders/positions; runs initial `recover_ambiguous` followed by `reconcile_once`; then starts feed tasks and timers. Default periodic reconciliation is `PG_RECONCILE_INTERVAL_MS=2000` (allowed 250–60000 ms). On clean cycles, ownership/checklist and the independent `EntryGuard` may allow new exposure if the operator has started and feeds are connected. Unresolved outcomes, reconcile errors, stale/disconnected feeds or topology refresh failure block new exposure; an unrelated clean reconcile must not erase a topology failure. A full live-authenticated reconnect/fill/fee/position settlement has **not** been accepted for each venue.
 
-`PG_SHADOW_FILL_MODE` selects venue behaviour:
+```mermaid
+sequenceDiagram
+  participant D as Real daemon
+  participant DB as PostgreSQL
+  participant X as Venue adapter
+  participant G as Entry guard
+  D->>DB: acquire fenced lease
+  D->>X: authenticate/read orders, positions, account
+  D->>X: recover_ambiguous + reconcile_once
+  X-->>D: verified or unresolved evidence
+  D->>G: initial reconciliation + checklist
+  loop interval default 2s
+    D->>X: recover first, then reconcile
+    X-->>D: orders/positions or error
+    D->>G: clean -> gated readiness; dirty -> block new exposure
+  end
+  G-->>D: only validated operator-started decisions enter risk/OMS
+```
 
-- `rest` (default): acknowledge the order and leave it resting; nothing fills and no position is created;
-- `immediate` (also `immediate_fill`): fill the whole order on acknowledgement, using the limit price or the latest mark.
+## 4. Policy and fill caveats
 
-Both modes acknowledge only. Reduce-only shadow orders are rejected unless they strictly
-shrink an existing opposite-signed simulated position, mirroring the IBKR software guard.
+A policy rule graph and the legacy automation engine cannot both dispatch for the same definition. Entries increase exposure only through risk and guards; policy exits are reduce-only. The shadow adapter simulates resting or immediate fills (`PG_SHADOW_FILL_MODE=rest|immediate`), and its position view includes simulated average price/return. **The real daemon's `position_view(quantity)` currently sets `average_entry_price=None`, `filled_entries=0`, `unrealized_return=None`, `peak_return=None`.** Rules requiring these live features must not be advertised as working until authentic mark/entry/fill data are wired.
 
-The simulated book is marked from every normalized market event (last trade, BBO mid,
-book mid or candle close). The daemon rebuilds a real `PositionView` from it — net
-quantity, average entry price, filled entries, unrealized return and peak return — and
-passes that view into the policy graph, so exit rules see the simulated position rather
-than a constant flat view.
+Reconciliation and source-level OMS/fill components are not proof of exchange-authenticated complete trade/fee histories, account-wide cursor atomicity or independently verified ownership. Specific Binance PM limitations are documented in [PM diagnostics](PM_ISOLATED_READ_ONLY_EVIDENCE.md). A WebSocket reconnect alone never clears history uncertainty.
 
-The durable `OrderRecord` is written at submit time and on acknowledgement. It is **not**
-updated from venue fills yet: continuous reconciliation is the missing link (see
-`docs/STATUS.md`).
+## 5. Health, controls and network exposure
 
-## Startup gates
+The **currently wired** `pg-core/src/health.rs` HTTP handler provides:
 
-The Rust `pg-runtime` crate makes the runbook executable. Live mode requires all 11:
-
-1. journal writable;
-2. database reachable;
-3. runtime lease/fencing acquired;
-4. venue authentication healthy;
-5. market-data stream synchronized and fresh;
-6. open orders loaded;
-7. positions/balances loaded;
-8. ownership reconciliation complete;
-9. no unresolved unknown state;
-10. strategy allowlist loaded;
-11. explicit live-trading key enabled.
-
-Every gate is now driven by a real check instead of remaining `Pending`:
-
-- `DatabaseReachable`, `RuntimeLeaseAcquired` and `JournalWritable` are driven by store connect/migrate, lease acquisition and the boot journal event;
-- `StrategyAllowlistLoaded` is driven by the loaded strategy set;
-- `VenueAuthenticated` fails when a derived feed's venue has no registered execution adapter;
-- `OpenOrdersLoaded`, `PositionsLoaded` and `OwnershipReconciled` are set from the per-venue execution snapshot; a snapshot load failure propagates as a startup error rather than a failed gate, and ownership is unambiguous by construction inside the simulated venue;
-- `UnknownStateClear` fails when a persisted order is still `Unknown`;
-- `LiveTradingExplicitlyEnabled` mirrors `PG_LIVE_TRADING`;
-- `MarketDataSynchronized` is re-evaluated on the one-second heartbeat tick and fails while any derived feed is disconnected.
-
-Shadow mode requires a subset (journal, database, lease, market data, strategy
-allowlist); `ready` is recomputed from that checklist each tick. Any failed/pending
-required gate blocks new real exposure.
-
-## Health and control listener
-
-`PG_HEALTH_ADDR` (default `0.0.0.0:8080`) serves:
-
-| Endpoint | Method | Returns |
+| Endpoint | Meaning | Security note |
 | --- | --- | --- |
-| `/healthz` | GET | process liveness; 503 when the process is unhealthy |
-| `/readyz` | GET | readiness from the startup checklist; 503 while not ready |
-| `/metrics` | GET | Prometheus text exposition |
-| `/admin/reload` | POST | accepts a strategy reload request (202); 405 for other methods |
+| `GET /healthz` | Process health | HTTP 200 does not prove order-state safety |
+| `GET /readyz` | Startup/lease/feed readiness | Not a venue-level admission certificate |
+| `GET /metrics` | Prometheus counters/gauges | No performance proof |
+| `POST /admin/reload` | Enqueue strategy reload | **Handler contains no authentication; do not publicly expose** |
 
-The snapshot exposes `open_orders` (orders the runtime believes are resting),
-`orders_journaled_total` (orders that reached the durable execution path) and
-`blocking_gates` (the gates still pending or failed for the active run mode, captured
-when the runtime starts). Metrics include `pg_ready`, `pg_runtime_lease_healthy`,
-`pg_market_feeds_connected`, `pg_market_events_total`, `pg_policy_decisions_total`,
-`pg_open_orders`, `pg_orders_journaled_total` and `pg_startup_gates_blocking`.
+`PG_HEALTH_ADDR` defaults to `0.0.0.0:8080`; `docker-compose.production.yml` maps the host side to `127.0.0.1`, but direct/bare-metal deployment must explicitly firewall/bind the endpoint. The `pg-observability` crate implements the separate snapshot/events model but is **not** a dependency of `pg-core`, and `health.rs` does not expose `/v1/snapshot` or `/v1/events`. They are planned integration, not running daemon endpoints. Telegram `pg-control` contracts do not yet establish an authenticated production `/emergency_exit` lifecycle; do not rely on them as a kill switch.
 
-This listener is an operator surface, not a trading surface. Its only command is
-"re-validate strategy definitions"; it can never submit, cancel or flatten anything
-directly. A rejected reload leaves the running strategy set unchanged because validation
-happens before any swap.
+Shutdown policy `preserve | cancel_resting | flatten_owned` is configured by `PG_SHUTDOWN_POLICY` (default `cancel_resting`). The daemon applies it on exit; `flatten_owned` is intended for explicitly owned positions and reduce-only requests but is not evidence of tested live emergency completion. Operator exit, loss of lease and fault paths require independent verification, especially for manual positions.
 
-## Runtime incident modes
+## 6. Configuration and release-safe workflow
 
-- `NORMAL`: strategy entries/exits can proceed subject to risk.
-- `SAFE_HOLD`: no new strategy exposure; reconciliation and reduce-only actions continue.
-- `HALT`: normal execution is disabled; an idempotent emergency flatten path may be configured separately.
-
-`pg-runtime` declares `IncidentMode` with these three variants, but the daemon does not
-yet select an incident mode at runtime. What exists today is the strategy-level
-`StrategyPhase::SafeHold`, which holds entries while position management continues, and
-the reconciliation `SAFE_HOLD` ownership verdict.
-
-## Feed freshness
-
-Every normalized event has event/receive timestamps. Each subscription owns a freshness guard. If `now - last_recv` exceeds `PG_MAX_MARKET_STALENESS_MS`, strategies depending on that feed enter a non-entry state until a resync/snapshot completes.
-
-A market-data subscription that fails permanently (after `PG_MARKET_MAX_RECONNECTS`,
-default 50 attempts with exponential backoff capped at 30s) marks the runtime unready and
-terminates the daemon rather than running on stale data silently.
-
-## Shutdown policy
-
-`PG_SHUTDOWN_POLICY` is one of:
-
-- `preserve`: leave resting orders unchanged;
-- `cancel_resting`: cancel strategy-owned resting orders, keep positions;
-- `flatten_owned`: cancel then reduce-only flatten strategy-owned exposure.
-
-Shutdown policy never applies to manual/unowned positions.
-
-It is applied when the daemon exits for any reason — `ctrl-c`, a fatal feed error or a
-lost lease — and it cancels resting orders before flattening, so a stale resting order
-cannot fill while the flatten is in flight. Flatten intents carry
-`strategy_id = "shutdown:flatten_owned"` and `ExposureEffect::ReduceOnly`, and travel the
-same risk/journal/execution path as strategy orders. A shutdown error is logged as a
-warning after the exit reason has already been determined; it does not mask the cause of
-the shutdown.
-
-## Environment
-
-| Variable | Default | Purpose |
+| Variable | Default / rule | Meaning |
 | --- | --- | --- |
-| `PG_RUN_MODE` | `shadow` | run mode; `--serve` accepts shadow only |
-| `PG_LIVE_TRADING` | `false` | second deliberate key for live |
-| `PG_SHUTDOWN_POLICY` | `cancel_resting` | shutdown behaviour |
-| `PG_SHADOW_FILL_MODE` | `rest` | simulated venue fill behaviour |
-| `PG_HEALTH_ADDR` | `0.0.0.0:8080` | health/control listener |
-| `PG_MAX_MARKET_STALENESS_MS` | `3000` | feed freshness budget |
-| `PG_LEASE_TTL_SECONDS` | `15` | runtime lease TTL (minimum 5) |
-| `PG_MARKET_MAX_RECONNECTS` | `50` | reconnect attempts before a feed is fatal |
-| `PG_STRATEGY_DIR` | discovered | strategy definition directory |
-| `PG_DATABASE_URL` | required | PostgreSQL connection string |
+| `PG_RUN_MODE` | `shadow` in Rust config; **required explicit** in production Compose | Selects daemon path |
+| `PG_LIVE_TRADING` | `false` | Additional live-mode key; does **not** make paper offline |
+| `PG_AUTO_START` | `true` paper, `false` live, Compose supplies `false` | Operator entry state |
+| `PG_DATABASE_URL` | required (`DATABASE_URL` fallback) | Durable PostgreSQL |
+| `PG_LEASE_KEY`, `PG_LEASE_TTL_SECONDS` | derived / 15s | Fenced single-writer lease |
+| `PG_RECONCILE_INTERVAL_MS` | 2000 | Continuous real-daemon recovery/reconcile cadence |
+| `PG_MAX_MARKET_STALENESS_MS` | 3000 Rust; 10000 production Compose | Freshness budget |
+| `PG_SHADOW_FILL_MODE` | `rest` | Shadow-only matching |
+| `HYPERLIQUID_NETWORK` | configuration-specific | Must be `testnet` in paper |
+| `IBKR_ALLOW_SOFTWARE_REDUCE_ONLY` | `false` | Explicit live IBKR guard; not native exchange guarantee |
+| `PG_HEALTH_ADDR` | `0.0.0.0:8080` | Protect control listener |
 
-Venue-specific market-data variables are listed in `docs/EXCHANGES.md`.
+Offline CI checks Rust/Python, workspace features and Compose config; the isolated PostgreSQL workflow validates store/fencing semantics. A Compose config pass neither builds nor deploys the runtime. Before preparing a **research/shadow** release candidate, pin exact SHA, review full Actions results, and run a clean-machine simulator/replay/Postgres-backed shadow smoke. Before touching paper/live, independently verify venue destination/account, full transaction and failure-injection acceptance and operator signoff. No real credentials in GitHub Actions. The separate incumbent Binance PM/Freqtrade bot and manual positions are never release targets.
