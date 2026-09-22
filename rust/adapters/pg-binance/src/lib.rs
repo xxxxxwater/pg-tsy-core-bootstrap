@@ -7,6 +7,7 @@ pub mod execution_adapter;
 pub mod market_candles;
 pub mod market_protocol;
 pub mod market_transport;
+pub mod market_universe;
 pub mod order_protocol;
 pub mod rest_transport;
 pub mod trade_history;
