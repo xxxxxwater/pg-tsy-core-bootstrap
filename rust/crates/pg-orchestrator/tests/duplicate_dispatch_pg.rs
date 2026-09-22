@@ -51,6 +51,7 @@ impl ExecutionAdapter for AcceptedButAckLost {
 }
 
 #[tokio::test]
+#[ignore = "requires real PostgreSQL; postgres-fill-ledger CI explicitly runs this ignored test"]
 async fn duplicate_intent_never_overwrites_unknown_or_sends_second_post() {
     let url = std::env::var("PG_TEST_DATABASE_URL")
         .expect("PG_TEST_DATABASE_URL required: real PostgreSQL test must not silently skip");
