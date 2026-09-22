@@ -25,7 +25,9 @@ struct AcceptedButAckLost {
 impl ExecutionAdapter for AcceptedButAckLost {
     async fn submit(&self, _: &OrderIntent) -> Result<VenueOrderAck, ExecutionError> {
         self.posts.fetch_add(1, Ordering::SeqCst);
-        Err(ExecutionError::Unknown("injected accepted POST / lost ACK".into()))
+        Err(ExecutionError::Unknown(
+            "injected accepted POST / lost ACK".into(),
+        ))
     }
 
     async fn cancel(&self, _: OrderLocator<'_>) -> Result<(), ExecutionError> {
