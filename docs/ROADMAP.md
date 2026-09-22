@@ -1,168 +1,73 @@
-# Roadmap
+# Roadmap — evidence-driven three-venue first release (2026-09-22)
 
-The roadmap is organized around **operational invariants**, not crate count. The repository has moved beyond the original scaffold and is currently in the **P0 production slice / execution-and-recovery hardening** stage.
+Status: **P0 integration/hardening; no published v1 and no unattended trading approval.** See [STATUS](STATUS.md), [ARCHITECTURE](ARCHITECTURE.md), [EXCHANGES](EXCHANGES.md), [RELEASE_READINESS](RELEASE_READINESS.md). Milestones refer to executable evidence, not number of crates, passing unit tests or nominal venue support.
 
-## Completed foundation
+## Already merged (source exists; not exchange acceptance)
 
-- [x] Versioned signal contract.
-- [x] Python research package boundaries.
-- [x] Local ML/tuning profile separated from the AWS live runtime.
-- [x] Rust domain crates for market data, strategy, risk, OMS, execution, reconcile, journal, store and replay.
-- [x] Live trading disabled by default with shadow/paper/live runtime modes.
-- [x] PostgreSQL lease/fencing/checkpoint/order/ownership primitives.
-- [x] Strategy/manual/unknown ownership model.
-- [x] Partial-fill-aware OMS and strategy position state.
-- [x] CI for core Rust, Python and optional venue/control integrations.
+- [x] Python research/factor/ML/tuning package, batch simulation, causal replay and Jev advisory/challenger evaluation.
+- [x] Rust portable strategy/feature definitions, feed derivation, shared market-data, risk/OMS and execution contracts.
+- [x] `pg-sim` deterministic matching kernel, JSONL worker and Python persistent client; PR #8/#9/#10 merge history preserved.
+- [x] PostgreSQL leases/fencing, intent journal-before-adapter, order/ownership/reconcile records and isolated immutable fill/settlement tests.
+- [x] Hyperliquid official SDK feed plus real execution constructor with `cloid` recovery; IBKR community `ibapi` feed plus real constructor with `order_ref` recovery.
+- [x] `main.rs` chooses `daemon::serve` for shadow and `live_daemon::serve` for paper/live. Real daemon runs initial plus periodic `recover_ambiguous`/`reconcile_once`, protects new exposure with checklist/EntryGuard and independently keeps topology faults sticky.
+- [x] Shadow simulation routes through Risk -> durable OMS/journal -> `ShadowExecutionAdapter` for venue identities whose feeds are supported.
+- [x] `pg-observability` module was merged into the workspace; Telegram control contracts and HTTP health/ready/metrics/reload code exist.
+- [x] GitHub Actions tests Rust workspace/feature crates, Python, lockfile, Compose syntax and independent PostgreSQL ledger/fencing; the pre-audit `293ba629` run succeeded on inspection.
 
-## Completed strategy/data slice
+**Important:** Binance PM real feed/execution is not registered; observability snapshot/events is not a `pg-core` endpoint; paper uses external Hyperliquid/IBKR adapters; live strategy quantity lacks entry/return fields. Prior roadmap statements that the real daemon never reconciles and paper/live are rejected were stale and are corrected here.
 
-- [x] Common Trade/BBO/L2/Candle event model.
-- [x] Feed freshness and gap primitives.
-- [x] Online Rust factors: VWAP deviation, trade imbalance, spread, L2 imbalance, momentum and realized volatility.
-- [x] Automated subscription → factor → signal → StrategyMachine path.
-- [x] Signal TTL, confidence, warmup, volatility/spread gates and throttling.
-- [x] Local research/training path with walk-forward/robustness orientation.
+## P0-A — integrate legacy merge safely (release prerequisite)
 
-Still to deepen later:
+- [ ] Review PR #10 `-X ours` overlap: simulator types/worker and Python client semantics, feature/lockfile versions and observability API payload versus runtime invocation; add deterministic parity tests for both merged branches.
+- [ ] Wire `pg-observability` to `pg-core` with authoritative lease/store/OMS/feed/reconcile event updates, or clearly remove its endpoints from release scope. Ensure snapshot/events never claim fake healthy state or control trading.
+- [ ] Ensure real `position_view` populates authenticated average entry, fill count, unrealized and peak return or blocks dependent strategy rules until the data exists.
+- [ ] Review HTTP `/admin/reload` authentication and default binding; prevent public exposure of operator command on non-Compose hosts.
+- [ ] Prove shadow venue simulated fills reconcile into durable OMS on refresh/restart; make truth visible in health and tests.
 
-- immutable large-scale dataset manifests and production collectors;
-- complete factor IC/correlation/regime/turnover tooling;
-- large L2/L3 retention and replay datasets;
-- stronger model registry/artifact promotion workflow.
+## P0-B — minimum research/shadow first candidate
 
-## Completed P0 venue execution slice
+- [ ] Pin exact candidate SHA (not floating `main`); all relevant CI workflows must finish successfully *on that SHA*.
+- [ ] Fresh environment: Cargo `--release` build with shipped features, lockfile verification, `pg-sim` JSONL/batch smoke and Python `RustSimClient` parity with fixtures.
+- [ ] Run strategy replay and Postgres-backed shadow daemon, confirm risk -> intent -> durable journal -> shadow ack/fill -> OMS/reconciliation -> restart state and no real execution connections.
+- [ ] Verify stale-feed, missing feature, unsupported Binance subscription, unknown submit, conflicting ownership and loss-of-fencing all fail closed.
+- [ ] Confirm reproducible Docker build/start + health/ready/metrics + clean shutdown, no credentials, immutable digest/source artifact/license review and independent merge review.
+- [ ] If fully proved, publish **`v0.1.0-rc.1` GitHub prerelease: research/shadow only** with commit SHA, CI links, known gaps and reproducible smoke log. No stable-v1 badge and no paper/live support claim.
+
+## P0-C — venue-specific staging and isolation
 
 ### Hyperliquid
+- [ ] Testnet account and private key independently verified; whitelist, collateral, position mode and owned/manual separation recorded.
+- [ ] Authenticated account read -> risk -> persisted intent -> native cloid order -> partial/full fills/fees -> reconciliation -> restart/replace uncertainty closed, testnet only.
+- [ ] Lost ACK, late fill, cancel race, network disconnect, API outage, database loss, old lease writer, kill-9 and tested reduce-only flatten with completion confirmation.
 
-- [x] Official Rust SDK pinned to a reviewed commit.
-- [x] Trades/BBO/L2/candle websocket mapping.
-- [x] ExecutionAdapter submit/cancel/read-side state.
-- [x] Persisted intent UUID mapped to `cloid`.
-- [x] Pre-submit duplicate lookup.
-- [x] Ambiguous submit recovery by stable `cloid`.
-- [x] Partial-fill state mapping.
-- [x] Feature tests and Clippy in CI.
+### IBKR
+- [ ] Add **fail-closed paper account/Gateway identity check** to order-capable `PG_RUN_MODE=paper`, including overrides and externally configured gateways; do not rely on `TRADING_MODE` Compose default.
+- [ ] Prove stock contract metadata and `order_ref` -> open/completed/execution recovery; verify partial fills, fees, account positions and exchange timeouts under restarts.
+- [ ] Document and test software reduce-only race/cross-through-flat behavior; never claim native atomic reduce-only for equities.
+- [ ] Test authenticated owned-only cancel/flatten and manual-position non-interference in isolated paper account before any live review.
 
-### Interactive Brokers
+### Binance Portfolio Margin
+- [ ] Implement a real runtime market-data source and gated execution adapter registration (currently explicitly blocked), with account-mode/symbol/permissions checks.
+- [ ] Authenticated complete signed history anchor + all-order inventory and monotonic persistent account cursor; settle fills/fees, OMS, exchange positions and cursor with fenced atomicity.
+- [ ] Integrate listen-key/WS -> REST authoritative recovery on reconnect and restart; a read-only probe or a short page is not complete reconciliation.
+- [ ] Accept PM-specific reduce-only/stop/emergency and maintenance/risk balance semantics with isolated account failure injection.
 
-- [x] Community `ibapi 4.0.1` isolated behind adapter boundary.
-- [x] TWS/IB Gateway tick-by-tick trades and BBO.
-- [x] Market depth and realtime bars.
-- [x] ExecutionAdapter submit/cancel/read-side state.
-- [x] Stable `order_ref` identity.
-- [x] Recovery through open orders → completed orders → execution reports.
-- [x] Ambiguous placement/cancel fail-closed behavior.
-- [x] Optional software reduce-only guard with cross-through-flat rejection.
-- [x] Feature tests and Clippy in CI.
+## P0-D — shared operational admission
 
-## Current milestone — end-to-end recovery proof
+- [ ] Cross-venue fault matrix: kill-9 pre-submit, accepted POST lost ACK, missing immediate lookup, partial fill/late fill, cancel ambiguity, stale feed, DB outage, expired fencing, ownership drift, manual positions.
+- [ ] Prove no blind duplicate exposure and no improper SAFE_HOLD release; define independent per-venue/per-asset blockers, operator resumption and auditable rollback.
+- [ ] Wire authenticated Telegram/operator `/emergency_exit` -> HALT -> owned-only cancel -> exchange-truth refresh -> venue-appropriate reduce-only -> confirmed completion; handle ambiguous flatten and escalation.
+- [ ] Separate release operator approval from CI and model scores; protect main/release refs, code review, signed reproducible source/binaries, build provenance/immutable image and no exchange secrets in Actions.
 
-The venue adapters can now recognize previously accepted orders after ambiguous outcomes. The next milestone is to connect that to the complete live runtime and prove the invariant under crashes.
+## Progression (cannot skip)
 
-### P0.1 Continuous reconcile
-
-- [ ] Run venue snapshots continuously, not only through adapter methods/tests.
-- [ ] Reconcile open orders, fills, positions and ownership against durable state.
-- [ ] Persist reconcile reports and affected venue+asset SAFE_HOLD scopes.
-- [ ] Define recovery cadence/backoff and stale-reconcile gates.
-
-### P0.2 Journal-before-dispatch
-
-- [x] Persist order intent and dispatch state before entering a path where the venue may accept the request. (`DurableExecution::dispatch` saves the record and journals `order.intent.persisted` before calling the adapter.)
-- [x] Bind every durable mutation to the current fencing token. (`assert_lease` runs first and every store write carries `lease.fencing_token`.)
-- [ ] Ensure a restarted process never interprets "ACK not persisted" as "order not accepted". Recovery primitives exist (`recover_ambiguous`, `reconcile_once`) but the shadow daemon does not call them yet.
-- [ ] Add explicit recovery state for dispatch-started / outcome-unknown.
-- [ ] Prove the ordering under kill-9 / network / database faults (see P0.3).
-
-### P0.3 Failure injection
-
-Required scenarios include:
-
-- [ ] kill-9 immediately before submit;
-- [ ] kill-9 after venue acceptance but before ACK persistence;
-- [ ] network timeout after venue acceptance;
-- [ ] venue lookup temporarily unable to find a just-accepted order;
-- [ ] PostgreSQL unavailable before/after dispatch;
-- [ ] old fenced instance reconnecting after a new leader takes over;
-- [ ] partial fill followed by restart;
-- [ ] cancel ambiguity followed by fill;
-- [ ] manual position coexisting with strategy-owned position state.
-
-Exit criterion:
-
-> Repeated fault injection demonstrates that restart/reconcile reconstructs venue truth and does not emit blind duplicate exposure-increasing orders.
-
-## P0.4 Operator emergency path
-
-- [ ] Wire Telegram `/emergency_exit` to authenticated command audit.
-- [ ] Convert the command into idempotent target-flat/reduce requests.
-- [ ] Route emergency actions through ownership → Risk → OMS → Execution, never directly to a venue SDK.
-- [ ] HALT new exposure while allowing safe flatten/reconcile behavior.
-- [ ] Define behavior when emergency flatten itself has an ambiguous outcome.
-
-## P0.5 Observability / operations
-
-- [x] `/healthz` for process liveness.
-- [x] `/readyz` for database/lease/feed/startup-gate readiness.
-- [ ] Prometheus metrics for market-data age, gaps, order latency, unknown outcomes, reconcile mismatches, fencing and command activity. (Currently exposed: process/ready/lease health, feed counts, event and policy-decision counters, open orders, journaled orders, blocking startup gates.)
-- [ ] Alert rules for stale feed, lease loss, Unknown order, ownership mismatch and reconciliation lag.
-- [ ] Hardened production Docker image. (Pinned toolchain, committed lockfile and non-root runtime exist; image scanning/hardening policy does not.)
-- [ ] systemd unit/restart policy for EC2.
-- [x] Startup-gate enforcement and shutdown policy (`PG_SHUTDOWN_POLICY`) in the runtime.
-
-## P0.6 Binance Portfolio Margin parity
-
-- [ ] Production PM market/account/user-data integration.
-- [ ] Stable client-order identity and ambiguous-submit recovery.
-- [ ] PM-specific risk/balance/position reconciliation.
-- [ ] Reduce-only/stop/emergency semantics.
-- [ ] Kill-9/network/database failure-injection acceptance.
-
-Binance PM is not considered production-complete merely because an adapter boundary exists.
-
-## Canary progression
-
-Only after the P0 recovery/operations criteria are demonstrated:
-
-```text
-historical/replay
-      |
-shadow
-      |
-paper
-      |
-tiny allowlisted canary
-      |
-limited unattended live
+```mermaid
+flowchart LR
+  A[Offline deterministic tests] --> B[Research/shadow smoke + RC]
+  B --> C[Each venue segregated paper/testnet]
+  C --> D[Failure and emergency acceptance]
+  D --> E[Independent capital-limited live canary]
+  E --> F[Limited unattended live review]
 ```
 
-Each transition requires a written acceptance report; no stage is skipped because unit tests are green.
-
-## Later research expansion
-
-### LOB / ML
-
-- DeepLOB baseline before more complex architectures.
-- TLOB/transformer benchmarks.
-- Cost-aware scoring: expected edge - fee - spread - slippage - adverse selection.
-- hftbacktest-style queue/latency replay.
-- JAX-LOB/AlphaTrade execution-policy experiments.
-- optional ONNX/Rust inference only where latency measurements justify it.
-
-### Scaling only when measured
-
-Possible later additions:
-
-- gRPC or shared memory between independently scaling processes;
-- larger distributed research compute;
-- dedicated capture/replay nodes;
-- multi-account/multi-strategy scheduling.
-
-## Explicit non-goals until needed
-
-- Kubernetes/EKS by default.
-- Kafka cluster by default.
-- dozens of microservices.
-- active-active multi-region live trading.
-- online production model training/hyperparameter search.
-- RL deciding portfolio direction before strong statistical/supervised baselines and execution-cost validation exist.
+The JEV model is advisory research until separately verified fills/fees/latency, forward walk-forward robustness and hard-risk gates are signed off. Large L3 capture, scaling infrastructure, gRPC/SHM, Kafka/Kubernetes, active-active multi-region and online production training remain non-goals without measured need. Existing Binance PM/Freqtrade production and manual positions are outside this migration and must not be touched by tests/releases.
