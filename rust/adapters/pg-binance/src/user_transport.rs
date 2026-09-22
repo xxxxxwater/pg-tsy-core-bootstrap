@@ -176,10 +176,7 @@ impl BinanceUserStream {
 /// The future is not polled until the first gate has reached the consumer.
 /// Always send a second gate after the session terminates; if the sink cannot
 /// observe it, return an error instead of claiming a clean exit.
-async fn fenced_session<F>(
-    sink: &mpsc::Sender<UserEvent>,
-    session: F,
-) -> Result<(), ExecutionError>
+async fn fenced_session<F>(sink: &mpsc::Sender<UserEvent>, session: F) -> Result<(), ExecutionError>
 where
     F: Future<Output = Result<(), ExecutionError>>,
 {
@@ -235,16 +232,28 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
-        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
-        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(UserEvent::ReconcileRequired)
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(UserEvent::ReconcileRequired)
+        ));
     }
 
     #[tokio::test]
     async fn normal_exit_is_not_permission_to_skip_reconcile() {
         let (tx, mut rx) = mpsc::channel(2);
         fenced_session(&tx, async { Ok(()) }).await.unwrap();
-        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
-        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(UserEvent::ReconcileRequired)
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(UserEvent::ReconcileRequired)
+        ));
     }
 
     #[tokio::test]
