@@ -91,7 +91,7 @@ def compare_four(
                            and case.model_version == pinned_model
                            and case.model_arrived_ns >= case.order.decision_ns
                            and case.model_arrived_ns - case.order.decision_ns <= model_max_age_ns)
-        for strategy in output:
+        for strategy, rows in output.items():
             accepted = strategy == "rules"
             reason = "baseline"
             if strategy == "statistical":
@@ -115,7 +115,7 @@ def compare_four(
                     maker_fee_bps=order.maker_fee_bps, markout_ns=order.markout_ns,
                 )
             result = replay_quote(list(case.tape), order, queue) if accepted else None
-            output[strategy].append(ShadowDecision(case.case_id, strategy, accepted, result, reason))
+            rows.append(ShadowDecision(case.case_id, strategy, accepted, result, reason))
     return {name: tuple(items) for name, items in output.items()}
 
 
