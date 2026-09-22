@@ -59,7 +59,9 @@ fn validate_transition(
     let quantity = history.authoritative_filled;
     let valid = match history.authoritative_state {
         OrderState::Open => quantity.is_zero(),
-        OrderState::PartiallyFilled => quantity > Decimal::ZERO && quantity < record.requested_quantity,
+        OrderState::PartiallyFilled => {
+            quantity > Decimal::ZERO && quantity < record.requested_quantity
+        }
         OrderState::Filled => quantity == record.requested_quantity,
         OrderState::Canceled => quantity <= record.requested_quantity,
         OrderState::Rejected => quantity.is_zero(),
@@ -80,7 +82,9 @@ impl PostgresStore {
         history: &CompleteOrderHistory,
     ) -> Result<SettlementReceipt, FillLedgerError> {
         if history.trades.len() > 1000 {
-            return Err(FillLedgerError::Invalid("order history batch exceeds limit"));
+            return Err(FillLedgerError::Invalid(
+                "order history batch exceeds limit",
+            ));
         }
         let mut tx = self.pool().begin().await?;
         let valid: Option<i64> = sqlx::query_scalar(
@@ -118,7 +122,9 @@ impl PostgresStore {
             {
                 return Err(FillLedgerError::Conflict);
             }
-            total = total.checked_add(fill.quantity).ok_or(FillLedgerError::Conflict)?;
+            total = total
+                .checked_add(fill.quantity)
+                .ok_or(FillLedgerError::Conflict)?;
         }
         if total != history.authoritative_filled {
             return Err(FillLedgerError::Conflict);
