@@ -2,7 +2,7 @@
 
 Contract-first Python/Rust quantitative trading monorepo for one engineer working with AI coding agents. **Research proposes; Rust disposes.** Python prepares features, models, candidate signals and reproducible evaluations; deterministic Rust policy, risk, OMS and execution contracts retain authority over orders. Neither model confidence nor a passing CI workflow authorizes real trading.
 
-> Independent PG project, not TSY Capital source code or an affiliated product. Current release status: **research/shadow and isolated verification; unattended real-money Binance PM trading is BLOCKED**. The repository is not a demonstrated profitable HFT product. See [isolated HFT acceptance](docs/ISOLATED_HFT_ACCEPTANCE_2026-09-22.md) and [status](docs/STATUS.md) for evidence and remaining blockers.
+> Independent PG project, not TSY Capital source code or an affiliated product. The project covers **Binance Portfolio Margin, Hyperliquid and Interactive Brokers (IBKR)** through venue-specific adapter boundaries and shared research, strategy, risk, OMS and execution contracts. Current release status: **research/shadow and isolated verification; real-order routing and unattended live trading are not enabled for any of the three venues in the shipping daemon**. The repository is not a demonstrated profitable HFT product. See [isolated Binance PM acceptance](docs/ISOLATED_HFT_ACCEPTANCE_2026-09-22.md), [exchange contracts](docs/EXCHANGES.md) and [status](docs/STATUS.md) for evidence and remaining blockers.
 
 ## What is implemented
 
@@ -12,10 +12,22 @@ Contract-first Python/Rust quantitative trading monorepo for one engineer workin
 | Strategies | Rust normalized trades/BBO/L2/candles, feature provider registry, portable rule graphs and a strategy state machine | Missing required live features fail loading; legacy and policy paths do not both submit for one definition. |
 | OMS / execution | Durable intent-before-POST, stable client order IDs, partial-fill accounting, unknown-submit lookup and recovery; Hyperliquid/IBKR adapter contracts | SDK-capable adapters are not proof of completed real-exchange staging acceptance. Unknown outcome never triggers blind resubmission. |
 | Data & persistence | PostgreSQL journal, lease/fencing, order records, ownership and reconcile reports, immutable per-trade fill ledger | Historical coverage and exchange-truth positions must be verified before releasing SAFE_HOLD. |
-| Binance PM | Strict public market-data and private-stream parsing, signed trade-history decoder/collector, owned-order history verifier, isolated atomic complete-order fill/OMS settlement and a separately opted-in read-only WS diagnostic | No authenticated isolated-account acceptance; no atomic account-wide history cursor and position settlement; real Binance execution stays unregistered in the daemon. |
+| Binance PM | Strict public market-data and private-stream parsing, signed trade-history decoder/collector, owned-order history verifier, isolated atomic complete-order fill/OMS settlement and separately opted-in read-only diagnostics | No authenticated isolated-account acceptance; no atomic account-wide history cursor and position settlement; real Binance execution stays unregistered in the daemon. |
 | Simulation | Rust `pg-sim` order-semantics reference plus Python causal replay for bounded queue uncertainty, latency, partial fills, cancel races, fees and fill deviation comparison | Neither is venue-accurate L3 matching without real captured order-book and execution evidence. |
 | Jev challenger | Advisory model contract, matched rule/statistical/Jev/Jev+confidence research, calibration and latency/markout measurements | Advisory only: model decisions cannot bypass hard risk or enable order routing; actual edge has not been established. |
 | Operations | Health/ready/metrics, operator command contracts, continuous recover/reconcile scaffolding and failure-injection tests | Emergency flatten and real authenticated full-cycle reconnect/settlement still require isolated end-to-end proof. |
+
+## Three-venue scope and current runtime support
+
+The unified strategy, risk, OMS and `ExecutionAdapter` contracts are designed for all three venues; **an adapter existing in source is not the same as a live trading route being enabled or accepted**. Each venue retains its own market-data, identity, order, account and recovery semantics.
+
+| Venue | Adapter / integration scope | Market data in the shipping daemon | Order execution in the shipping daemon |
+| --- | --- | --- | --- |
+| Binance Portfolio Margin | `pg-binance`: PM parsing, private-stream and signed-history components; execution/recovery integration remains incomplete | Not connected as a runtime feed; a strategy requiring `BINANCE_PM` market data fails startup | Shadow only; real routing is not registered |
+| Hyperliquid | `pg-hyperliquid`: official Rust SDK integration behind the `sdk` feature, client `cloid` identity and recovery contracts | Available through the default `hyperliquid-marketdata` feature | Shadow only; real adapter is not constructed |
+| Interactive Brokers (IBKR) | `pg-ibkr`: community `ibapi` integration behind the `sdk` feature, `order_ref` identity and recovery contracts | Available through `ibkr-marketdata` via TWS / IB Gateway (enabled in the shipped image) | Shadow only; real adapter is not constructed |
+
+The three venues must each pass their own authenticated read-side, execution, reconciliation, emergency-control and failure-injection acceptance before separately authorized live use. No CI pass, isolated diagnostic, model decision or documentation update releases `SAFE_HOLD` or turns on live orders. Venue-specific diagnostic prerequisites belong in their respective [exchange documentation](docs/EXCHANGES.md) and [Binance PM isolated evidence runbook](docs/PM_ISOLATED_READ_ONLY_EVIDENCE.md), not in this cross-venue overview.
 
 ## Architecture
 
@@ -74,15 +86,13 @@ ruff check .
 pytest -q
 ```
 
-The dedicated PostgreSQL workflow starts an isolated database and runs migration, deduplication, conflicting-trade, journal, fencing and complete-order settlement tests. The generic CI also checks Binance/Jev contracts, feature-gated SDK integrations, Compose config, Rust formatting/strict Clippy/workspace tests and Python Ruff/pytest. **All of this is code/test evidence, not Binance account authentication or real trading authorization.**
-
-A private Binance diagnostic is deliberately separated from the daemon and requires an explicitly verified read-only isolated account, `PG_RUN_MODE=shadow`, `PG_LIVE_TRADING=false`, `PG_PM_READ_ONLY_PROBE_APPROVAL=APPROVE_ISOLATED_READ_ONLY_PROBE`, a nonsecret `PG_ISOLATED_ACCOUNT_SCOPE` and an out-of-band secret `PG_BINANCE_PM_API_KEY`. Run `cargo run -p pg-binance --bin pm_user_probe` from `rust/` only after permissions are checked. This probe creates no order, never mutates OMS, does not clear SAFE_HOLD and does not complete authenticated REST reconciliation. Do not put credentials in GitHub Actions.
+The dedicated PostgreSQL workflow starts an isolated database and runs migration, deduplication, conflicting-trade, journal, fencing and complete-order settlement tests. The generic CI also checks Binance/Jev contracts, feature-gated SDK integrations, Compose config, Rust formatting/strict Clippy/workspace tests and Python Ruff/pytest. **All of this is code/test evidence, not authenticated live-venue acceptance or real trading authorization for Binance PM, Hyperliquid or IBKR.** No real-account credentials belong in GitHub Actions.
 
 ## Release gates: do not enable real trading automatically
 
-Before any independently authorized tiny canary, require a segregated real-account approval and authenticated API/WS reads; a durable genesis and complete all-order signed trade-history cursor; atomic fenced fill, OMS, position and cursor updates; reconnect/restart/kill-9/database/lease failure injection; tested owned-order cancel and reduce-only emergency flatten; real execution/fee/markout calibration; strictly forward walk-forward comparisons for four matched policy arms; p95/p99 latency, Brier/ECE, net PnL and drawdown evidence; independent review and separate operator-controlled deployment. A short page or WS reconnect by itself is never proof of complete history.
+Before any independently authorized tiny canary, require a segregated real-account approval and authenticated API/WS reads; a durable genesis and complete all-order signed trade-history cursor where applicable; atomic fenced fill, OMS, position and cursor updates; reconnect/restart/kill-9/database/lease failure injection; tested owned-order cancel and reduce-only emergency flatten (or venue-appropriate verified risk-reducing controls); real execution/fee/markout calibration; strictly forward walk-forward comparisons for four matched policy arms; p95/p99 latency, Brier/ECE, net PnL and drawdown evidence; independent review and separate operator-controlled deployment. A short page or WS reconnect by itself is never proof of complete history.
 
-See [full acceptance and open blockers](docs/ISOLATED_HFT_ACCEPTANCE_2026-09-22.md), [storage/recovery](docs/STORAGE_RECOVERY.md), [roadmap](docs/ROADMAP.md) and [status](docs/STATUS.md). The incumbent Binance PM/Freqtrade production bot is not part of this repository migration and must not be altered by its CI.
+See [Binance PM acceptance and open blockers](docs/ISOLATED_HFT_ACCEPTANCE_2026-09-22.md), [storage/recovery](docs/STORAGE_RECOVERY.md), [roadmap](docs/ROADMAP.md) and [status](docs/STATUS.md). The incumbent Binance PM/Freqtrade production bot is not part of this repository migration and must not be altered by its CI.
 
 ## Git workflow
 
