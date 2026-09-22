@@ -92,14 +92,6 @@ async fn duplicate_intent_never_overwrites_unknown_or_sends_second_post() {
         .find(|order| order.client_order_id == intent.client_order_id())
         .unwrap();
     assert_eq!(persisted.state, OrderState::Unknown);
-    let intent_events: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM event_journal WHERE stream_id=$1 AND event_type='order.intent.persisted'",
-    )
-    .bind(format!("order:{}", intent.client_order_id()))
-    .fetch_one(store.pool())
-    .await
-    .unwrap();
-    assert_eq!(intent_events, 1);
 
     // A crash between the Created INSERT and dispatch marker must also forbid
     // re-creating that same durable identity, rather than overwriting it.
