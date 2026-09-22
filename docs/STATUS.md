@@ -1,141 +1,56 @@
-# Project status
+# Project status — post-merge source audit (2026-09-22)
 
-Current stage: **P0 production slice / execution-and-recovery hardening**.
+**Stage: P0 integrated research, simulation and real-venue runtime hardening.** This is neither a released product nor an accepted unattended-trading system. Initial research/shadow prerelease is a *candidate*, gated by exact-commit CI and clean-machine runtime smoke. **Live/unattended release: NO-GO.** See [RELEASE_READINESS](RELEASE_READINESS.md) for version plan and evidence.
 
-The repository is no longer a scaffold, but it is also **not yet an unattended-production release**.
+## Truthful completion table
 
-## Implemented
+| Component | Implemented or merged | Not proven / incomplete |
+| --- | --- | --- |
+| Python research | Factors/ML/tuning, batch environment, causal replay, versioned signal and optional Jev challenger | Reproducible profitable HFT edge, actual fill/fee/latency calibration |
+| Rust simulation | `pg-sim` JSONL worker + Python client, deterministic matching and advanced research order semantics | Real-venue advanced-order parity and full simulator semantic parity across PR #8/#9/#10 overlaps |
+| Portable strategy | Market-event features, venue+asset instances, policy graph/legacy automation, derived subscriptions | Live return/average-entry/peak-return features are currently missing from real `position_view` |
+| Durable dispatch | Fenced lease, intent before POST, OMS record and journal, stable client IDs | External exactly-once/exposure safety under full real exchange crash/failover matrix |
+| Hyperliquid | SDK feed and real execution adapter constructed in `paper/live`; `cloid` recovery | Isolated real authenticated full lifecycle, fees, restart, emergency completion |
+| IBKR | TWS feed and real execution adapter constructed in `paper/live`; `order_ref` and execution-history recovery | Code-level proof paper account cannot be live; software reduce-only race/fault acceptance |
+| Binance Portfolio Margin | PM parsers/private stream/signed history, isolated diagnostics, order-level immutable fill/OMS settlement primitives | **No runtime feed or real adapter registration**; missing account-wide cursor/position/fill integration |
+| Runtime | `main.rs` dispatches shadow -> `daemon`, paper/live -> `live_daemon`; real daemon performs initial and periodic recover/reconcile and entry guarding | Neither paper nor live have an accepted per-venue operator release; paper can have external side effects |
+| PostgreSQL | Journal, lease/fencing, orders, ownership/reconcile reports; isolated ledger integration tests | Cross-venue authenticated and full account-wide atomic settlement/restart evidence |
+| HTTP/observability | Wired `/healthz`, `/readyz`, `/metrics`, `/admin/reload`; separate `pg-observability` crate implements snapshot/events API | **Snapshot/events not wired into pg-core**; reload handler has no auth; only protect via network controls until fixed |
+| Telegram/control | `pg-control` contract/feature builds, control-plane spec | Real daemon's `/emergency_exit` end-to-end audited reduce-only/HALT flow unproven |
+| Deployment | Pinned Rust 1.98.1, committed Cargo.lock, Compose configuration checks, Docker image template | Clean Docker image build/run, signed digest, host rollback, independent review and immutable release artifacts |
 
-### Research / strategy automation
+## Current code execution mode — correction to older documents
 
-- Python package boundaries for data, factors, ML, tuning and signals.
-- Versioned `signal.v1` contract.
-- Local-only PyTorch/JAX/Optuna-oriented training path; AWS live runtime does not train or tune.
-- Rust online factor engine for VWAP/VWAP deviation, trade imbalance, spread, L2 imbalance, momentum and realized volatility.
-- Automated subscription → factor → signal → strategy state-machine path.
-- Signal TTL, warmup, confidence, spread/volatility gates and throttling.
-- Fill-aware strategy-owned position tracking.
-- `[strategy] allow_short` defaults to false (long-only); a short entry only opens exposure when a definition opts in.
+The former assertion that `pg-core --serve` rejects paper/live is **obsolete** after merge. In `rust/crates/pg-core/src/main.rs`, `shadow` selects `daemon::serve`, while `paper/live` select `live_daemon::serve`. `build_real_adapter_registry` builds Hyperliquid and IBKR real execution adapters but explicitly errors for Binance PM; no fallback to simulated execution exists for real modes. `PG_RUN_MODE=live` requires `PG_LIVE_TRADING=true` plus runtime and operator gates, but the presence of the code path must **not** be interpreted as real-money acceptance. Paper's real adapters require independently verified destination-account isolation.
 
-### Market data
+### Important post-merge discrepancies
 
-- Shared Trade/BBO/L2/Candle event model.
-- Feed freshness and sequence-gap primitives.
-- Hyperliquid official Rust SDK websocket mapping for trades, BBO, L2 and candles.
-- IBKR TWS/IB Gateway mapping for tick-by-tick trades, tick-by-tick BBO, market depth and 5-second realtime bars.
-- IBKR is a runtime market-data source behind the opt-in `ibkr-marketdata` cargo feature; the shipped image enables it through the `PG_CORE_FEATURES` build arg.
-- Venue-aware startup validation: a derived subscription no build can serve fails startup instead of reconnecting forever. Binance PM has no runtime feed.
-- Candle resolution is a venue capability table (`supported_candle_intervals`, `candle_interval_supported`, `default_candle_interval`, `describe_candle_interval`). An explicitly configured `candle_interval_ns` a venue cannot serve fails at strategy load; when omitted, each instrument uses its own venue default (Hyperliquid 1m, IBKR 5s) instead of a global 5s.
-- Explicit rule that feeds without trustworthy venue sequence data keep `sequence=None` rather than fabricating gap evidence.
-- Subscription supervisor/runtime primitives for required feed ownership, reconnect and health transitions.
+1. PR #10 merged two divergent legacy histories using `-X ours` for overlapping hunks; independently check simulator parity and observability integration, not just branch ancestry.
+2. `pg-observability` is included in workspace `Cargo.toml`, but **not** in `pg-core/Cargo.toml`; the current `health.rs` router does not serve `/v1/snapshot` or `/v1/events`.
+3. `live_daemon::position_view(quantity)` supplies a quantity but no average entry, fill count or unrealized/peak return; return-dependent policy exits must be held pending feature completeness.
+4. IBKR real adapter is constructed in paper without a proven paper-account assertion in the adapter builder; Compose default `TRADING_MODE=paper`, `READ_ONLY_API=yes` is not a robust guard against overrides/external gateways.
+5. `health.rs` has an unauthenticated `POST /admin/reload`, defaults to bind `0.0.0.0:8080`. Production Compose maps its host port to `127.0.0.1`, but direct deployments must protect the endpoint.
+6. Binance PM history probe and order-level settlement components do not constitute complete daemon account-wide cursor/position/fee reconciliation. Existing Binance PM/Freqtrade deployment remains entirely separate.
 
-### OMS / execution
+## CI observations and their limits
 
-- OMS lifecycle with open/partial-fill/filled/cancel/unknown semantics.
-- Stable deterministic client order identity from persisted intent.
-- Shared `ExecutionAdapter` with submit/cancel/open-orders/positions/read-side recovery.
-- Hyperliquid execution adapter:
-  - persisted intent UUID → venue `cloid`;
-  - pre-submit lookup;
-  - ambiguous-submit lookup/recovery;
-  - no blind replacement POST when outcome remains unknown;
-  - partial-fill/open/historical/account-state mapping.
-- IBKR execution adapter using community `ibapi 4.0.1`:
-  - stable `order_ref`;
-  - recovery through open orders → completed orders → executions;
-  - ambiguous submit/cancel becomes fail-closed `Unknown`;
-  - optional software reduce-only guard with cross-through-flat protection;
-  - `SellLong` correctly normalized as a sell-side action.
-- `ShadowExecutionAdapter` (`rust/crates/pg-execution/src/shadow.rs`) implements the same `ExecutionAdapter` contract against an in-process book: idempotent adoption by client order id, `ShadowFillMode::{Rest, ImmediateFill}`, simulated positions with average entry, and a software reduce-only guard.
+On pre-audit commit `293ba6296e7af47982b3df7c8b253cfe7c3ab3df`, [GitHub CI run 35719111159](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111159) showed **7/7 jobs successfully completed** on latest job inspection: Rust workspace fmt/strict Clippy/tests, Hyperliquid/IBKR feature tests and pg-core IBKR build, Binance/Jev contracts, Python Ruff/pytest, lockfile and Compose config. [PostgreSQL run 35719111158](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111158) showed its fenced-ledger job successful. These are actual GitHub Actions results on that **specific source SHA**. They do not validate documentation commits made afterward or authenticate any exchange or start Docker containers. Recheck the **final** commit and every required job before tagging.
 
-### Durable execution path (shadow)
+## Immediate acceptance sequence
 
-- `pg-core --serve` accepts `PG_RUN_MODE=shadow` only; `paper` and `live` are refused at startup, as is any configuration with real-venue routing enabled.
-- The daemon builds an `AdapterRegistry` of shadow adapters (Hyperliquid, IBKR, Binance PM) and a `pg_orchestrator::DurableExecution`.
-- Every decision goes `pg_risk::evaluate_order` → `DurableExecution::dispatch` → simulated venue. The order record and intent event are written **before** the adapter call, and fencing is asserted again immediately before it.
-- `PG_SHADOW_FILL_MODE` selects `rest` (default, acknowledge only) or `immediate` (fill on acknowledgement). Neither sends a real order. The old "shadow order intent (not dispatched)" message is gone.
-- One decision engine owns dispatch per definition: a definition whose compiled rule graph is defined dispatches through the policy path, and the legacy score machine's `Submit` is suppressed (`PolicyEngine::is_defined`, `PolicyInstance::is_policy_driven`).
-- The simulated venue is marked from each normalized market event and a real `pg_strategy::policy::PositionView` is built from it (net quantity, average entry, filled entries, unrealized return, peak return).
-- Policy exits are always reduce-only; entries only open from flat; a short entry is suppressed unless the definition enables `allow_short`.
-- A rule graph fails closed when a referenced feature is missing (`evaluate_predicates`).
-
-### Runtime control / observability
-
-- All 11 `StartupGate` values are driven by real checks (`apply_execution_gates` plus the heartbeat tick) instead of staying `Pending`.
-- `/healthz`, `/readyz` and `/metrics` (Prometheus text format) on the health/control listener; the snapshot exposes `open_orders`, `orders_journaled_total` and `blocking_gates`.
-- `POST /admin/reload` on the same listener re-validates every strategy file before swapping anything. It is an operator surface that can never submit, cancel or flatten.
-- `PG_SHUTDOWN_POLICY` (`preserve` / `cancel_resting` / `flatten_owned`) is implemented in `apply_shutdown_policy` and applied when the daemon exits, cancelling resting orders before any reduce-only flatten.
-- `make health`, `make ready`, `make metrics` and `make reload` wrap those endpoints.
-
-### Recovery / ownership / storage
-
-- Strategy/manual/unknown position ownership model.
-- Venue+asset-scoped reconciliation and SAFE_HOLD primitives.
-- Detection primitives for unknown ownership, local/venue order mismatch and filled-quantity mismatch.
-- PostgreSQL runtime lease and fencing token.
-- Lease heartbeat.
-- Append-only journal/checkpoint structures.
-- Durable order records, ownership state, reconciliation history and command audit schema/store primitives.
-- Cold-start recovery design based on checkpoint + journal + venue truth.
-
-### Build / CI
-
-- Toolchain pinned to Rust **1.98.1** in both the Dockerfile and every CI job.
-- `rust/Cargo.lock` is committed so image builds resolve identical dependency versions; the `rust-lockfile` CI job runs `cargo metadata --locked`.
-- `docker-compose.yml` `pg-core` supplies only `["--serve"]` as its command, leaving the binary path to the image ENTRYPOINT.
-- Opt-in `ib-gateway` compose service behind the `ibkr` profile, image `ghcr.io/gnzsnz/ib-gateway:stable`, paper API port 4002 / live 4001, read-only API by default.
-
-Current CI exercises:
-
-- Python Ruff + pytest;
-- Rust `cargo fmt --check`;
-- workspace Clippy with warnings denied;
-- workspace tests;
-- lockfile drift (`cargo metadata --locked`);
-- Hyperliquid SDK feature tests;
-- IBKR SDK feature tests;
-- Hyperliquid + IBKR feature Clippy;
-- Telegram feature compile.
-
-## Not yet production-complete
-
-The following remain blocking for an unattended live/canary declaration:
-
-- continuous reconciliation loop wired into the daemon, applying venue fills back into the OMS. `DurableExecution::reconcile_once` exists and is unit-tested, but the daemon never calls it;
-- the durable `OrderRecord` is **not yet updated from venue fills**: the shadow venue fills and holds a simulated position, but the persisted record still shows the submit-time state — under `PG_SHADOW_FILL_MODE=immediate` the venue reports the order filled while the durable record remains `Open` with `filled_quantity` zero until a reconcile pass writes it back;
-- end-to-end durable **journal-before-dispatch** enforcement and crash-window proof around every exposure-changing submit (an accepted-but-unpersisted ACK that cannot produce duplicate exposure);
-- Telegram `/emergency_exit` wired to authenticated, idempotent flatten + HALT through Risk/OMS/Execution;
-- alerting on top of the metrics endpoint (no Prometheus/Grafana alert rules or dashboards are shipped);
-- hardened Docker/systemd EC2 deployment and shutdown/restart behavior;
-- Binance Portfolio Margin execution/recovery parity with the Hyperliquid/IBKR adapters;
-- systematic kill-9, network partition, venue timeout and PostgreSQL failure injection;
-- shadow/parity sessions and small-capital allowlisted canary acceptance.
-
-## Current completion boundary
-
-The **durable, journal-before-dispatch shadow execution slice is implemented and CI-tested**. Strategy decisions now pass risk, are journaled before the adapter call, reach a simulated venue and feed a real position view back into the policy graph — with no path to a real exchange in the shipping daemon.
-
-It does **not** by itself prove system-wide exactly-once execution. Two links are still missing:
-
-```text
-venue fills
-     |
-     v
-continuous reconcile  <- not called by the daemon yet
-     |
-     v
-durable OrderRecord reflects venue truth
+```mermaid
+flowchart TD
+  A[Freeze exact source + docs SHA] --> B[All required CI green on exact SHA]
+  B --> C[Independent merge overlap review + clean build]
+  C --> D[Simulator JSONL and Python parity smoke]
+  D --> E[Postgres-backed shadow daemon lifecycle smoke]
+  E --> F{Research/shadow prerelease accepted?}
+  F -->|No| N[Keep candidate untagged; document gaps]
+  F -->|Yes| RC[Authorized maintainer publishes v0.1.0-rc.1 prerelease only]
+  RC --> G[Per-venue segregated paper integration + fault injection]
+  G --> H[Per-venue authenticated order/fill/fee/position + emergency acceptance]
+  H --> I[Independent operator-signed tiny canary]
+  I --> J[Consider live release separately]
 ```
 
-and a crash-window proof that an ACK lost between journal and record update cannot produce duplicate exposure.
-
-## Next milestone
-
-**End-to-end reconcile/recovery proof**, followed by emergency control and deployment hardening:
-
-1. continuous reconcile loop writing venue fills back into the OMS;
-2. restart/kill-9 crash-window failure-injection tests;
-3. Telegram emergency flatten;
-4. Binance PM execution/recovery parity;
-5. hardened Docker/systemd EC2 deployment and alerting;
-6. shadow → paper → tiny canary acceptance.
+A healthy status endpoint, green unit CI, Jev probability output or PM read-only probe cannot substitute for an acceptance gate. Do not enable real routing or clear `SAFE_HOLD` automatically, and do not modify incumbent Binance PM/Freqtrade or manually owned positions. For the detailed backlog and deployment boundaries see [ROADMAP](ROADMAP.md), [PRODUCTION_RUNTIME](PRODUCTION_RUNTIME.md), [EXCHANGES](EXCHANGES.md) and [ARCHITECTURE](ARCHITECTURE.md).
