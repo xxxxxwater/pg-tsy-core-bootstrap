@@ -2,7 +2,7 @@
 
 **Research proposes; Rust disposes.** An independent Python/Rust quantitative research, simulation and trading-infrastructure project for **Binance Portfolio Margin, Hyperliquid and Interactive Brokers (IBKR)**. This is not TSY Capital source code or an affiliated product. Strategies use shared feature, risk, OMS, execution, reconciliation and persistence contracts; each venue retains its own adapter and acceptance requirements.
 
-> **Release status (2026-09-22): first release NOT published; unattended/live GO/NO-GO = NO-GO.** Source includes a real-venue `paper/live` daemon for Hyperliquid and IBKR, but source presence and CI do not prove an accepted real-account trading chain. Binance PM's real adapter is explicitly not registered and its runtime feed is missing. A research/shadow-only prerelease remains a *candidate*, not an issued release. Read [release readiness and exact evidence](docs/RELEASE_READINESS.md) before deployment.
+> **Release status (2026-09-22): [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1) is a published, source-only Research/Shadow prerelease; unattended/live GO/NO-GO = NO-GO.** The frozen RC1 tag does **not** include post-RC1 `main` updates such as the JSONL simulator executable. Source includes a real-venue `paper/live` daemon for Hyperliquid and IBKR, but source presence and CI do not prove an accepted real-account trading chain. Binance PM's real adapter is explicitly not registered and its runtime feed is missing. Read [release readiness and exact evidence](docs/RELEASE_READINESS.md) before deployment.
 
 ## Architecture at a glance
 
@@ -25,7 +25,7 @@ flowchart LR
   R --> E
 ```
 
-The diagram combines source paths with their availability boundaries: shadow execution is simulated; `paper/live` **construct real Hyperliquid and IBKR adapters**, not a shadow fallback. Binance PM is a third contract/integration target, **not** a completed live runtime. For lifecycle, recovery, ownership, observability and Mermaid sequence diagrams, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The diagram combines source paths with their availability boundaries: shadow execution is simulated; `paper/live` **construct real Hyperliquid and IBKR adapters**, not a shadow fallback. Binance PM is a third contract/integration target, **not** a completed live runtime. For lifecycle, recovery, ownership, observability and Mermaid sequence diagrams, see [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [Production closure architecture](docs/PRODUCTION_CLOSURE_ARCHITECTURE.md).
 
 ## Source-verified venue matrix
 
@@ -42,7 +42,7 @@ An adapter compiling, being registered, authenticating, accepting an order and p
 | Plane | Concrete components | Current limit |
 | --- | --- | --- |
 | Research | Python factors/ML/tuning, reproducible artifacts, causal replay and four-arm Jev challenger | Synthetic/batch PnL is not live HFT performance; Jev cannot route orders |
-| Simulation | `pg-sim` deterministic order semantics, Python `RustSimClient` persistent JSONL worker and batch environment | Sim order types are not automatically available at any real exchange |
+| Simulation | `pg-sim` deterministic order semantics, Python `RustSimClient` persistent JSONL worker and batch environment; post-RC1 `main` adds the offline Rust executable and a verified cross-language CI gate | Sim order types are not automatically available at any real exchange; the tagged RC1 did not include the binary |
 | Strategy | Normalized trade/BBO/L2/candle features, registry, legacy automation and portable policy graph | Exactly one policy/legacy engine dispatches per definition; missing features fail closed |
 | Risk/OMS | Freshness, entry guard, ownership, persisted stable intent, partial-fill-aware lifecycle | Need physical crash/venue evidence for end-to-end at-most-once exposure |
 | Persistence/recovery | PostgreSQL lease/fencing, journal, records, ownership and reconciliation; live daemon invokes `recover_ambiguous` + `reconcile_once` periodically | Not equivalent to authenticated complete fills/fees and safe unattended operations on all three venues |
@@ -76,7 +76,7 @@ rust/crates/pg-control/       Telegram contracts (full daemon hookup unverified)
 rust/crates/pg-core/          CLI, shadow daemon, paper/live daemon, HTTP health
 rust/adapters/               pg-binance, pg-hyperliquid, pg-ibkr
 strategies/ contracts/       Strategy definitions and versioned contracts
-.github/workflows/           Rust/Python/venue/Compose/Postgres CI
+.github/workflows/           Rust/Python/venue/Compose/Postgres CI and isolated simulator bridge
 infra/ docker-compose*.yml   Deployment templates, NOT deployment evidence
 ```
 
@@ -92,21 +92,27 @@ cargo test -p pg-binance --all-targets
 cargo test -p pg-hyperliquid --features sdk
 cargo test -p pg-ibkr --features sdk
 cargo clippy -p pg-core --all-targets --features ibkr-marketdata -- -D warnings
+cargo build --locked --release -p pg-sim --bin pg-sim
 cd ../research
 pip install -e '.[dev]'
 ruff check .
 pytest -q
+export PG_SIM_BINARY="$(pwd)/../rust/target/release/pg-sim"
+python -m pytest -q tests/test_sim_binary.py -ra
 ```
 
-The dedicated PostgreSQL Actions job uses an isolated PostgreSQL service for fill/settlement/fencing tests. Review [CI](.github/workflows/ci.yml), [PostgreSQL workflow](.github/workflows/postgres-fill-ledger.yml) and actual per-commit Actions results; these commands/tests do **not** submit live orders or certify real-exchange access. Do not run `paper/live` as a generic smoke test. `docker compose config` checks syntax, not container startup or account safety.
+The dedicated PostgreSQL Actions job uses an isolated PostgreSQL service for fill/settlement/fencing tests. Review [CI](.github/workflows/ci.yml), [PostgreSQL workflow](.github/workflows/postgres-fill-ledger.yml), [simulator bridge CI](.github/workflows/pg-sim-bridge.yml) and actual per-commit Actions results; these commands/tests do **not** submit live orders or certify real-exchange access. Do not run `paper/live` as a generic smoke test. `docker compose config` checks syntax, not container startup or account safety.
 
 ## Release policy and documentation
 
-There is **no first GitHub Release yet** in the checked repository snapshot. The initial version candidate is `v0.1.0-rc.1` restricted to research/shadow, only after final-SHA CI, clean build, simulator/replay and Postgres-backed shadow smoke plus review evidence are recorded. Paper/live require independent exchange-specific signoff and must not be bundled into a purported production v1 just because code has been merged. Never turn CI green into a live-trading switch or silently clear `SAFE_HOLD`.
+The first GitHub release, [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1), **was published on 2026-09-22 as a source-only Research/Shadow prerelease**. Its tagged code predates the current `main` simulator executable and engineering handbooks; updating `main` does not silently alter the published RC1 source archive or create a new release. Paper/live require independent exchange-specific signoff and must not be bundled into a purported production v1 just because code has been merged. Never turn CI green into a live-trading switch or silently clear `SAFE_HOLD`.
 
 | Document | Purpose |
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | End-to-end component, runtime, order and recovery diagrams |
+| [Engineering automation](docs/ENGINEERING_AUTOMATION.md) | Engineering ownership, full CI quality gates, commands, exact-SHA evidence, change review and rollback |
+| [Production closure architecture](docs/PRODUCTION_CLOSURE_ARCHITECTURE.md) | Detailed three-venue topology, durable order sequence, atomic ledger, SAFE_HOLD, emergency exit and fault matrix |
+| [Simulator JSONL protocol](docs/SIM_JSONL_PROTOCOL.md) | Python/Rust subprocess contract, Decimal and request identity, examples and integration acceptance |
 | [Exchange adapters](docs/EXCHANGES.md) | Venue-specific feed, identity, routing and safety differences |
 | [Production runtime](docs/PRODUCTION_RUNTIME.md) | Explicit run-mode semantics, startup gates, controls, operational caveats |
 | [Status](docs/STATUS.md) | Current implemented-vs-missing matrix |
