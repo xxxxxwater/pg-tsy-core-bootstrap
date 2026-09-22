@@ -6,29 +6,33 @@ on:
 permissions:
   contents: write
 jobs:
-  lock-and-format:
+  repair-integration:
     if: github.ref == 'refs/heads/integration/legacy-branches-20260922'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: true
-      - uses: dtolnay/rust-toolchain@1.98.1
-        with:
-          components: rustfmt,clippy
-      - name: Resolve merged workspace and format without suppressing errors
+      - name: Repair one proven compile error and merge current main without overriding its conflicts
         shell: bash
         run: |
           set -euo pipefail
-          cd rust
-          cargo metadata --format-version 1 > /dev/null
-          cargo fmt --all
-          cd ..
-          git status --short
-          git add rust/Cargo.lock rust
-          if ! git diff --cached --quiet; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git commit -m 'fix(merge): synchronize Cargo.lock and rustfmt after legacy integration'
-            git push origin HEAD:refs/heads/integration/legacy-branches-20260922
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('rust/crates/pg-execution/src/matching.rs')
+          original = path.read_text()
+          before = '#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n#[serde(rename_all = "SCREAMING_SNAKE_CASE")]\npub enum MatchDisposition {'
+          after = '#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n#[serde(rename_all = "SCREAMING_SNAKE_CASE")]\npub enum MatchDisposition {'
+          assert original.count(before) == 1, 'unexpected simulator enum definition; refusing automatic mutation'
+          path.write_text(original.replace(before, after, 1))
+          PY
+          git add rust/crates/pg-execution/src/matching.rs
+          git commit -m 'fix(sim): make unit-only match disposition Copy for result construction'
+          git fetch origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            git merge --no-ff -X theirs -m 'merge: bring main OMS settlement fixes into legacy integration' origin/main
           fi
+          git push origin HEAD:refs/heads/integration/legacy-branches-20260922
