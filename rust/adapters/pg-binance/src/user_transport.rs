@@ -7,7 +7,7 @@
 //! A caller MUST enter safe hold on each session start/error and reconcile
 //! REST history/fills before treating order events as complete.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use pg_execution::ExecutionError;
@@ -102,9 +102,15 @@ impl BinanceUserStream {
 
     /// One session only: no recursive/unbounded reconnect. The operator's
     /// supervisor must back off and REST-reconcile on every returned error.
-    /// All messages have bounded size and the consumer has bounded send time.
+    /// Both startup and **every** exit publish ReconcileRequired: EOF, read
+    /// error, renewal failure, ping failure, timeout, and orderly exit alike.
+    /// An initial reconciliation can finish while the socket is running; an
+    /// unannounced subsequent disconnect must never leave its gate open.
     pub async fn stream_once(&self, sink: &mpsc::Sender<UserEvent>) -> Result<(), ExecutionError> {
-        require_reconcile(sink).await?;
+        fenced_session(sink, self.stream_session(sink)).await
+    }
+
+    async fn stream_session(&self, sink: &mpsc::Sender<UserEvent>) -> Result<(), ExecutionError> {
         let key = self.create_listen_key().await?;
         let ws_url = format!("{USER_WS_BASE}{key}");
         let (mut socket, _) = timeout(Duration::from_secs(5), connect_async(&ws_url))
@@ -127,11 +133,9 @@ impl BinanceUserStream {
                 }
                 _ = pings.tick() => {
                     if started.elapsed() >= Duration::from_secs(MAX_SESSION_SECS) {
-                        require_reconcile(sink).await?;
                         return Err(ExecutionError::Unknown("PM user stream rotation required".into()));
                     }
                     if last_pong.elapsed() > Duration::from_secs(PING_SECS * 3) {
-                        require_reconcile(sink).await?;
                         return Err(ExecutionError::Unknown("PM user stream heartbeat lost".into()));
                     }
                     socket.send(Message::Ping(Vec::new().into())).await
@@ -145,16 +149,10 @@ impl BinanceUserStream {
                         Message::Text(text) => {
                             let bytes = text.as_bytes();
                             if bytes.is_empty() || bytes.len() > MAX_EVENT_BYTES {
-                                require_reconcile(sink).await?;
                                 return Err(ExecutionError::Unknown("PM private event oversized".into()));
                             }
-                            let event = match decode_user_event(bytes) {
-                                Ok(event) => event,
-                                Err(_) => {
-                                    require_reconcile(sink).await?;
-                                    return Err(ExecutionError::Unknown("unknown PM private event; reconcile".into()));
-                                }
-                            };
+                            let event = decode_user_event(bytes)
+                                .map_err(|_| ExecutionError::Unknown("unknown PM private event; reconcile".into()))?;
                             send_bounded(sink, event).await?;
                         }
                         Message::Pong(_) => last_pong = Instant::now(),
@@ -163,11 +161,9 @@ impl BinanceUserStream {
                                 .map_err(|_| ExecutionError::Unknown("PM private WS pong failed".into()))?;
                         }
                         Message::Close(_) => {
-                            require_reconcile(sink).await?;
                             return Err(ExecutionError::Unknown("PM private WS closed".into()));
                         }
                         _ => {
-                            require_reconcile(sink).await?;
                             return Err(ExecutionError::Unknown("unexpected PM private WS frame".into()));
                         }
                     }
@@ -175,6 +171,22 @@ impl BinanceUserStream {
             }
         }
     }
+}
+
+/// The future is not polled until the first gate has reached the consumer.
+/// Always send a second gate after the session terminates; if the sink cannot
+/// observe it, return an error instead of claiming a clean exit.
+async fn fenced_session<F>(
+    sink: &mpsc::Sender<UserEvent>,
+    session: F,
+) -> Result<(), ExecutionError>
+where
+    F: Future<Output = Result<(), ExecutionError>>,
+{
+    require_reconcile(sink).await?;
+    let result = session.await;
+    require_reconcile(sink).await?;
+    result
 }
 
 fn valid_listen_key(key: &str) -> bool {
@@ -216,12 +228,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_session_can_start_without_emitting_reconcile_required() {
-        let (tx, mut rx) = mpsc::channel(1);
-        require_reconcile(&tx).await.unwrap();
-        assert!(matches!(
-            rx.recv().await,
-            Some(UserEvent::ReconcileRequired)
-        ));
+    async fn every_exit_emits_new_reconcile_gate_even_after_initial_recovery() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let result = fenced_session(&tx, async {
+            Err(ExecutionError::Unknown("injected EOF".into()))
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
+        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
+    }
+
+    #[tokio::test]
+    async fn normal_exit_is_not_permission_to_skip_reconcile() {
+        let (tx, mut rx) = mpsc::channel(2);
+        fenced_session(&tx, async { Ok(()) }).await.unwrap();
+        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
+        assert!(matches!(rx.recv().await, Some(UserEvent::ReconcileRequired)));
+    }
+
+    #[tokio::test]
+    async fn consumer_failure_prevents_clean_session_result() {
+        let (tx, rx) = mpsc::channel(2);
+        drop(rx);
+        assert!(fenced_session(&tx, async { Ok(()) }).await.is_err());
     }
 }
