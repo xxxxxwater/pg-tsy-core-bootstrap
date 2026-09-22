@@ -4,6 +4,7 @@
 //! is isolated and is not yet registered in the production daemon. Live is disabled.
 
 pub mod execution_adapter;
+pub mod history_reconcile;
 pub mod market_candles;
 pub mod market_protocol;
 pub mod market_transport;
