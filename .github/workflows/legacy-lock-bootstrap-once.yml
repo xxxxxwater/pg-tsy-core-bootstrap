@@ -1,0 +1,34 @@
+name: legacy-lock-bootstrap-once
+on:
+  push:
+    paths:
+      - .github/workflows/legacy-lock-bootstrap-once.yml
+permissions:
+  contents: write
+jobs:
+  lock-and-format:
+    if: github.ref == 'refs/heads/integration/legacy-branches-20260922'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - name: Resolve merged workspace and format without suppressing errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd rust
+          cargo metadata --format-version 1 > /dev/null
+          cargo fmt --all
+          cd ..
+          git status --short
+          git add rust/Cargo.lock rust
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix(merge): synchronize Cargo.lock and rustfmt after legacy integration'
+            git push origin HEAD:refs/heads/integration/legacy-branches-20260922
+          fi
