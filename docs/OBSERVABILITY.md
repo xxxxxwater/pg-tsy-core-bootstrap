@@ -1,136 +1,61 @@
-# Runtime observability API
+# Observability architecture and integration status (2026-09-22)
 
-`pg-core` exposes a read-only runtime evidence plane for operator tooling such as **PG TSY Runtime Console for DeepSeek Harness**.
+> **Important post-merge correction:** `pg-observability` is a Rust workspace member containing `RuntimeObservatory` and an HTTP API implementation, **not currently a dependency or route of the shipping `pg-core` executable**. Do not advertise `GET /v1/snapshot` or `GET /v1/events` as available on the running daemon, dashboard or deployed server. See [ARCHITECTURE](ARCHITECTURE.md), [STATUS](STATUS.md) and [RELEASE_READINESS](RELEASE_READINESS.md).
 
-The central rule is:
+## 1. Implemented versus wired
 
-> **The API reports evidence, not optimism.** A component that has not proved its state is `PENDING` or `UNKNOWN`; it is never painted `HEALTHY` merely because the process is alive.
+| Component | Source status | Callable from `pg-core` currently? |
+| --- | --- | --- |
+| `rust/crates/pg-observability/src/lib.rs` | Implements `runtime.snapshot.v1` schema, `RuntimeObservatory`, bounded process-local events and HTTP router | **No.** `rust/crates/pg-core/Cargo.toml` does not depend on `pg-observability`; its `health.rs` does not mount this router. |
+| `GET /v1/snapshot` | Implemented in the observability crate's router | Not provided by `pg-core --serve` |
+| `GET /v1/events?after=N&limit=...` | Implemented in the observability crate's router | Not provided by `pg-core --serve` |
+| `GET /healthz` | Implemented in `pg-core/src/health.rs` | Yes |
+| `GET /readyz` | Implemented in `pg-core/src/health.rs` | Yes |
+| `GET /metrics` | Implemented in `pg-core/src/health.rs` | Yes |
+| `POST /admin/reload` | Implemented in `pg-core/src/health.rs`; enqueues reload only | Yes; **handler has no authentication**, so restrict network exposure |
 
-## Endpoints
+The presence of `pg-observability` in workspace Cargo is **not an executable integration test**. The merged PR #10 preserved the library/history but did not establish daemon-to-observatory authority or route registration.
 
-```text
-GET /v1/snapshot
-GET /v1/events?after=<seq>&limit=<1..200>
+## 2. Intended evidence topology — not yet end to end
+
+```mermaid
+flowchart TD
+  subgraph Runtime[Authoritative Rust runtime]
+    L[PostgreSQL lease / fencing]
+    J[Journal / dispatch state]
+    F[Feed supervisor / freshness]
+    O[OMS / owned order snapshots]
+    R[Reconciliation and ownership]
+    G[Startup gates / SAFE_HOLD]
+  end
+  L -. not wired .-> OBS[RuntimeObservatory: runtime.snapshot.v1]
+  J -. not wired .-> OBS
+  F -. not wired .-> OBS
+  O -. not wired .-> OBS
+  R -. not wired .-> OBS
+  G -. not wired .-> OBS
+  OBS --> API[Standalone observability router: /v1/snapshot, /v1/events]
+  API -. not mounted in pg-core .-> DASH[Operator UI / DeepSeek Harness runtime console]
+  Runtime --> HEALTH[pg-core health.rs: healthz / readyz / metrics / reload]
 ```
 
-The default listener is loopback-only:
+A connected dashboard must not infer that the system is `NORMAL` because a process listens on a port or because the observability crate can construct an example snapshot. Missing source evidence is `UNKNOWN`/`PENDING` and forces conservative safety semantics in the observability model; the model itself has no order authority.
 
-```text
-127.0.0.1:8787
-```
+## 3. Library API contract
 
-Configure it with:
+The separate router defines `GET /v1/snapshot` and `GET /v1/events?after=<seq>&limit=<1..200>`. Its intended configuration is `PG_OBSERVABILITY_BIND` (loopback `127.0.0.1:8787` by default), `PG_OBSERVABILITY_STALE_AFTER_MS`, `PG_OBSERVABILITY_EVENT_CAPACITY` and bearer `PG_OBSERVABILITY_TOKEN` when binding non-loopback. These settings describe the **standalone crate contract**, not an endpoint that currently exists in `pg-core`.
 
-```bash
-export PG_OBSERVABILITY_BIND=127.0.0.1:8787
-export PG_OBSERVABILITY_STALE_AFTER_MS=10000
-export PG_OBSERVABILITY_EVENT_CAPACITY=1024
-```
+Snapshot fields are designed to report runtime identity/mode, exposure safety, lease heartbeat/fencing, journal/checkpoint/dispatch evidence, feed health, venue execution/reconcile health, strategies, owned/manual/unknown positions, open/partial/unknown OMS state, optional performance, operator capabilities and all required startup gates. Unwired fields must retain `UNKNOWN` or `PENDING` instead of defaulting to green or fabricated zero losses. An API schema version does not prove that all fields have authoritative producers.
 
-A non-loopback bind is rejected unless `PG_OBSERVABILITY_TOKEN` is set. Clients send it as:
+Event sequences are process-local and held in a bounded memory ring, with cursor `seq > after`. A ring buffer is **not** the PostgreSQL trading journal and cannot prove an exchange did/did not accept a POST or that historical fills are complete. After a restart, clients must handle cursor reset and refresh authoritative snapshots rather than inventing continuity.
 
-```http
-Authorization: Bearer <token>
-```
+## 4. Integration acceptance to unblock advertising the API
 
-The DeepSeek Harness plugin should keep that token on its Host side (`PG_TSY_RUNTIME_TOKEN`) and proxy the browser over Harness' same-origin authenticated connection.
+- [ ] Add explicit `pg-observability` dependency and mount its router (or a carefully specified separate process) in the actual `pg-core` runtime; document binding and authentication.
+- [ ] Feed authoritative lease heartbeat/fencing, journal/checkpoint, order and position snapshots, reconcile outcomes, per-venue feeds, startup gates and HALT events into one observer; missing producer remains `UNKNOWN`.
+- [ ] Prove `SAFE_HOLD` and `allow_new_exposure=false` on lease loss, unknown submit, stale feed, disconnected venue and reconciliation mismatch, including reconnection transitions.
+- [ ] Exercise `/v1/snapshot` and paginated `/v1/events` through the **running daemon**, including bearer denial, loopback/non-loopback behavior, event loss and process restart.
+- [ ] Keep UI/observer failure isolated from Risk/OMS/execution: no status polling or browser click may unlock exposure.
+- [ ] Address the existing unauthenticated `/admin/reload` in `health.rs` before exposing operator HTTP surfaces beyond trusted loopback; production Compose's host port defaults to `127.0.0.1`, but direct bare-metal deployment must be secured too.
 
-## Snapshot contract
-
-The response schema is `runtime.snapshot.v1` and contains:
-
-- telemetry capture time and staleness threshold;
-- runtime environment, instance id, run mode, build version and uptime;
-- derived global safety state and new-exposure gate;
-- runtime lease/fencing evidence;
-- journal/checkpoint/dispatch evidence;
-- reconciliation state;
-- market-data feeds;
-- venue market-data/execution/reconciliation state;
-- strategy inventory;
-- positions and ownership;
-- OMS order summary including `UNKNOWN` outcomes;
-- optional performance evidence;
-- exposed operator capabilities;
-- startup gates and their exact status.
-
-Unknown evidence is intentionally represented explicitly. For example, a freshly started `pg-core` process that has loaded strategy configuration but has not yet acquired its PostgreSQL lease or attached live venue/reconciliation components will return approximately:
-
-```json
-{
-  "schema_version": "runtime.snapshot.v1",
-  "safety": {
-    "state": "SAFE_HOLD",
-    "allow_new_exposure": false,
-    "reason": "startup gates are not all passed"
-  },
-  "lease": {
-    "required": true,
-    "owned": false
-  },
-  "storage": {
-    "journal": "UNKNOWN"
-  },
-  "reconcile": {
-    "status": "UNKNOWN"
-  }
-}
-```
-
-That is a correct state, not an error in the console.
-
-## Event contract
-
-Events are process-local, monotonically sequenced and held in a bounded in-memory ring buffer. `/v1/events?after=N` returns only events with `seq > N`.
-
-Current startup events include runtime configuration loading, strategy inventory loading/missing state, observability listener startup and shutdown requests. Live components should add domain events at their own authoritative transition points, for example:
-
-```text
-lease.acquired
-lease.heartbeat
-lease.lost
-feed.healthy
-feed.stale
-oms.partial_fill
-execution.unknown
-reconcile.match
-reconcile.mismatch
-safety.safe_hold
-```
-
-The event buffer is an operator stream, not the durable trading journal. It must never be used as evidence that an external order side effect did or did not happen.
-
-## Safety derivation
-
-`RuntimeObservatory` derives the effective state from the evidence it currently holds. `SAFE_HOLD` is forced when any required authority is unresolved, including:
-
-- startup gates not all passed;
-- required runtime lease not owned;
-- durable journal health not proven;
-- unknown order outcomes;
-- reconciliation/ownership mismatch;
-- required market-data feed health not proven;
-- in live mode, execution or venue reconciliation health not proven.
-
-`SHADOW`, `NORMAL` or `DEGRADED` are reachable only after blocking evidence has cleared.
-
-## Integration contract for live components
-
-The observability API owns no trading logic. Existing components keep their authority and report state into a shared `RuntimeObservatory`:
-
-```text
-Postgres lease heartbeat  ---> set_lease(...)
-Journal/checkpoint path    ---> set_storage(...)
-Subscription supervisor   ---> set_configured_feeds(...) / update_snapshot(...)
-OMS                        ---> set_orders(...)
-Position ownership        ---> set_positions(...)
-Reconcile loop             ---> set_reconcile(...)
-Runtime halt               ---> set_halted(...)
-All components             ---> record_event(...)
-```
-
-This separation is deliberate: losing the HTTP server or DeepSeek Harness must not alter order, risk, ownership or recovery behavior.
-
-## Current boundary
-
-The API and shared state carrier are implemented before the complete live orchestration is finished. Therefore the first real snapshot is expected to show which P0 components are still unwired. As the continuous live runtime is completed, those components should update the same snapshot rather than inventing a second monitoring model.
+Until these checks pass, the publicly documented working endpoints are only `/healthz`, `/readyz`, `/metrics` and the network-restricted `/admin/reload`. The existing production Binance PM/Freqtrade bot and manual positions must not be connected or modified by observability experimentation.
