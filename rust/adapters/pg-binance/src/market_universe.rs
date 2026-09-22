@@ -1,7 +1,10 @@
 //! Read-only USD-M market discovery, independent of Portfolio Margin credentials.
 //! This deliberately does NOT register symbols for live order execution.
 
-use std::{collections::BTreeSet, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use pg_marketdata::{Candle, MarketDataError};
 use reqwest::{Client, StatusCode};
@@ -24,7 +27,9 @@ pub fn decode_trading_perpetuals(bytes: &[u8]) -> Result<BTreeSet<String>, Marke
         return Err(fail("empty or oversized exchangeInfo"));
     }
     let payload: Value = serde_json::from_slice(bytes).map_err(|_| fail("invalid JSON"))?;
-    let rows = payload.get("symbols").and_then(Value::as_array)
+    let rows = payload
+        .get("symbols")
+        .and_then(Value::as_array)
         .filter(|rows| !rows.is_empty() && rows.len() <= 5000)
         .ok_or_else(|| fail("missing or excessive symbols"))?;
     let mut symbols = BTreeSet::new();
@@ -34,17 +39,27 @@ pub fn decode_trading_perpetuals(bytes: &[u8]) -> Result<BTreeSet<String>, Marke
         {
             continue;
         }
-        let quote = row.get("quoteAsset").and_then(Value::as_str)
+        let quote = row
+            .get("quoteAsset")
+            .and_then(Value::as_str)
             .ok_or_else(|| fail("perpetual quote missing"))?;
         if !matches!(quote, "USDT" | "USDC") {
             continue;
         }
-        let symbol = row.get("symbol").and_then(Value::as_str)
+        let symbol = row
+            .get("symbol")
+            .and_then(Value::as_str)
             .ok_or_else(|| fail("perpetual symbol missing"))?;
-        let base = row.get("baseAsset").and_then(Value::as_str)
+        let base = row
+            .get("baseAsset")
+            .and_then(Value::as_str)
             .ok_or_else(|| fail("perpetual base asset missing"))?;
-        if symbol.len() > 32 || symbol.is_empty() || base.is_empty()
-            || !symbol.bytes().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        if symbol.len() > 32
+            || symbol.is_empty()
+            || base.is_empty()
+            || !symbol
+                .bytes()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
             || symbol != format!("{base}{quote}")
         {
             return Err(fail("perpetual contract identity mismatch"));
@@ -74,7 +89,10 @@ impl PublicUsdMUniverse {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| MarketDataError::Disconnected("public REST client unavailable".into()))?;
-        Ok(Self { http, symbols: BTreeSet::new() })
+        Ok(Self {
+            http,
+            symbols: BTreeSet::new(),
+        })
     }
 
     pub fn install_exchange_info(&mut self, bytes: &[u8]) -> Result<usize, MarketDataError> {
@@ -86,15 +104,26 @@ impl PublicUsdMUniverse {
     }
 
     pub async fn refresh(&mut self) -> Result<usize, MarketDataError> {
-        let response = self.http.get(REST_EXCHANGE_INFO).send().await
-            .map_err(|_| MarketDataError::Disconnected("public exchangeInfo request failed".into()))?;
+        let response = self
+            .http
+            .get(REST_EXCHANGE_INFO)
+            .send()
+            .await
+            .map_err(|_| {
+                MarketDataError::Disconnected("public exchangeInfo request failed".into())
+            })?;
         if response.status() != StatusCode::OK
-            || response.content_length().is_some_and(|size| size > MAX_EXCHANGE_BYTES as u64)
+            || response
+                .content_length()
+                .is_some_and(|size| size > MAX_EXCHANGE_BYTES as u64)
         {
-            return Err(MarketDataError::Disconnected("public exchangeInfo unavailable".into()));
+            return Err(MarketDataError::Disconnected(
+                "public exchangeInfo unavailable".into(),
+            ));
         }
-        let bytes = response.bytes().await
-            .map_err(|_| MarketDataError::Disconnected("public exchangeInfo body incomplete".into()))?;
+        let bytes = response.bytes().await.map_err(|_| {
+            MarketDataError::Disconnected("public exchangeInfo body incomplete".into())
+        })?;
         self.install_exchange_info(&bytes)
     }
 
@@ -106,32 +135,53 @@ impl PublicUsdMUniverse {
     /// market: consumers must use bounded socket counts and rate limits.
     pub fn kline_stream(&self, symbol: &str, interval_ns: u64) -> Result<String, MarketDataError> {
         if !self.symbols.contains(symbol) {
-            return Err(MarketDataError::Subscription("symbol not verified by exchangeInfo".into()));
+            return Err(MarketDataError::Subscription(
+                "symbol not verified by exchangeInfo".into(),
+            ));
         }
         ws_stream(symbol, interval_ns)
     }
 
-    pub async fn closed_klines(&self, symbol: &str, interval_ns: u64, limit: u16)
-        -> Result<Vec<Candle>, MarketDataError>
-    {
+    pub async fn closed_klines(
+        &self,
+        symbol: &str,
+        interval_ns: u64,
+        limit: u16,
+    ) -> Result<Vec<Candle>, MarketDataError> {
         self.kline_stream(symbol, interval_ns)?;
         if !(2..=1500).contains(&limit) {
-            return Err(MarketDataError::Subscription("invalid public kline limit".into()));
+            return Err(MarketDataError::Subscription(
+                "invalid public kline limit".into(),
+            ));
         }
         let interval = interval_name(interval_ns)
             .ok_or_else(|| MarketDataError::Subscription("unsupported interval".into()))?;
-        let response = self.http.get(REST_KLINES)
-            .query(&[("symbol", symbol), ("interval", interval), ("limit", &limit.to_string())])
-            .send().await
+        let response = self
+            .http
+            .get(REST_KLINES)
+            .query(&[
+                ("symbol", symbol),
+                ("interval", interval),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await
             .map_err(|_| MarketDataError::Disconnected("public Klines request failed".into()))?;
         if response.status() != StatusCode::OK
-            || response.content_length().is_some_and(|size| size > MAX_KLINES_BYTES as u64)
+            || response
+                .content_length()
+                .is_some_and(|size| size > MAX_KLINES_BYTES as u64)
         {
-            return Err(MarketDataError::Disconnected("public Klines unavailable".into()));
+            return Err(MarketDataError::Disconnected(
+                "public Klines unavailable".into(),
+            ));
         }
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .map_err(|_| MarketDataError::Disconnected("public Klines body incomplete".into()))?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map_err(|_| MarketDataError::Conversion("invalid host clock".into()))?;
         let received_ns = u64::try_from(now.as_nanos())
             .map_err(|_| MarketDataError::Conversion("host clock overflow".into()))?;
@@ -167,7 +217,10 @@ mod tests {
         let mut universe = PublicUsdMUniverse::new().unwrap();
         assert!(universe.kline_stream("BTCUSDC", 60_000_000_000).is_err());
         universe.install_exchange_info(&sample()).unwrap();
-        assert_eq!(universe.kline_stream("ETHUSDT", 60_000_000_000).unwrap(), "ethusdt@kline_1m");
+        assert_eq!(
+            universe.kline_stream("ETHUSDT", 60_000_000_000).unwrap(),
+            "ethusdt@kline_1m"
+        );
         assert!(universe.kline_stream("BTCUSDT", 60_000_000_000).is_err());
         assert!(universe.kline_stream("ETHUSDT", 5_000_000_000).is_err());
     }
