@@ -1,68 +1,67 @@
-# First-version release readiness — 2026-09-22
+# First-version release readiness — verified 2026-09-22
 
-**Decision: NO-GO for an unattended/live-trading release, and NO-GO for claiming a verified three-venue end-to-end execution release.** This is a source-and-GitHub-CI review, not a real account test. A non-trading research/shadow *candidate* may be prepared separately after its exact commit passes CI and its documented smoke tests are recorded. Do not call a Markdown commit, a Cargo workspace version or a Docker Compose syntax check a published GitHub Release.
+> **Result: NO-GO for unattended/live trading and for a claimed three-venue end-to-end release. A `v0.1.0-rc.1` research/shadow-only prerelease is a candidate, not yet accepted or published.** This review inspects merged code, GitHub PR history and Actions evidence; it has not authenticated an exchange account, executed a real order, built a production image or deployed a server. Do not interpret documentation commits as release artifacts.
 
-## Review scope and provenance
+## 1. Review provenance and CI
 
-- Baseline: `293ba6296e7af47982b3df7c8b253cfe7c3ab3df` on `main`, before this documentation audit; use the final documentation commit SHA for any subsequent candidate.
-- Merge history: PR [#10](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/pull/10), merged as `bbbd2315f319114c0880475c59781607325eb2d9`, integrated two divergent legacy branches using `-X ours` on overlap; preservation of branch history is not a semantic parity test. PRs #8/#9 added overlapping simulator paths; PR #1 brought an observability module/document. README consolidation `55a42ba665d6b10626d9f92e42ec5e3794b0e1c2` introduced claims which no longer matched runtime source. PR #10 has no discussion comments in the retrieved timeline.
-- Evidence: actual `main.rs`, `daemon.rs`, `live_daemon.rs`, `pg-runtime`, `pg-core/Cargo.toml`, `pg-observability`, `health.rs`, `rust/Cargo.toml`, Compose and `docs/*`; latest inspected GitHub workflow run [ci #35719111159](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111159) and PostgreSQL [#35719111158](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111158). The first six CI jobs had passed at observation time; `rust-integrations` was still running. PostgreSQL fenced-ledger job had passed. These runs target the **pre-audit** commit and cannot validate a later documentation commit automatically.
-- At inspection the Releases API returned an empty list; repository `main` branch protection reported disabled. GitHub releases/tags or branch protection may have changed after this snapshot; re-query before release.
+The starting `main` commit was `293ba6296e7af47982b3df7c8b253cfe7c3ab3df`; the final audit/documentation commit must be rechecked independently. [PR #10](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/pull/10), merged as `bbbd2315f319114c0880475c59781607325eb2d9`, integrated the divergent legacy observability and Python/Rust simulation branches while preferring `main` on overlapping hunks with `-X ours`. PRs #8/#9 had overlapping simulation history; PR #1 added observability. Preserving merged Git ancestry does **not** prove the two simulation implementations are behaviorally equivalent or that an observability library is registered in a daemon. `55a42ba` consolidated an outdated README; this audit corrects its actual-runtime statements.
 
-## Capability / evidence matrix
-
-| Area | Observed code/test evidence | Missing acceptance | Gate |
+| Evidence | Exact baseline SHA | Latest observed result | Does NOT establish |
 | --- | --- | --- | --- |
-| Build and test | Cargo workspace Rust fmt/Clippy/tests, Python Ruff/pytest, lockfile, Binance/Jev adapter tests; isolated PostgreSQL fill/fencing job passed on inspected baseline except integration job was still running | Exact final release SHA fully green; container build and runtime smoke on clean machine not established | Pending |
-| Research and simulation | Python batch environment, `pg-sim` deterministic JSONL kernel, causal replay and challenger code; merged PR #10 | Cross-branch simulator semantic parity/regression matrix, build/package smoke and reproducible fixture outputs | Pending |
-| Hyperliquid | Market-data feed and real adapter constructor; `cloid` recovery contract; `paper` requires Testnet | Authenticated segregated account, isolated full order/fill/fee/cancel/restart/e-stop proof | Block live |
-| IBKR | TWS/Gateway feed and real adapter constructor; `order_ref` recovery; software reduce-only opt-in | **Paper-mode account enforcement** in real-adapter path; authenticated paper and live isolation; native reduce-only absent for ordinary equities; real partial-fill/restart/emergency proof | Block paper/live order runs |
-| Binance PM | Parser/WS/anchored history probes, order-level ledger and settlement primitives | Live market-data source and execution registration absent; account-wide authenticated history cursor + OMS/position/fill settlement, full recovery/stop/e-stop acceptance | Block real runtime |
-| Common execution | Journal-before-dispatch and fencing checks; live periodic `recover_ambiguous`/`reconcile_once`, entry guard | End-to-end mixed-venue proof of no duplicate exposure under lost ACK, DB outage, kill-9 and failover; venue-appropriate order/position evidence | Block unattended |
-| Live position features | Strategy quantity flows into `position_view()` | Live avg entry, fill count, unrealized and peak-return fields currently unset, affecting rules that consume them | Block affected strategies |
-| Control and monitoring | `/healthz`, `/readyz`, `/metrics`, reload HTTP; separate `pg-observability` crate | Snapshot/events not in `pg-core` dependency/router; Telegram emergency control not proved wired; reload handler lacks authentication and binds `0.0.0.0` by default (Compose publishes host loopback) | Block advertised integration/public exposure |
-| Deployment governance | Pinned toolchain/lockfile, Compose config job | Real container launch, immutable image digest/SBOM, rollback, signed artifacts, protected `main`, independent review and final-sha checks | Block production release |
+| [GitHub CI run 35719111159](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111159) | `293ba6296e7af47982b3df7c8b253cfe7c3ab3df` | **7/7 successful jobs**, confirmed via job results: Rust workspace fmt/Clippy/tests; Rust feature Hyperliquid/IBKR including pg-core IBKR compile and Telegram compile; Python Ruff/pytest; Binance/Jev contracts; Cargo.lock; Compose configuration | Final post-audit commit CI, container build/start, private venue authentication or external trading correctness |
+| [PostgreSQL fenced-ledger run 35719111158](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111158) | Same baseline SHA | **fenced-ledger successful**: real isolated PostgreSQL tests for migration/ledger/settlement/replay/fencing plus fault regressions | Real exchange all-order/account-wide cursor, positions, fees or production recovery |
+| Repository release/branch inspection | At start of audit | GitHub Releases API returned `[]`; `main` branch protection reported `false` | Status at some future date; signed builds or release governance |
 
-## Highest-priority discrepancies uncovered by the merge audit
+**Always verify complete Actions results for the final exact release SHA**, not an ancestor. No tagged version, published Release, Docker image digest, full deployment or live acceptance was created by this audit.
 
-1. **Stale documentation could invert safety expectations.** `main.rs` routes shadow to `daemon::serve` and paper/live to `live_daemon::serve`. Older `README`, `EXCHANGES`, `STATUS`, `PRODUCTION_RUNTIME` and `ROADMAP` said paper/live are refused and no real adapters are constructed. Cross-reference source before marketing or operations.
-2. **Paper mode has external side effects.** `live_daemon::build_real_adapter_registry` constructs Hyperliquid/IBKR real execution adapters. It rejects Hyperliquid paper unless network is Testnet, but does not itself prove IBKR paper account/Gateway mode. `RunConfig::routes_to_real_venue()` returning false in paper is not proof that external POSTs cannot happen. Do not run paper against a live IBKR session.
-3. **Binance is a target venue, not equivalent integration.** `build_real_adapter_registry` explicitly bails for `BinancePm` and no runtime market-data source is wired. Keep isolated PM probe instructions in the PM-specific runbook and don't imply its checks authorize trading.
-4. **Observability is merged but not integrated.** `pg-observability` is a workspace member, but `pg-core/Cargo.toml` does not depend on it. The running `health.rs` router only serves health/ready/metrics/reload; `/v1/snapshot` and `/v1/events` are not currently `pg-core` routes. The PR #10 merge preserved code, not a proven end-to-end integration.
-5. **Live decision feature deficit.** The real daemon's `position_view()` carries quantity but initializes `average_entry_price`, `unrealized_return`, `peak_return` to `None`, and `filled_entries=0`. Do not claim live PnL-based exit parity with shadow.
-6. **Release controls absent or unverified.** No GitHub Release at review, unprotected main, and no evidence of a successful signed build/deploy or all-venue fault-injection acceptance. Source-only tests cannot fill these gaps.
+## 2. Source-verified capability and gaps
 
-## Release gates
+| Area | Proven by reading merged source | Required before corresponding release |
+| --- | --- | --- |
+| Research/simulation | Python research, batch environment, causal replay, Rust `pg-sim` JSONL kernel and advisory Jev logic exist | Reproducible clean build and Python/Rust simulator parity across PR #8/#9/#10 overlap; fee/latency claims only after real fills |
+| Strategy | Portable feature planning, normalized feeds, one decision dispatcher per definition and common risk/OMS path | Real `position_view()` currently has `average_entry_price=None`, `unrealized_return=None`, `peak_return=None`, `filled_entries=0`; return-based exits cannot be claimed live |
+| Shadow | In-process ShadowExecutionAdapter for all three venue identities; no real execution in shadow | Postgres-backed order/fill/OMS/restart smoke, no-key proof, unsupported Binance feed failure and full shadow reconciliation evidence |
+| Hyperliquid paper/live | `live_daemon` constructs real SDK adapter and searches stable `cloid`; paper requires Testnet | Authenticated segregated account, observed order/fills/fees/cancel/restart, emergency flatten and fault tests |
+| IBKR paper/live | `live_daemon` constructs real TWS adapter and uses stable `order_ref` recovery | **Fail-closed proof of paper account identity before paper orders**; ordinary stock reduce-only only software enforced; manual ownership and race/emergency tests |
+| Binance PM | Private stream/history parsers, isolated probes, order-level immutable fill/settlement components | No daemon PM runtime market feed or real execution registration; needs full signed all-order history/cursor/positions/fees and PM risk/emergency integration |
+| Recovery | PostgreSQL lease/fencing; journal-before-adapter; real daemon initial+periodic `recover_ambiguous` and `reconcile_once`, sticky entry/topology guard | Real external accepted POST lost ACK, missing lookup, partial fill, kill-9, DB failure, stale lease/failover and no duplicate exposure evidence |
+| Monitoring/control | Wired `/healthz`, `/readyz`, `/metrics`, `/admin/reload` and independent `pg-observability` crate | `/v1/snapshot` and `/v1/events` **not wired to pg-core**; reload handler has no authentication; authenticated Telegram emergency path unproven |
+| Release operations | Pinned Rust 1.98.1, Cargo.lock, CI and Compose syntax validation | Exact-SHA green, clean Docker build/start, immutable digest/source artifacts, signed/protected ref, independent review and rollback procedures |
 
-### Gate A — research/shadow candidate (non-trading)
+## 3. Critical merge discrepancies
 
-- [ ] Freeze an exact commit with comprehensive documentation; do not tag a moving branch.
-- [ ] Verify the exact SHA's complete Rust/Python/feature/Postgres CI is `success`, not `in_progress`, skipped or inherited from a parent.
-- [ ] Run clean-machine Cargo release build and `pg-sim` JSONL batch smoke, Python `RustSimClient` parity/fixtures, strategy replay and Postgres-backed shadow daemon smoke.
-- [ ] Check `/healthz` and `/readyz`, failure behavior for an unsupported Binance subscription, simulated OMS/journal lifecycle and shadow feed staleness, and confirm no real order keys or trading endpoints are needed.
-- [ ] Document expected Shadow limitations (especially fill-to-OMS reconciliation, pending observability integration) and distinguish smoke evidence from live-venue acceptance.
-- [ ] Inspect dependency/security licenses, secrets, image digest and reproducible source archive; obtain independent code review of merge overlaps.
-- [ ] Only then publish a clearly labeled `v0.1.0-rc.1` **prerelease: research/shadow only**. The workspace currently uses `0.1.0`, but that is not a tag or Release. Do not mark `latest` stable until scope is proven.
+1. **Old shadow-only docs were wrong:** `main.rs` routes `shadow` to `daemon::serve` and `paper/live` to `live_daemon::serve`. Hyperliquid and IBKR real adapters are constructed in paper/live; Binance PM registration explicitly bails.
+2. **Paper can create external orders.** Hyperliquid paper enforces Testnet; IBKR adapter construction lacks an independently verified paper-account assertion. `PG_LIVE_TRADING=false` and `RunConfig::routes_to_real_venue()==false` in paper do not make adapter.submit offline. Never connect paper execution to a live IBKR account.
+3. **Partial three-venue parity:** Binance PM has no daemon market-data source or real execution registration; PM diagnostic preconditions belong in its isolated runbook, not global README or a purported live release.
+4. **Observability merge without runtime integration:** `pg-observability` is a workspace member but not `pg-core` dependency/router; its snapshot/events API cannot be advertised as a deployed endpoint.
+5. **Live trading exit-feature gap:** real quantity-only `PositionView` lacks authentic entry/mark/return fields. Missing features may suppress PnL-based exits; prevent any strategy depending on them from routing money until fixed and verified.
+6. **Operational security:** unauthenticated `POST /admin/reload`, health default bind `0.0.0.0:8080` (production Compose host-loopback mapping helps but direct deployments differ), no evidenced Telegram emergency completion, no protected `main` on initial review.
 
-### Gate B — per-venue paper/staging
+## 4. Gate A — first research/shadow-only candidate
 
-- [ ] Hyperliquid: enforce verified Testnet + isolated credentials and real testnet order/fill/fee/read/cancel/reconnect reconciliation.
-- [ ] IBKR: verify paper Gateway/account identity through authenticated API and prohibit submission when paper identity cannot be proven; test software reduce-only race behavior.
-- [ ] Binance PM: integrate authenticated feed + real execution/position/order history and durable cursor; dedicated account segregation and permissions.
-- [ ] Run each adapter's idempotency, partial fill, cancel ambiguity, stale market data, manual ownership, lease fencing, DB outage and kill-9 fault matrix with signed evidence.
+- [ ] Freeze exact code/docs commit SHA and obtain independent review of PR #10 `-X ours` overlap.
+- [ ] Confirm all required CI and isolated PostgreSQL workflow jobs are **successful on that exact SHA**; do not infer success from baseline CI.
+- [ ] Run a clean pinned-toolchain `cargo build --release`, feature build, `pg-sim` JSONL and Python `RustSimClient` parity/fixture smoke, strategy replay and dependency/license/secret review.
+- [ ] Run PostgreSQL-backed `pg-core --serve` shadow smoke: fresh feed -> risk -> durable intent/journal -> shadow ACK/partial/fill semantics -> OMS/reconcile -> restart, plus stale feed, conflicting order/ownership, lease loss and unsupported Binance feed fail-closed.
+- [ ] Verify `/healthz`, `/readyz`, `/metrics`, protected reload, Compose build/run and clean shutdown without any real account credentials; document observers not wired and other known limitations.
+- [ ] Verify reproducible source archive/image digest and rollback; publish release notes restricted to **research/shadow only**.
 
-### Gate C — real-money canary and unattended
+**Only when Gate A has real recorded evidence** may an authorized maintainer tag exact SHA as `v0.1.0-rc.1` and create a GitHub prerelease explicitly excluding paper/live trading. The workspace's `version=0.1.0` is not a Git tag or a published release. Current connected GitHub actions permit docs/source editing but expose no Release-creation operation; this review did not publish a tag, Release or image.
 
-- [ ] Independently approve per-account capital/symbol limits and isolated secrets; require explicit operator signed go/no-go.
-- [ ] Prove live execution -> fills/fees -> OMS/positions -> journal/cursor -> reconciled `SAFE_HOLD` release in a fenced atomic design appropriate for that venue.
-- [ ] Validate halt, owned-order cancellation and actual reduce-only emergency flatten **with completion evidence**; manual/unowned exposure untouched.
-- [ ] Record venue-level audit trails, p95/p99 latency, markouts/net fees, post-crash no-duplicate evidence and rollback/recovery plan.
-- [ ] Only then discuss a live-capable release; an isolated Jev diagnostic or synthetic backtest is not such evidence.
+## 5. Gate B — segregated paper/testnet per venue
 
-## Version and publishing commands (instructions, NOT executed)
+- [ ] Hyperliquid: independently verify Testnet credentials/account and prove authenticated reads, cloid submit, observed fills/fees/cancel/positions, reconnect and recovery.
+- [ ] IBKR: **enforce and verify paper account identity in code**, including external Gateway and environment overrides; paper/stock contract correctness, software reduce-only races, execution-history recovery and fees.
+- [ ] Binance PM: complete production market feed, gated adapter, isolated PM account permissions, complete authenticated signed history + durable all-order cursor/fill/position settlement; do not promote read-only probes to trading authorization.
+- [ ] Per venue test missing/lost ACK, missing immediate lookup, partial/late fill, cancel ambiguity, stale feed, manual ownership, database/lease/fencing loss, kill-9, owned-only emergency exit.
 
-After Gate A is fully evidenced, an authorized maintainer may create an annotated `v0.1.0-rc.1` tag at the reviewed exact SHA and publish a GitHub **pre-release** with the description **Research/shadow only — no paper/live trading acceptance**. Verify GitHub Actions run on the actual tag/commit, source archive and release assets; reject any unreviewed drift. This document does **not** create a tag, Release, Docker image or server deployment. Current tool access can update repository source/docs but does not expose a GitHub Release-creation action. Until then, link users to the repository and this acceptance document, not a fictional release page.
+## 6. Gate C — real-money canary/unattended
 
-## Non-interference
+- [ ] Independent operator signoff for separately isolated keys, symbol and capital limits, explicit start and kill switch.
+- [ ] Prove exchange-authoritative fills/fees/positions -> OMS/journal/cursor under fenced durable recovery; no duplicate exposure or improper SAFE_HOLD release.
+- [ ] HALT first, owned-only cancel, venue-appropriate risk-reducing flatten, **observed completion** or incident escalation under ambiguous state; never touch manual/unowned positions.
+- [ ] Record real latency p95/p99, costs/markouts, drawdown, reproducible audit, rollback and operations acceptance; Jev/simulation do not bypass hard risk or supply this evidence.
 
-Never use CI secrets for real trading accounts; don't paste keys in issues or runbooks. The existing Binance PM/Freqtrade bot and manual positions are a separate production system and must not be migrated, stopped, reconciled or modified by this repository's release process.
+## 7. Non-interference
+
+No real credentials in GitHub Actions, issues, docs or bot logs. All existing Binance PM/Freqtrade live services and manually owned positions are **out of scope**. No CI or release process may migrate, restart, reconcile or modify them. Publication is conditional on real evidence, not enthusiasm for a version number.
