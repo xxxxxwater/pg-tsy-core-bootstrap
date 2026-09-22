@@ -362,23 +362,34 @@ mod tests {
         assert!(!authorized_admin_request(&duplicate, TEST_TOKEN));
     }
 
-    async fn request_with_control(request: &str, token: Option<&str>) -> (String, Option<ControlCommand>) {
+    async fn request_with_control(
+        request: &str,
+        token: Option<&str>,
+    ) -> (String, Option<ControlCommand>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (sender, mut receiver) = mpsc::channel(1);
         let token = token.map(Arc::<str>::from);
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            handle(stream, HealthState::new(HealthSnapshot::booting("shadow")), Some(sender), token)
-                .await
-                .unwrap();
+            handle(
+                stream,
+                HealthState::new(HealthSnapshot::booting("shadow")),
+                Some(sender),
+                token,
+            )
+            .await
+            .unwrap();
         });
         let mut client = TcpStream::connect(addr).await.unwrap();
         client.write_all(request.as_bytes()).await.unwrap();
         let mut response = Vec::new();
         client.read_to_end(&mut response).await.unwrap();
         server.await.unwrap();
-        (String::from_utf8(response).unwrap(), receiver.try_recv().ok())
+        (
+            String::from_utf8(response).unwrap(),
+            receiver.try_recv().ok(),
+        )
     }
 
     #[tokio::test]
@@ -415,11 +426,8 @@ mod tests {
 
     #[tokio::test]
     async fn health_is_available_without_admin_token() {
-        let (response, command) = request_with_control(
-            "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n",
-            None,
-        )
-        .await;
+        let (response, command) =
+            request_with_control("GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n", None).await;
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert_eq!(command, None);
     }
