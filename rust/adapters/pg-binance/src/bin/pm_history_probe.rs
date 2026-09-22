@@ -10,7 +10,15 @@ use pg_binance::{rest_transport::BinanceRestClient, trade_history::TradePage};
 const LIMIT: u16 = 1000;
 const MAX_PAGES: usize = 32;
 
-fn permitted(approval: &str, mode: &str, live: &str, scope: &str, key: &str, secret: &str, anchor: u64) -> bool {
+fn permitted(
+    approval: &str,
+    mode: &str,
+    live: &str,
+    scope: &str,
+    key: &str,
+    secret: &str,
+    anchor: u64,
+) -> bool {
     approval == "APPROVE_ISOLATED_READ_ONLY_HISTORY_PROBE"
         && mode == "shadow"
         && live == "false"
@@ -27,12 +35,22 @@ fn advance(cursor: u64, page: &TradePage, limit: usize) -> Result<Option<u64>, &
     if limit == 0
         || page.trades.len() > limit
         || page.short_page != (page.trades.len() < limit)
-        || page.trades.first().is_some_and(|trade| trade.trade_id < cursor)
+        || page
+            .trades
+            .first()
+            .is_some_and(|trade| trade.trade_id < cursor)
     {
         return Err("invalid or incomplete UM trade-history page");
     }
-    let next = page.trades.last()
-        .map(|trade| trade.trade_id.checked_add(1).ok_or("trade-history cursor overflow"))
+    let next = page
+        .trades
+        .last()
+        .map(|trade| {
+            trade
+                .trade_id
+                .checked_add(1)
+                .ok_or("trade-history cursor overflow")
+        })
         .transpose()?
         .unwrap_or(cursor);
     if page.next_from_id != Some(next) || (!page.short_page && next <= cursor) {
@@ -57,16 +75,21 @@ async fn run() -> Result<(), &'static str> {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or_default();
     if !permitted(&approval, &mode, &live, &scope, &key, &secret, anchor) {
-        return Err("signed PM history probe requires segregated read-only approval and trusted anchor");
+        return Err(
+            "signed PM history probe requires segregated read-only approval and trusted anchor",
+        );
     }
     let client = BinanceRestClient::new(key, secret, false)
         .map_err(|_| "read-only PM signer initialization failed")?;
     let mut cursor = anchor;
     let mut observed = 0_usize;
     for page_number in 1..=MAX_PAGES {
-        let page = client.user_trades_page(Some(cursor), LIMIT).await
+        let page = client
+            .user_trades_page(Some(cursor), LIMIT)
+            .await
             .map_err(|_| "signed PM trade-history read or decode failed; SAFE_HOLD required")?;
-        observed = observed.checked_add(page.trades.len())
+        observed = observed
+            .checked_add(page.trades.len())
             .ok_or("UM trade-history count overflow")?;
         match advance(cursor, &page, usize::from(LIMIT))? {
             Some(next) => cursor = next,
@@ -121,13 +144,63 @@ mod tests {
     #[test]
     fn never_network_without_explicit_independent_operator_approval() {
         let approved = "APPROVE_ISOLATED_READ_ONLY_HISTORY_PROBE";
-        assert!(!permitted("", "shadow", "false", "segregated", "key", "secret", 1));
-        assert!(!permitted(approved, "live", "false", "segregated", "key", "secret", 1));
-        assert!(!permitted(approved, "shadow", "true", "segregated", "key", "secret", 1));
-        assert!(!permitted(approved, "shadow", "false", "", "key", "secret", 1));
-        assert!(!permitted(approved, "shadow", "false", "segregated", "key", "", 1));
-        assert!(!permitted(approved, "shadow", "false", "segregated", "key", "secret", 0));
-        assert!(permitted(approved, "shadow", "false", "segregated", "key", "secret", 1));
+        assert!(!permitted(
+            "",
+            "shadow",
+            "false",
+            "segregated",
+            "key",
+            "secret",
+            1
+        ));
+        assert!(!permitted(
+            approved,
+            "live",
+            "false",
+            "segregated",
+            "key",
+            "secret",
+            1
+        ));
+        assert!(!permitted(
+            approved,
+            "shadow",
+            "true",
+            "segregated",
+            "key",
+            "secret",
+            1
+        ));
+        assert!(!permitted(
+            approved, "shadow", "false", "", "key", "secret", 1
+        ));
+        assert!(!permitted(
+            approved,
+            "shadow",
+            "false",
+            "segregated",
+            "key",
+            "",
+            1
+        ));
+        assert!(!permitted(
+            approved,
+            "shadow",
+            "false",
+            "segregated",
+            "key",
+            "secret",
+            0
+        ));
+        assert!(permitted(
+            approved,
+            "shadow",
+            "false",
+            "segregated",
+            "key",
+            "secret",
+            1
+        ));
     }
 
     #[test]
@@ -154,9 +227,15 @@ mod tests {
             short_page: false,
         };
         assert!(advance(11, &page, 2).is_err());
-        let bad_cursor = TradePage { next_from_id: Some(99), ..page.clone() };
+        let bad_cursor = TradePage {
+            next_from_id: Some(99),
+            ..page.clone()
+        };
         assert!(advance(9, &bad_cursor, 2).is_err());
-        let false_short = TradePage { short_page: true, ..page };
+        let false_short = TradePage {
+            short_page: true,
+            ..page
+        };
         assert!(advance(9, &false_short, 2).is_err());
     }
 }
