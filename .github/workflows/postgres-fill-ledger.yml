@@ -35,7 +35,7 @@ jobs:
       - name: Real database migration, deduplication, atomic OMS settlement, replay and fencing
         run: cargo test -p pg-store --test fill_ledger_pg --test fill_settlement_pg -- --nocapture
       - name: Duplicate dispatch and lost ACK must not cause a second venue POST
-        run: cargo test -p pg-orchestrator --test duplicate_dispatch_pg -- --nocapture
+        run: cargo test -p pg-orchestrator --test duplicate_dispatch_pg -- --ignored --nocapture
       - name: Signed Binance trade-history contract and strict Clippy
         run: |
           cargo test -p pg-binance trade_history
