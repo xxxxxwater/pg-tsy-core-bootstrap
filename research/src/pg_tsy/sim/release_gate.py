@@ -57,6 +57,8 @@ def review_gate(e: Evidence) -> GateResult:
         reasons.append("missing_dataset_digest")
     if not e.fee_schedule_id or not e.model_version:
         reasons.append("missing_fee_or_model_provenance")
+    if e.model_version.startswith("laya@unpinned:"):
+        reasons.append("unpinned_laya_build")
     if e.observations < 1_000 or e.out_of_sample_windows < 3:
         reasons.append("insufficient_walk_forward_evidence")
     if not e.no_lookahead:
