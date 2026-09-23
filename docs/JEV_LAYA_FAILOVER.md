@@ -69,15 +69,16 @@ Optional auth:
 LAYA_API_KEY=...
 ```
 
-Deployment provenance:
+Deployment provenance must be the exact 40-character lowercase Git commit of the Laya
+source used to build the service:
 
 ```
-LAYA_BUILD_ID=<immutable image digest or Laya git commit>
+LAYA_BUILD_ID=<40-char Laya git commit>
 ```
 
 If `LAYA_BUILD_ID` is omitted, the observation is deliberately labeled
-`laya@unpinned:...`. The strategy release gate rejects that evidence with
-`unpinned_laya_build`.
+`laya@unpinned:...`. Both the Python release gate and the Rust advisory boundary reject
+unpinned Laya evidence for promotion/use.
 
 The current fallback request pins the typed-decision model id:
 
@@ -89,8 +90,12 @@ A self-hosted Laya server may report a runtime model plus routing model. Both ar
 in the observation provenance, for example:
 
 ```
-laya@<build>:laya-rl-agent:typed-decisions
+laya@<40-char-build>:laya-rl-agent:typed-decisions
 ```
+
+The Rust gate also accepts the legacy Jev snapshot metadata key
+`jev_source_event_ns` for compatibility, while new producer code should use
+`system_one_source_event_ns`. If both keys exist and disagree, the gate fails closed.
 
 ## Important calibration rule
 
@@ -119,6 +124,8 @@ Operational failover is availability redundancy, **not alpha equivalence**.
   primary-success, fallback-success and total-outage tests.
 - `research/src/pg_tsy/sim/release_gate.py`: blocks unpinned Laya evidence from
   strategy promotion.
+- `rust/crates/pg-strategy/src/policy/jev_advisory.rs`: nonblocking System-One
+  advisory gate; accepts exact pinned Jev or a pinned Laya fallback observation.
 
 This integration does not install Laya as a dependency in the research package. The
 boundary is HTTP so the model may be hosted in an isolated GPU service/container and
