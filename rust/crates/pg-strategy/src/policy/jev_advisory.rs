@@ -303,8 +303,7 @@ mod tests {
         let (producer, gate) = channel();
         producer.publish(observation(), 110).unwrap();
         let mut conflicting = signal();
-        conflicting.metadata =
-            json!({"system_one_source_event_ns":100, "jev_source_event_ns":99});
+        conflicting.metadata = json!({"system_one_source_event_ns":100, "jev_source_event_ns":99});
         assert_eq!(
             gate.check(&conflicting, ExposureEffect::Increase, 120),
             JevGateDecision::HoldNewExposure
