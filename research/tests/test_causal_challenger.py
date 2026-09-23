@@ -154,3 +154,11 @@ def test_release_gate_faults_costs_and_lookahead_are_fatal():
                                      "lookahead_not_disproved",
                                      "net_alpha_not_demonstrated",
                                      "independent_review_missing"}
+
+
+def test_unpinned_laya_build_cannot_supply_promotion_evidence():
+    blocked = review_gate(
+        replace(good_evidence(), model_version="laya@unpinned:laya-rl-agent:typed-decisions")
+    )
+    assert not blocked.eligible_for_review
+    assert "unpinned_laya_build" in blocked.blockers
