@@ -99,17 +99,18 @@ fn dreaming_keeps_incumbent_and_can_find_better_replay_policy() {
 
     let incumbent = ExplorationPolicyConfig {
         worker_limit: 2,
-        fanout_per_parent: 2,
+        fanout_per_parent: 1,
         depth_penalty: 0.0,
         node_cost_penalty: 0.0,
         patience_rounds: 2,
-        max_rounds: 6,
+        max_rounds: 1,
     };
     let result = dream.improve(&worlds, &incumbent).unwrap();
 
     assert_eq!(result.candidates.first().unwrap().policy, incumbent);
     assert!(result.selected_objective >= result.baseline_objective);
     assert!(result.selected_objective > result.baseline_objective);
+    assert_eq!(result.selected.fanout_per_parent, 2);
 }
 
 #[derive(Debug, Default)]
