@@ -119,7 +119,6 @@ impl Evaluator {
     }
 }
 
-
 fn validate_constraints(constraints: EvaluationConstraints) -> Result<(), EvaluationError> {
     if let Some(value) = constraints.min_sharpe {
         ensure_finite("min_sharpe", value)?;
