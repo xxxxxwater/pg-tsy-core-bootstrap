@@ -35,7 +35,7 @@ pub struct NodeScore {
     pub violations: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Evaluator {
     constraints: EvaluationConstraints,
     weights: ScoreWeights,
@@ -119,14 +119,6 @@ impl Evaluator {
     }
 }
 
-impl Default for Evaluator {
-    fn default() -> Self {
-        Self {
-            constraints: EvaluationConstraints::default(),
-            weights: ScoreWeights::default(),
-        }
-    }
-}
 
 fn validate_constraints(constraints: EvaluationConstraints) -> Result<(), EvaluationError> {
     if let Some(value) = constraints.min_sharpe {
