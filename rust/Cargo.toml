@@ -13,6 +13,7 @@ members = [
   "crates/pg-reconcile",
   "crates/pg-journal",
   "crates/pg-replay",
+  "crates/pg-dream",
   "crates/pg-sim",
   "crates/pg-control",
   "crates/pg-orchestrator",

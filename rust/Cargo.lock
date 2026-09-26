@@ -3232,6 +3232,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pg-dream"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "pg-execution"
 version = "0.1.0"
 dependencies = [
