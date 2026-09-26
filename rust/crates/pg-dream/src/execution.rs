@@ -37,10 +37,7 @@ where
         self.executor
     }
 
-    pub fn start(
-        &mut self,
-        root_variant: StrategyVariant,
-    ) -> Result<DiscoveryTree, ExploreError> {
+    pub fn start(&mut self, root_variant: StrategyVariant) -> Result<DiscoveryTree, ExploreError> {
         let outcome = self
             .executor
             .execute(&root_variant)

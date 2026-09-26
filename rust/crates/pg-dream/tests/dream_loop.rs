@@ -30,31 +30,21 @@ fn outcome(
 
 fn branching_world() -> pg_dream::DiscoveryTree {
     let root_variant = StrategyVariant::root("baseline", json!({"rsi": 14}));
-    let mut tree =
-        pg_dream::DiscoveryTree::new(root_variant.clone(), outcome(0.0, 0.0, 0.0, 1));
+    let mut tree = pg_dream::DiscoveryTree::new(root_variant.clone(), outcome(0.0, 0.0, 0.0, 1));
     let root_id = tree.root_id;
 
     let branch_a = StrategyVariant::child(&root_variant, "branch-a", json!({"rsi": 10}));
     let branch_a_id = tree
-        .append(
-            root_id,
-            branch_a.clone(),
-            outcome(1.0, 0.0, 0.0, 1),
-        )
+        .append(root_id, branch_a.clone(), outcome(1.0, 0.0, 0.0, 1))
         .unwrap();
 
     let branch_b = StrategyVariant::child(&root_variant, "branch-b", json!({"rsi": 20}));
     tree.append(root_id, branch_b, outcome(2.0, 0.0, 0.0, 1))
         .unwrap();
 
-    let branch_a_refined =
-        StrategyVariant::child(&branch_a, "branch-a-refined", json!({"rsi": 8}));
-    tree.append(
-        branch_a_id,
-        branch_a_refined,
-        outcome(5.0, 0.0, 0.0, 1),
-    )
-    .unwrap();
+    let branch_a_refined = StrategyVariant::child(&branch_a, "branch-a-refined", json!({"rsi": 8}));
+    tree.append(branch_a_id, branch_a_refined, outcome(5.0, 0.0, 0.0, 1))
+        .unwrap();
 
     tree
 }

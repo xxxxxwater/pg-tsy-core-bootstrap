@@ -106,8 +106,7 @@ impl ExplorationPolicyConfig {
         if self.worker_limit > 1 {
             let mut candidate = self.clone();
             candidate.worker_limit -= 1;
-            candidate.fanout_per_parent =
-                candidate.fanout_per_parent.min(candidate.worker_limit);
+            candidate.fanout_per_parent = candidate.fanout_per_parent.min(candidate.worker_limit);
             push_unique(&mut out, candidate);
         }
         if self.worker_limit < 16 {
