@@ -75,3 +75,29 @@ It is not evidence that the next market regime will preserve PnL, Sharpe, drawdo
 minimum trade count. `ScoreWeights` produces deterministic utility from return, Sharpe, drawdown, and
 execution cost. `ReplayConfig` separately penalizes discovery cost and can reward more useful work per
 decision round.
+
+
+## Source evidence
+
+The first integrated Dream-RSI source line was added on post-RC1 `main`; the stabilized source at
+`3e80eaf87b4821f60af45c522ff1801147e3e89d` passed the repository's full
+[CI run](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/36281063583) and
+[PostgreSQL fenced-ledger run](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/36281063610).
+The CI evidence includes workspace `cargo fmt --check`, workspace-wide
+`cargo clippy --all-targets -- -D warnings`, and `cargo test --workspace`.
+
+That evidence means the crate integrates with the current source tree and tests. It does not prove
+that an unobserved strategy variant would have the replayed score, that a future market regime will
+match historical results, or that any paper/live venue is accepted.
+
+## Integration contract for higher-level agents
+
+A higher-level control plane such as PureGamma.ai should translate natural-language research intent
+into a validated strategy search space plus deterministic evaluator constraints. For example,
+“BTC 15m, maximum drawdown below 12%, Sharpe above 1.8” maps naturally to a BTC/15m variant generator
+plus `EvaluationConstraints { min_sharpe: Some(1.8), max_drawdown_pct: Some(12.0), ... }`.
+
+The higher-level agent may propose variants and consume Dream results, but Rust remains authoritative
+for the recorded world, experiment lineage, deterministic score, replay trace and selected exploration
+configuration. Any promotion toward trading remains a separate reviewed step through the existing
+strategy/risk/OMS/execution/reconcile chain.

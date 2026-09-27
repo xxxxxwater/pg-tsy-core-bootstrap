@@ -1,4 +1,4 @@
-# Release readiness and three-venue acceptance — 2026-09-22
+# Release readiness and three-venue acceptance — 2026-09-27
 
 > **A Research/Shadow source prerelease EXISTS:** [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1), published on 2026-09-22, is pinned to `ce7defe22c6b385aa0b1da14f7f45611ae60e136`. It has no attached binary/image and is not a production or unattended/live trading release. This tag predates post-RC1 changes including the real `pg-sim` JSONL binary and HTTP admin hardening; **do not move, overwrite, or claim they are part of RC1**. Three-venue live/unattended: **NO-GO**.
 
@@ -11,6 +11,7 @@
 | [Published RC1](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1) | Tag target `ce7defe22c6b385aa0b1da14f7f45611ae60e136` | Published source-only research/shadow prerelease; release notes explicitly excluded working JSONL executable | Docker image, paper/live approval or subsequent main changes |
 | [Simulator bridge CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35724050942) | Integration candidate `2a0fd9824bece7a0badbcc347c7f52ec890087c8` | Real Rust executable and Python subprocess contract verified on candidate | Exchange adapter acceptance |
 | [Latest pre-auth main CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35724440246) and [PostgreSQL](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35724440120) | `726a28c464aaf354e587c50fbc92e205a961ca33` | Both source CI workflows completed successfully | This security patch or deployment |
+| Dream-RSI source integration | `3e80eaf87b4821f60af45c522ff1801147e3e89d` | [Full CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/36281063583) and [PostgreSQL](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/36281063610) green; workspace fmt/clippy/tests include `pg-dream` | Unrecorded strategy outcomes, future-market performance, paper/live venue acceptance or any order authority |
 | Admin reload hardening | Separate `hardening/authenticated-admin-reload` branch; exact SHA to be recorded after final tests | Authentication and denial must be proven by full CI and explicit TCP regression | TLS, secret delivery, Telegram emergency or live trading readiness |
 
 PR #10 merged diverged observability/simulation history with `-X ours` on overlapping hunks; preserve independent semantic review of PR #8/#9/#10 behavior. Git ancestry and broad workspace CI alone cannot establish feature completeness. For post-merge status see [STATUS](STATUS.md) and [engineering automation](ENGINEERING_AUTOMATION.md).
@@ -21,6 +22,7 @@ PR #10 merged diverged observability/simulation history with `-X ours` on overla
 | --- | --- | --- |
 | Run mode | `main.rs`: shadow -> `daemon::serve`, paper/live -> `live_daemon::serve` | Paper/live invoke real adapters and can send external orders; no automatic shadow fallback |
 | Research and simulation | Python research/replay; `pg-sim` library and post-RC1 JSONL executable, Python subprocess bridge | Causal fixture parity, real-fill/fee calibration and an independent simulation merge review beyond unit CI |
+| Dream-RSI research control plane | `pg-dream`: discovery worlds, experiment store, isolated executor contract, evaluator, historical replay and policy revision | Replay only covers realized history; no evidence for unexecuted variants or future performance; must remain isolated from live venue order paths |
 | Hyperliquid | Default feed, real SDK adapter, stable `cloid`, testnet guard in paper | Isolated authenticated order, partial/late fill, fees, cancel, disconnect, kill-9, restart, emergency and ownership proof |
 | IBKR | TWS feed (opt-in), real adapter, `order_ref`, execution recovery | Must prove **paper account identity fail-closed** independent of gateway mode/port overrides; equity reduce-only races and fee/history completeness |
 | Binance Portfolio Margin | PM parsers, signed history, isolated stream/diagnostics and order-level settlement | Real daemon feed/adapter explicitly absent; account-wide signed cursor, fills, fees, positions, PM risk and emergency not complete |
@@ -34,6 +36,7 @@ PR #10 merged diverged observability/simulation history with `-X ours` on overla
 
 - [ ] Exact new candidate SHA and independent PR diff review; audit PR #10 simulation overlap.
 - [ ] All source CI, new non-skipped Rust executable/Python simulator bridge, isolated PostgreSQL CI, pinned clean feature/release build and license/secret review green on that exact SHA.
+- [ ] Keep Dream-RSI replay/store round-trip and policy-improvement tests green; verify `pg-dream` retains no venue-adapter/OMS dependency and no live-order authority.
 - [ ] PostgreSQL-backed `pg-core --serve` SHADOW lifecycle smoke: real normalized feed -> risk -> durable intent -> shadow ACK/partial fill -> OMS/ledger/reconcile -> stop/restart -> no duplicate submission. Use no real credentials.
 - [ ] Exercise lease loss, DB outage, stale feed, unknown orders/ownership, unsupported Binance feed fail-closed, and container build/start/shutdown with recorded logs and source/image digest.
 - [ ] Verify anonymous health endpoints still work and `/admin/reload` denies absent/wrong credentials without dispatch; keep reload disabled by default. Track authentication limits in [ADMIN_RELOAD_SECURITY](ADMIN_RELOAD_SECURITY.md).

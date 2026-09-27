@@ -1,10 +1,11 @@
-# PG-TSY Core architecture — source-verified snapshot (2026-09-22)
+# PG-TSY Core architecture — source-verified snapshot (2026-09-27)
 
 > Scope: repository architecture and **observed source wiring**, not proof of live-exchange acceptance. The three supported *design targets* are Binance Portfolio Margin (`BINANCE_PM`), Hyperliquid and Interactive Brokers (`IBKR`). Status can differ by venue and by capability. Start with [STATUS](STATUS.md), [EXCHANGES](EXCHANGES.md) and [RELEASE_READINESS](RELEASE_READINESS.md) before claiming a release.
 
 ## 1. Architectural principles
 
 - **Research proposes; Rust disposes.** Python research, ML, causal replay and the optional Jev challenger emit versioned signals/artifacts; only Rust strategy -> risk -> durable execution may submit an intent.
+- **Discovery history is a research world, not venue truth.** `pg-dream` may replay recorded experiment trees to improve branching, parallelism and stopping, but it has no order authority and cannot substitute replay evidence for live exchange acceptance.
 - **One shared contract, three independently proven venue boundaries.** `AssetKey` carries venue+asset; normalized data and `ExecutionAdapter` are shared, but client identity, market data, native reduce-only, authentication and history are venue-specific.
 - **Do not conflate compile, register, connect, reconcile and release.** An SDK crate or passing test is not a working deployment or production acceptance.
 - **Unknown is not rejected.** Ambiguous order outcomes stay held until venue truth and durable ownership agree; manual/unknown positions must not be silently adopted.
@@ -19,6 +20,9 @@ flowchart TB
     Py --> Artifact[Versioned artifact / signal.v1]
     Py --> Sim[BatchMarketEnv / causal replay]
     Sim <--> RustSim[pg-sim JSONL matching kernel]
+    Py --> Dream[pg-dream: DiscoveryTree / Evaluator / Replay]
+    Dream <--> RustSim
+    Dream --> Artifact
     Jev[Jev challenger — advisory only] -. optional research evidence .-> Artifact
   end
   subgraph C[Rust shared core]
@@ -61,6 +65,7 @@ The shadow path uses an in-process simulated execution adapter even when market-
 | --- | --- | --- |
 | `research/` | Python research, factors, tuning, batch environment, causal replay, challenger | No direct live order path |
 | `rust/crates/pg-sim` | Deterministic matching semantics and JSONL worker | Simulator behavior does not imply venue order-type support |
+| `rust/crates/pg-dream` | Dream-RSI world/store/execution-contract/evaluator/replay control plane | Offline/shadow only; replay sees only stored realized outcomes and cannot submit venue orders |
 | `rust/crates/pg-marketdata` | Common event schema, feeds/freshness, subscription supervision | Binance PM live feed not wired |
 | `rust/crates/pg-strategy` | Legacy automation, portable feature/policy rules, instance registry | One decision engine dispatches per definition; missing features fail closed |
 | `rust/crates/pg-risk`, `pg-oms`, `pg-execution` | Order gates, lifecycle, common adapter and simulated execution | External exactly-once is not established |
@@ -72,7 +77,29 @@ The shadow path uses an in-process simulated execution adapter even when market-
 | `rust/crates/pg-observability` | `runtime.snapshot.v1` and events component | Present in workspace **but absent from pg-core dependencies and health routes**; do not advertise as running daemon endpoint |
 | `rust/crates/pg-control` | Telegram control contracts/feature | Full real daemon control/emergency flow not accepted |
 
-## 4. Mode and venue capability matrix
+## 4. Dream-RSI recursive exploration plane
+
+```mermaid
+flowchart LR
+  P[ExplorationPolicy] --> V[Strategy variants]
+  V --> X[ExperimentExecutor: backtest / pg-sim / shadow]
+  X --> T[DiscoveryTree]
+  T --> S[ExperimentStore / WorldPool]
+  T --> E[Evaluator]
+  S --> R[ReplayEngine]
+  E --> R
+  R --> D[DreamEngine]
+  D --> NP[New ExplorationPolicy]
+  NP -. next isolated discovery cycle .-> P
+```
+
+`pg-dream` makes exploration orchestration explicit without changing the live strategy or venue path. `fanout_per_parent` controls branching, `worker_limit` controls selected work per decision round, and `patience_rounds` / `max_rounds` / replay cost limits control stopping. `ExperimentExecutor` is an isolation contract for historical backtests, `pg-sim`, or shadow execution; implementations must not call live exchange order endpoints.
+
+Replay is **off-policy over the realized tree only**. A candidate policy may reveal recorded children in a different order or grouping and stop at a different point, but it cannot synthesize an outcome for an unexecuted strategy variant. The incumbent policy is always retained as a candidate, so the selected configuration cannot have a lower configured replay objective on the same frozen `WorldPool`. This is not a guarantee of future PnL, Sharpe, drawdown, latency or fill quality.
+
+See [DREAM_RSI.md](DREAM_RSI.md) for the detailed contract.
+
+## 5. Mode and venue capability matrix
 
 | Runtime mode | Execution construction | Network/side-effect meaning | Release interpretation |
 | --- | --- | --- | --- |
@@ -82,7 +109,7 @@ The shadow path uses an in-process simulated execution adapter even when market-
 
 `RunConfig::routes_to_real_venue()` is true only for `live` with the deliberate key, **but that method does not establish that `paper` is side-effect-free**. Paper invokes `build_real_adapter_registry` too. Treat any paper connection as capable of external orders until the destination account/network is verified.
 
-## 5. Feed and decision lifecycle
+## 6. Feed and decision lifecycle
 
 ```mermaid
 sequenceDiagram
@@ -123,7 +150,7 @@ sequenceDiagram
 
 This is a **code-path diagram**, not a claim that every venue implements a fully verified history/fee/position settlement. Shadow OMS fill persistence and Binance account-wide signed-history atomicity need separate verification. `live_daemon` derives a basic position view from strategy quantity; its average entry, filled-entry count and unrealized/peak returns are `None`/zero in `position_view()`, so a live policy depending on those fields must not be described as fully supported.
 
-## 6. Restart, idempotency and ownership
+## 7. Restart, idempotency and ownership
 
 ```mermaid
 flowchart TD
@@ -141,10 +168,10 @@ flowchart TD
 
 Hyperliquid maps intent UUID to `cloid`. IBKR maps `client_order_id()` to `order_ref`, searching open, completed and execution reports. Binance PM needs authenticated history/cursor/ownership reconciliation before registration. The lease/fencing token guards **local durable writes**; it is not an exchange-enforced fencing token. Never treat a missing immediate lookup after a lost ACK as permission to post again. Manual and unresolved holdings are distinct from strategy-owned positions; shutdown/emergency logic may only act on proven owned exposure.
 
-## 7. Observability and operator plane (actual wiring)
+## 8. Observability and operator plane (actual wiring)
 
 `pg-core`'s currently wired HTTP listener in `health.rs` serves `/healthz`, `/readyz`, `/metrics` and `POST /admin/reload`; the last endpoint is not authenticated in that handler. Production Compose maps port 8080 to loopback, but the handler defaults to binding `0.0.0.0:8080`; operators must not expose it publicly. The separately merged `pg-observability` crate implements `/v1/snapshot` and `/v1/events`, but `pg-core/Cargo.toml` does not depend on it and `health.rs` does not register these routes. [OBSERVABILITY](OBSERVABILITY.md) describes that component's contract, **not a confirmed deployed endpoint**. Telegram's command contract does not itself prove `/emergency_exit` is wired and accepted end-to-end.
 
-## 8. Acceptance and non-goals
+## 9. Acceptance and non-goals
 
 Passing Cargo/Python/isolated PostgreSQL CI supports *source/test quality only*. Before a tagged product release, assess [RELEASE_READINESS](RELEASE_READINESS.md) and check the final exact commit's CI. Before any money-routing release, independently demonstrate segregated accounts (including IBKR paper mode), authenticated reads/order lifecycle, complete fill/fee/position reconciliation, missing-ACK, restart, `kill -9`, stale fencing, database loss, cancel/partial-fill races, audited emergency reduce-only and operator approval for **each venue**. Preserve the existing Binance PM/Freqtrade production service and all manually owned positions; this repository's CI and documentation may not change them.

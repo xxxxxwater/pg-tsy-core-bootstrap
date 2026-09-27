@@ -2,14 +2,17 @@
 
 **Research proposes; Rust disposes.** An independent Python/Rust quantitative research, simulation and trading-infrastructure project for **Binance Portfolio Margin, Hyperliquid and Interactive Brokers (IBKR)**. This is not TSY Capital source code or an affiliated product. Strategies use shared feature, risk, OMS, execution, reconciliation and persistence contracts; each venue retains its own adapter and acceptance requirements.
 
-> **Release status (2026-09-22): [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1) is a published, source-only Research/Shadow prerelease; unattended/live GO/NO-GO = NO-GO.** The frozen RC1 tag does **not** include post-RC1 `main` updates such as the JSONL simulator executable. Source includes a real-venue `paper/live` daemon for Hyperliquid and IBKR, but source presence and CI do not prove an accepted real-account trading chain. Binance PM's real adapter is explicitly not registered and its runtime feed is missing. Read [release readiness and exact evidence](docs/RELEASE_READINESS.md) before deployment.
+> **Release status (2026-09-22): [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1) is a published, source-only Research/Shadow prerelease; unattended/live GO/NO-GO = NO-GO.** The frozen RC1 tag does **not** include post-RC1 `main` updates such as the JSONL simulator executable. Source includes a real-venue `paper/live` daemon for Hyperliquid and IBKR, but source presence and CI do not prove an accepted real-account trading chain. Binance PM's real adapter is explicitly not registered and its runtime feed is missing. Read [release readiness and exact evidence](docs/RELEASE_READINESS.md) before deployment. Post-RC1 `main` now also includes the Rust `pg-dream` Dream-RSI control plane for recorded worlds, isolated experiment execution, deterministic scoring and off-policy replay; it does not add live order authority.
 
 ## Architecture at a glance
 
 ```mermaid
 flowchart LR
   A[Python research / local ML / causal replay] --> B[Versioned signals and model artifacts]
-  SIM[pg-sim Rust matching engine] <--> A
+  A --> DREAM[pg-dream: worlds / scoring / replay / exploration policy]
+  DREAM <--> SIM[pg-sim Rust matching engine]
+  DREAM --> B
+  SIM <--> A
   B --> C[Rust feature providers / strategy policy]
   FEED[Hyperliquid WS / IBKR TWS feeds] --> C
   C --> D[Freshness + Risk + ownership/entry gates]
@@ -43,6 +46,7 @@ An adapter compiling, being registered, authenticating, accepting an order and p
 | --- | --- | --- |
 | Research | Python factors/ML/tuning, reproducible artifacts, causal replay and four-arm Jev challenger | Synthetic/batch PnL is not live HFT performance; Jev cannot route orders |
 | Simulation | `pg-sim` deterministic order semantics, Python `RustSimClient` persistent JSONL worker and batch environment; post-RC1 `main` adds the offline Rust executable and a verified cross-language CI gate | Sim order types are not automatically available at any real exchange; the tagged RC1 did not include the binary |
+| Dream-RSI exploration | `pg-dream` records `StrategyVariant` outcomes into `DiscoveryTree` worlds, persists them through `ExperimentStore`, scores them with `Evaluator`, and replays alternative branching/parallelism/stopping policies through `ReplayEngine` / `DreamEngine` | Replay is limited to historically realized branches; replay objective improvement is not future-market performance evidence and cannot bypass Risk/OMS/execution gates |
 | Strategy | Normalized trade/BBO/L2/candle features, registry, legacy automation and portable policy graph | Exactly one policy/legacy engine dispatches per definition; missing features fail closed |
 | Risk/OMS | Freshness, entry guard, ownership, persisted stable intent, partial-fill-aware lifecycle | Need physical crash/venue evidence for end-to-end at-most-once exposure |
 | Persistence/recovery | PostgreSQL lease/fencing, journal, records, ownership and reconciliation; live daemon invokes `recover_ambiguous` + `reconcile_once` periodically | Not equivalent to authenticated complete fills/fees and safe unattended operations on all three venues |
@@ -64,6 +68,7 @@ pg-core --serve
 ```text
 research/                    Python research, batch environment, replay, challenger
 rust/crates/pg-sim/           Rust simulation JSONL kernel
+rust/crates/pg-dream/         Dream-RSI worlds, isolated execution contract, scoring and replay
 rust/crates/pg-marketdata/    Normalized feeds, freshness, supervision
 rust/crates/pg-strategy/      Registry, policy engine, features
 rust/crates/pg-risk/          Exposure and order gates
@@ -87,6 +92,7 @@ cd rust
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p pg-dream --all-targets
 cargo metadata --locked --format-version 1 >/dev/null
 cargo test -p pg-binance --all-targets
 cargo test -p pg-hyperliquid --features sdk
@@ -113,6 +119,7 @@ The first GitHub release, [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-c
 | [Engineering automation](docs/ENGINEERING_AUTOMATION.md) | Engineering ownership, full CI quality gates, commands, exact-SHA evidence, change review and rollback |
 | [Production closure architecture](docs/PRODUCTION_CLOSURE_ARCHITECTURE.md) | Detailed three-venue topology, durable order sequence, atomic ledger, SAFE_HOLD, emergency exit and fault matrix |
 | [Simulator JSONL protocol](docs/SIM_JSONL_PROTOCOL.md) | Python/Rust subprocess contract, Decimal and request identity, examples and integration acceptance |
+| [Dream-RSI control plane](docs/DREAM_RSI.md) | Recorded worlds, experiment execution boundary, evaluator, replay/dream loop and exploration-policy self-improvement limits |
 | [Exchange adapters](docs/EXCHANGES.md) | Venue-specific feed, identity, routing and safety differences |
 | [Production runtime](docs/PRODUCTION_RUNTIME.md) | Explicit run-mode semantics, startup gates, controls, operational caveats |
 | [Status](docs/STATUS.md) | Current implemented-vs-missing matrix |

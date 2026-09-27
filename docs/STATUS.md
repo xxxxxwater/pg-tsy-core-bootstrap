@@ -1,4 +1,4 @@
-# PG-TSY project status — 2026-09-22
+# PG-TSY project status — 2026-09-27
 
 **Published:** [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1) is an immutable-in-practice, source-only Research/Shadow prerelease pointing at `ce7defe22c6b385aa0b1da14f7f45611ae60e136`. This is not a stable 1.0, production image, deployed service or live-trading authorization. Later `main` changes are not part of RC1. **Unattended/live: NO-GO.** See [release readiness](RELEASE_READINESS.md).
 
@@ -7,6 +7,7 @@
 | Plane | Source and verified changes | Missing proof / restriction |
 | --- | --- | --- |
 | Research + offline simulator | Python research, causal replay and Jev advisory; post-RC1 `pg-sim` has a real JSONL executable and non-skipped Python subprocess contract, enforced by `pg-sim-bridge` CI | Simulator order semantics do not establish real exchange support, execution latency or profitability; historical PR #8/#9/#10 overlap still needs an independent semantic review |
+| Dream-RSI meta-exploration | `pg-dream` implements `StrategyVariant`, `DiscoveryTree`, `ExperimentStore`, isolated `ExperimentExecutor`, `Evaluator`, `ReplayEngine`, `DreamEngine`, and explicit branching/parallelism/stopping policy knobs | Replay is restricted to historically realized tree outcomes; it does not prove unobserved variants or future-market performance and has no live-order authority |
 | Strategies | Normalized features, registry, policy graph, legacy automation and derived subscriptions | Real `position_view` lacks average-entry/unrealized/peak returns and filled-entry count; dependent live exits cannot be claimed operational |
 | Risk/OMS/durable state | Journal-before-dispatch, stable IDs, Postgres lease/fencing, settlement, reconcile and sticky gates; isolated DB integration CI | Authenticated exchange-wide fills, fees, ownership, recovery, crash/failover and no-duplicate-exposure acceptance incomplete |
 | Hyperliquid | Market feed, SDK adapter and `cloid` recovery; `paper/live` builds real adapter | Segregated testnet account observed lifecycle, fees, kill-9, restart and emergency completion not accepted |
@@ -22,6 +23,7 @@
 
 - Pre-audit baseline `293ba629`: [seven-job CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111159) and [isolated PostgreSQL](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35719111158) succeeded. This does **not** prove later commits.
 - Post-simulator `main` commit `726a28c`: [CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35724440246) and [PostgreSQL](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35724440120) both completed successfully; see also [simulator bridge](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/35724050942) for the earlier integration candidate. These remain offline/source CI, not exchange acceptance.
+- Dream-RSI main `3e80eaf87b4821f60af45c522ff1801147e3e89d`: [full CI](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/36281063583) and [PostgreSQL fenced-ledger](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/actions/runs/36281063610) completed successfully. `rust-core` passed `cargo fmt --check`, workspace-wide `cargo clippy --all-targets -- -D warnings`, and `cargo test --workspace`. This verifies the source/test integration of `pg-dream`; it is not live-trading evidence.
 - The **current administrative hardening branch must be verified on its final exact SHA** before merge. The first implementation attempt `e0194cb` failed `cargo fmt --check`; formatting was corrected in a subsequent commit. Do not cite a green ancestor as proof of a later SHA.
 
 ## Runtime truth and release progression
@@ -29,7 +31,8 @@
 ```mermaid
 flowchart TD
   RC1[Published RC1: frozen source Research and Shadow] --> MAIN[Post-RC1 main: executable simulator bridge]
-  MAIN --> AUTH[Current branch: default-deny admin reload]
+  MAIN --> DREAM[Post-RC1 main: pg-dream historical world/replay control plane]
+  DREAM --> AUTH[Post-RC1 main: default-deny admin reload]
   AUTH --> CHECK{Exact-SHA CI and Postgres green?}
   CHECK -->|No| FIX[Fix on isolated branch; do not merge]
   CHECK -->|Yes| MERGE[Review and merge to main]

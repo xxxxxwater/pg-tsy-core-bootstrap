@@ -97,6 +97,34 @@ The same migrated logic can then be instantiated for Binance PM crypto, Hyperliq
 
 Portable infrastructure does **not** mean identical production parameters across assets or venues. Tick size, lot size, trading hours, liquidity, fees, leverage and market microstructure differ. Strategy definitions may override parameters per instrument while reusing the same policy code.
 
+## Dream-RSI strategy discovery layer
+
+`pg-dream` sits **above** the portable strategy kernel as a research-time orchestration layer. It does not replace `pg-strategy::policy` and it does not place orders.
+
+```text
+ExplorationPolicy
+      ↓
+StrategyVariant(parameters)
+      ↓
+Backtest / pg-sim / isolated shadow
+      ↓
+ExperimentOutcome
+      ↓
+DiscoveryTree ──→ ExperimentStore / WorldPool
+      ↓
+Evaluator
+      ↓
+Replay / Dream
+      ↓
+New ExplorationPolicy
+```
+
+A `StrategyVariant` is a versioned candidate parameter/configuration payload plus lineage metadata. The variant can describe RSI windows, thresholds, sizing/search parameters, feature selections or other research configuration, but the executor that interprets it remains explicit. The first concrete bridge should compile a validated variant into an existing declarative strategy definition or backtest request rather than letting arbitrary JSON acquire execution authority.
+
+The evaluator supports hard constraints such as `min_sharpe`, `max_drawdown_pct` and `min_trades`. This makes user intents such as “BTC 15m, maximum drawdown below 12%, Sharpe above 1.8” expressible as a search objective, but passing those constraints in historical replay is only research evidence.
+
+Dream replay can re-order and re-group **recorded** branches and change stopping behavior. It cannot infer the result of a variant that was never evaluated. Promotion out of research still goes through the normal strategy validation and Risk -> OMS -> Execution -> Reconcile path.
+
 ## Current boundary
 
-The policy kernel and multi-venue universe are infrastructure primitives. Existing `AutomatedStrategy` remains the current online signal path. The next integration step is to compile declarative policy definitions into the runtime strategy graph and route normalized feature updates into them before `Signal/PositionTarget` generation.
+The policy kernel and multi-venue universe are infrastructure primitives. Existing `AutomatedStrategy` remains the current online signal path. `pg-dream` is a separate research/control-plane layer and is not wired as a live strategy dispatcher. The next integration step is to compile validated Dream `StrategyVariant` payloads into declarative backtest/strategy definitions, while keeping any later promotion behind the existing `Signal/PositionTarget` -> Risk -> OMS -> Execution chain.
