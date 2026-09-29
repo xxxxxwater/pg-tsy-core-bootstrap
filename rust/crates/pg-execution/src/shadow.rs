@@ -184,6 +184,30 @@ impl ShadowExecutionAdapter {
             .position(asset)
     }
 
+    /// Test-only shadow fault helper: expose unmatched in-memory venue state so
+    /// reconciliation tests can prove unknown ownership fails closed. This adapter
+    /// never communicates with a real venue.
+    pub fn inject_unmatched_position_for_test(
+        &self,
+        asset: impl Into<String>,
+        quantity: Decimal,
+    ) {
+        let asset = asset.into();
+        let mut book = self.book.lock().expect("shadow book lock poisoned");
+        if quantity.is_zero() {
+            book.positions.remove(&asset);
+            return;
+        }
+        book.positions.insert(
+            asset,
+            ShadowPosition {
+                net_quantity: quantity,
+                average_entry_price: None,
+                filled_entries: 0,
+            },
+        );
+    }
+
     pub fn filled_quantity(&self, client_order_id: &str) -> Decimal {
         self.book
             .lock()
@@ -461,6 +485,17 @@ mod tests {
         assert_eq!(position.filled_entries, 1);
         // A filled order is no longer resting.
         assert_eq!(adapter.open_orders().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn unmatched_test_position_has_no_order_evidence() {
+        let adapter = adapter(ShadowFillMode::ImmediateFill);
+        adapter.inject_unmatched_position_for_test("PG_TEST_GHOST", d(3));
+        assert_eq!(adapter.position("PG_TEST_GHOST").net_quantity, d(3));
+        let positions = adapter.positions().await.unwrap();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].asset, "PG_TEST_GHOST");
+        assert!(adapter.open_orders().await.unwrap().is_empty());
     }
 
     #[tokio::test]
