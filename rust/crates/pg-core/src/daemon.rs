@@ -991,6 +991,18 @@ fn spawn_shadow_fixture(
     if !(1..=10_000).contains(&interval_ms) {
         bail!("PG_SHADOW_FIXTURE_INTERVAL_MS must be in [1, 10000]");
     }
+    let max_cycles = env::var("PG_SHADOW_FIXTURE_CYCLES")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .context("invalid PG_SHADOW_FIXTURE_CYCLES")
+        })
+        .transpose()?;
+    if max_cycles == Some(0) {
+        bail!("PG_SHADOW_FIXTURE_CYCLES must be positive when set");
+    }
 
     let fixture_name = path.display().to_string();
     tokio::spawn(async move {
@@ -998,8 +1010,10 @@ fn spawn_shadow_fixture(
             fixture = %fixture_name,
             events = events.len(),
             interval_ms,
+            ?max_cycles,
             "shadow deterministic market fixture enabled"
         );
+        let mut completed_cycles = 0_u64;
         loop {
             for template in &events {
                 let mut event = template.clone();
@@ -1008,6 +1022,15 @@ fn spawn_shadow_fixture(
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+            }
+            completed_cycles = completed_cycles.saturating_add(1);
+            if max_cycles.is_some_and(|limit| completed_cycles >= limit) {
+                tracing::warn!(
+                    fixture = %fixture_name,
+                    completed_cycles,
+                    "shadow market fixture intentionally paused for fault injection"
+                );
+                std::future::pending::<()>().await;
             }
         }
     });

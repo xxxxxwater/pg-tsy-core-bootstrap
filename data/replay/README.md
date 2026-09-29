@@ -172,3 +172,6 @@ cargo run -p pg-core -- --serve
 ```
 
 The runtime rebases only receive timestamps to wall clock and loops the fixture. Startup fails if the fixture does not cover every derived feed. This path exists only in the shadow daemon; paper/live never read `PG_SHADOW_MARKET_FIXTURE`.
+
+
+For fail-closed testing, set `PG_SHADOW_FIXTURE_CYCLES=N` to emit exactly N full fixture cycles and then keep the source task alive without new events. This is used by CI to prove that market-data staleness drives readiness false and observability to `SAFE_HOLD`; it is not a live/paper control.

@@ -96,4 +96,66 @@ jobs:
           kill -INT "$pid"
           wait "$pid"
           trap - EXIT
+
+      - name: Stale market data must force SAFE_HOLD
+        shell: bash
+        env:
+          PG_INSTANCE_ID: daemon-observability-stale-ci
+          PG_LEASE_KEY: pg-core:ci:daemon-observability-stale
+          PG_SHADOW_FIXTURE_CYCLES: "1"
+          PG_MAX_MARKET_STALENESS_MS: "3000"
+        run: |
+          set -euo pipefail
+          target/debug/pg-core --serve >/tmp/pg-core-stale.log 2>&1 &
+          pid=$!
+          cleanup() {
+            kill -INT "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            cat /tmp/pg-core-stale.log || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/readyz >/tmp/stale-ready.json; then
+              if jq -e '.ready == true' /tmp/stale-ready.json >/dev/null; then
+                ready=1
+                break
+              fi
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "stale-injection daemon exited before initial readiness"
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+          stale=0
+          for _ in $(seq 1 12); do
+            code=$(curl -sS -o /tmp/stale-ready.json -w '%{http_code}' http://127.0.0.1:18080/readyz || true)
+            if [ "$code" = "503" ]; then
+              stale=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "stale-injection daemon exited instead of staying fail-closed"
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$stale" -eq 1
+
+          curl -fsS             -H "Authorization: Bearer $PG_OBSERVABILITY_TOKEN"             http://127.0.0.1:18787/v1/snapshot >/tmp/stale-snapshot.json
+          jq -e '
+            .startup.ready == false and
+            .safety.state == "SAFE_HOLD" and
+            .safety.allow_new_exposure == false and
+            ([.feeds[].status] | any(. == "STALE"))
+          ' /tmp/stale-snapshot.json
+
+          kill -INT "$pid"
+          wait "$pid"
+          trap - EXIT
+
       - run: cargo clippy -p pg-core -p pg-observability --all-targets -- -D warnings
