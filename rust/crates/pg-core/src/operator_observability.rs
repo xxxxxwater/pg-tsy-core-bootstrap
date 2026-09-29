@@ -2,11 +2,14 @@ use crate::health::HealthState;
 use anyhow::{Context, Result, bail};
 use pg_marketdata::{FeedKind, SubscriptionState, SubscriptionSupervisor};
 use pg_observability::{
-    FeedSnapshot, LeaseSnapshot, ObservabilityConfig, ObservabilityServer, OrdersSnapshot,
-    ReconcileSnapshot, RuntimeObservatory, StorageSnapshot,
+    FeedSnapshot, LeaseSnapshot, ObservabilityConfig, ObservabilityServer, OrderSnapshot,
+    OrdersSnapshot, PositionSnapshot, ReconcileSnapshot, RuntimeObservatory, StorageSnapshot,
+    VenueSnapshot,
 };
+use pg_oms::{OrderRecord, OrderState};
+use pg_reconcile::{Ownership, VenuePosition};
 use pg_runtime::{RunConfig, RunMode, StartupChecklist, required_gates};
-use pg_types::Venue;
+use pg_types::{Side, Venue};
 use std::env;
 
 pub(crate) struct OperatorObservability {
@@ -96,17 +99,21 @@ impl OperatorObservability {
             fencing_token: health.lease_healthy.then_some(self.fencing_token),
             heartbeat_age_ms: None,
         });
-        self.observatory.set_orders(OrdersSnapshot {
-            open: health.open_orders as u64,
-            ..OrdersSnapshot::default()
-        });
+        let mut orders = self.observatory.snapshot().orders;
+        orders.open = health.open_orders as u64;
+        self.observatory.set_orders(orders);
 
         if let Some(clean) = reconcile_clean {
+            let previous = self.observatory.snapshot().reconcile;
             self.observatory.set_reconcile(ReconcileSnapshot {
                 status: if clean { "HEALTHY" } else { "DEGRADED" }.into(),
                 last_success_age_ms: clean.then_some(0),
-                mismatch_count: u64::from(!clean),
-                ownership_unknown_count: 0,
+                mismatch_count: if clean {
+                    0
+                } else {
+                    previous.mismatch_count.max(1)
+                },
+                ownership_unknown_count: previous.ownership_unknown_count,
             });
         }
     }
@@ -114,6 +121,32 @@ impl OperatorObservability {
     pub(crate) fn sync_market_data(&self, supervisor: &SubscriptionSupervisor, now_ns: u64) {
         self.observatory
             .set_configured_feeds(feed_snapshots(supervisor, now_ns));
+    }
+
+    pub(crate) fn sync_execution_inventory(
+        &self,
+        supervisor: &SubscriptionSupervisor,
+        venues: &[Venue],
+        positions: &[VenuePosition],
+        orders: &[OrderRecord],
+        reconcile_clean: bool,
+    ) {
+        self.observatory
+            .set_venues(venue_snapshots(supervisor, venues, reconcile_clean));
+        self.observatory
+            .set_positions(position_snapshots(positions));
+        self.observatory.set_orders(order_snapshots(orders));
+
+        let unknown_positions = positions
+            .iter()
+            .filter(|position| position.ownership == Ownership::Unknown)
+            .count() as u64;
+        let mut reconcile = self.observatory.snapshot().reconcile;
+        reconcile.ownership_unknown_count = unknown_positions;
+        if !reconcile_clean {
+            reconcile.mismatch_count = reconcile.mismatch_count.max(1);
+        }
+        self.observatory.set_reconcile(reconcile);
     }
 
     pub(crate) fn set_strategy_inventory(&self, strategy_ids: Vec<String>) {
@@ -185,6 +218,153 @@ fn subscription_health(state: SubscriptionState) -> &'static str {
         SubscriptionState::Reconnecting => "RECONNECTING",
         SubscriptionState::Stale => "STALE",
         SubscriptionState::Failed => "FAILED",
+    }
+}
+
+fn venue_snapshots(
+    supervisor: &SubscriptionSupervisor,
+    venues: &[Venue],
+    reconcile_clean: bool,
+) -> Vec<VenueSnapshot> {
+    venues
+        .iter()
+        .copied()
+        .map(|venue| {
+            let states = supervisor
+                .statuses()
+                .filter(|(spec, _)| spec.venue == venue)
+                .map(|(_, status)| status.state)
+                .collect::<Vec<_>>();
+            let market_data = if states.is_empty() {
+                "NOT_REQUIRED"
+            } else if states.iter().all(|state| *state == SubscriptionState::Connected) {
+                "HEALTHY"
+            } else if states.iter().any(|state| *state == SubscriptionState::Failed) {
+                "FAILED"
+            } else if states.iter().any(|state| *state == SubscriptionState::Stale) {
+                "STALE"
+            } else if states
+                .iter()
+                .any(|state| *state == SubscriptionState::Degraded)
+            {
+                "DEGRADED"
+            } else {
+                "RECONNECTING"
+            };
+            VenueSnapshot {
+                id: venue_name(venue).into(),
+                enabled: true,
+                market_data: market_data.into(),
+                execution: if reconcile_clean {
+                    "HEALTHY".into()
+                } else {
+                    "DEGRADED".into()
+                },
+                reconcile: if reconcile_clean {
+                    "HEALTHY".into()
+                } else {
+                    "DEGRADED".into()
+                },
+                latency_ms: None,
+            }
+        })
+        .collect()
+}
+
+fn position_snapshots(positions: &[VenuePosition]) -> Vec<PositionSnapshot> {
+    positions
+        .iter()
+        .filter(|position| !position.quantity.is_zero())
+        .map(|position| {
+            let (ownership, strategy_id) = match &position.ownership {
+                Ownership::Strategy(id) => ("STRATEGY", Some(id.clone())),
+                Ownership::Manual => ("MANUAL", None),
+                Ownership::Unknown => ("UNKNOWN", None),
+            };
+            PositionSnapshot {
+                venue: venue_name(position.venue).into(),
+                asset: position.asset.clone(),
+                side: if position.quantity.is_sign_positive() {
+                    "LONG".into()
+                } else {
+                    "SHORT".into()
+                },
+                quantity: position.quantity.to_string(),
+                notional_usd: None,
+                ownership: ownership.into(),
+                strategy_id,
+            }
+        })
+        .collect()
+}
+
+fn order_snapshots(orders: &[OrderRecord]) -> OrdersSnapshot {
+    let open = orders
+        .iter()
+        .filter(|order| {
+            matches!(
+                order.state,
+                OrderState::Created
+                    | OrderState::PendingSubmit
+                    | OrderState::Open
+                    | OrderState::PartiallyFilled
+                    | OrderState::PendingCancel
+            )
+        })
+        .count() as u64;
+    let partial = orders
+        .iter()
+        .filter(|order| order.state == OrderState::PartiallyFilled)
+        .count() as u64;
+    let unknown = orders
+        .iter()
+        .filter(|order| order.state == OrderState::Unknown)
+        .count() as u64;
+    let recent = orders
+        .iter()
+        .filter(|order| !order.is_terminal() || order.state == OrderState::Unknown)
+        .take(50)
+        .map(|order| OrderSnapshot {
+            id: order
+                .venue_order_id
+                .clone()
+                .unwrap_or_else(|| order.order_id.to_string()),
+            venue: venue_name(order.venue).into(),
+            asset: order.asset.clone(),
+            side: match order.side {
+                Some(Side::Buy) => "BUY".into(),
+                Some(Side::Sell) => "SELL".into(),
+                None => "UNKNOWN".into(),
+            },
+            status: order_state_name(order.state).into(),
+            filled: Some(order.filled_quantity.to_string()),
+            quantity: order.requested_quantity.to_string(),
+            client_identity: order.client_order_id.clone(),
+        })
+        .collect();
+
+    OrdersSnapshot {
+        open,
+        partial,
+        // OrderRecord does not carry an updated timestamp, so a "recent filled"
+        // count cannot be derived honestly here.
+        filled_recent: 0,
+        unknown,
+        recent,
+    }
+}
+
+fn order_state_name(state: OrderState) -> &'static str {
+    match state {
+        OrderState::Created => "CREATED",
+        OrderState::PendingSubmit => "PENDING_SUBMIT",
+        OrderState::Open => "OPEN",
+        OrderState::PartiallyFilled => "PARTIALLY_FILLED",
+        OrderState::PendingCancel => "PENDING_CANCEL",
+        OrderState::Filled => "FILLED",
+        OrderState::Canceled => "CANCELED",
+        OrderState::Rejected => "REJECTED",
+        OrderState::Unknown => "UNKNOWN",
     }
 }
 
