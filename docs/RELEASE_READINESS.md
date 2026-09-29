@@ -27,7 +27,7 @@ PR #10 merged diverged observability/simulation history with `-X ours` on overla
 | IBKR | TWS feed (opt-in), real adapter, `order_ref`, execution recovery | Must prove **paper account identity fail-closed** independent of gateway mode/port overrides; equity reduce-only races and fee/history completeness |
 | Binance Portfolio Margin | PM parsers, signed history, isolated stream/diagnostics and order-level settlement | Real daemon feed/adapter explicitly absent; account-wide signed cursor, fills, fees, positions, PM risk and emergency not complete |
 | State/strategy | Journal-before-submit, PostgreSQL lease/fencing, ambiguous recovery, periodic reconcile | Complete venue truth and crash/failover no-duplicate-exposure evidence; real quantity-only `position_view` lacks entry/return/peak/fill count |
-| Observability | `/healthz`, `/readyz`, `/metrics`; separate `pg-observability` crate | `/v1/snapshot` and `/v1/events` not mounted; no claim of deployed endpoints |
+| Observability | `/healthz`, `/readyz`, `/metrics`; opt-in integrated `pg-observability` listener | Startup/lease/strategy/open-order/reconcile state is wired, but detailed feed/venue/position/performance producers and daemon-level auth/failure acceptance remain incomplete |
 | Operator control | HTTP reload with post-RC1 default-deny `PG_ADMIN_TOKEN` branch hardening | Listener defaults `0.0.0.0`; managed secret delivery, network isolation and TLS remain operator tasks; Telegram authenticated `/emergency_exit` not accepted |
 
 ## 3. Gate A: historical source prerelease versus follow-up engineering

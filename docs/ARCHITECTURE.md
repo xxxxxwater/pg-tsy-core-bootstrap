@@ -53,7 +53,7 @@ flowchart TB
   Router -->|paper/live adapter constructed| IB
   Router -. explicit fail-closed: no real PM adapter .-> BN
   SH[ShadowExecutionAdapter: in-process simulated book] --> Router
-  Console[pg-observability crate: snapshot/events API] -. NOT wired into pg-core executable .-> C
+  Console[pg-observability: opt-in integrated snapshot/events API] --> C
   TG[Telegram pg-control contract] -. production command transport not proven wired .-> C
 ```
 
@@ -74,7 +74,7 @@ The shadow path uses an in-process simulated execution adapter even when market-
 | `rust/adapters/pg-ibkr` | Community `ibapi` TWS/IB Gateway feed/execution, `order_ref` recovery | Stock reduce-only is software-only if explicitly enabled |
 | `rust/adapters/pg-binance` | PM parsing/WS/history/isolated probes/ledger-related interfaces | No real PM runtime routing or full account cursor/position settlement |
 | `rust/crates/pg-core/src/{main,daemon,live_daemon}.rs` | Mode dispatch and daemon runtime | `shadow` uses `daemon`; `paper/live` use `live_daemon` |
-| `rust/crates/pg-observability` | `runtime.snapshot.v1` and events component | Present in workspace **but absent from pg-core dependencies and health routes**; do not advertise as running daemon endpoint |
+| `rust/crates/pg-observability` | `runtime.snapshot.v1`, bounded events and authenticated HTTP API | Explicit `pg-core` dependency with an opt-in runtime listener; startup/lease/strategy/open-order/reconcile producers are wired, while detailed feed/venue/position/performance evidence remains incomplete |
 | `rust/crates/pg-control` | Telegram control contracts/feature | Full real daemon control/emergency flow not accepted |
 
 ## 4. Dream-RSI recursive exploration plane
@@ -170,7 +170,9 @@ Hyperliquid maps intent UUID to `cloid`. IBKR maps `client_order_id()` to `order
 
 ## 8. Observability and operator plane (actual wiring)
 
-`pg-core`'s currently wired HTTP listener in `health.rs` serves `/healthz`, `/readyz`, `/metrics` and `POST /admin/reload`; the last endpoint is not authenticated in that handler. Production Compose maps port 8080 to loopback, but the handler defaults to binding `0.0.0.0:8080`; operators must not expose it publicly. The separately merged `pg-observability` crate implements `/v1/snapshot` and `/v1/events`, but `pg-core/Cargo.toml` does not depend on it and `health.rs` does not register these routes. [OBSERVABILITY](OBSERVABILITY.md) describes that component's contract, **not a confirmed deployed endpoint**. Telegram's command contract does not itself prove `/emergency_exit` is wired and accepted end-to-end.
+`pg-core`'s health listener serves `/healthz`, `/readyz`, `/metrics` and `POST /admin/reload`. Reload is deny-by-default: a 32–512 byte printable `PG_ADMIN_TOKEN` Bearer credential is required before the command can be enqueued. The listener still defaults to `0.0.0.0:8080`, so production deployments should bind or firewall it to a trusted operator network.
+
+The runtime now also has an **opt-in** integrated `pg-observability` listener. Set `PG_OBSERVABILITY_ENABLED=true` to start it; it defaults to `127.0.0.1:8787`. Binding it to a non-loopback address requires a 32–512 byte printable `PG_OBSERVABILITY_TOKEN`. `/v1/snapshot` and `/v1/events` receive startup-gate status, lease authority, strategy inventory, open-order count and reconciliation health from the actual daemon. Detailed per-feed, per-venue, positions, latency and PnL producers are not yet complete and must remain unknown rather than fabricated. Telegram's command contract still does not prove `/emergency_exit` is wired and accepted end-to-end.
 
 ## 9. Acceptance and non-goals
 

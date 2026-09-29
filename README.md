@@ -50,7 +50,7 @@ An adapter compiling, being registered, authenticating, accepting an order and p
 | Strategy | Normalized trade/BBO/L2/candle features, registry, legacy automation and portable policy graph | Exactly one policy/legacy engine dispatches per definition; missing features fail closed |
 | Risk/OMS | Freshness, entry guard, ownership, persisted stable intent, partial-fill-aware lifecycle | Need physical crash/venue evidence for end-to-end at-most-once exposure |
 | Persistence/recovery | PostgreSQL lease/fencing, journal, records, ownership and reconciliation; live daemon invokes `recover_ambiguous` + `reconcile_once` periodically | Not equivalent to authenticated complete fills/fees and safe unattended operations on all three venues |
-| Observability/control | Wired `/healthz`, `/readyz`, `/metrics`, reload handler; separate `pg-observability` snapshot/events crate and `pg-control` Telegram contract | `/v1/snapshot` and `/v1/events` **not wired into pg-core**; Telegram emergency end-to-end unproven; reload handler lacks auth |
+| Observability/control | Wired `/healthz`, `/readyz`, `/metrics`; deny-by-default authenticated reload; opt-in integrated `pg-observability` API | `/v1/snapshot` and `/v1/events` are disabled by default and currently mirror startup gates, lease ownership, strategy inventory, open-order count and reconcile health; detailed feed/venue/position/performance producers remain incomplete; Telegram emergency end-to-end unproven |
 
 ## Actual mode dispatch
 
@@ -76,7 +76,7 @@ rust/crates/pg-oms/           Order state machine
 rust/crates/pg-execution/     ExecutionAdapter, shadow and composition
 rust/crates/pg-orchestrator/  Durable dispatch, recovery and reconciliation
 rust/crates/pg-store/         PostgreSQL durable state, lease/fencing and fill ledger
-rust/crates/pg-observability/ Snapshot/events component (not linked into pg-core)
+rust/crates/pg-observability/ Opt-in integrated runtime snapshot/events API
 rust/crates/pg-control/       Telegram contracts (full daemon hookup unverified)
 rust/crates/pg-core/          CLI, shadow daemon, paper/live daemon, HTTP health
 rust/adapters/               pg-binance, pg-hyperliquid, pg-ibkr
@@ -117,6 +117,8 @@ The first GitHub release, [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-c
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | End-to-end component, runtime, order and recovery diagrams |
 | [Engineering automation](docs/ENGINEERING_AUTOMATION.md) | Engineering ownership, full CI quality gates, commands, exact-SHA evidence, change review and rollback |
+| [2026-09-29 review](docs/REVIEW_2026-09-29.md) | Source review, completed hardening, remaining P0/P1 blockers and next upgrade path |
+| [Observability](docs/OBSERVABILITY.md) | Integrated operator API, security boundary, authoritative fields and remaining evidence gaps |
 | [Production closure architecture](docs/PRODUCTION_CLOSURE_ARCHITECTURE.md) | Detailed three-venue topology, durable order sequence, atomic ledger, SAFE_HOLD, emergency exit and fault matrix |
 | [Simulator JSONL protocol](docs/SIM_JSONL_PROTOCOL.md) | Python/Rust subprocess contract, Decimal and request identity, examples and integration acceptance |
 | [Dream-RSI control plane](docs/DREAM_RSI.md) | Recorded worlds, experiment execution boundary, evaluator, replay/dream loop and exploration-policy self-improvement limits |
