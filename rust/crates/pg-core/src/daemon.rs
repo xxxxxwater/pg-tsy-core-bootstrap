@@ -144,6 +144,17 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         health.clone(),
         Some(control_tx),
     ));
+    let observability =
+        crate::operator_observability::OperatorObservability::maybe_spawn(
+            &config,
+            registry.strategy_ids(),
+        )
+        .await?;
+    if let Some(observer) = observability.as_ref() {
+        observer
+            .sync(&health, &checklist, config.mode, Some(true))
+            .await;
+    }
 
     let heartbeat = store.spawn_lease_heartbeat(lease.clone());
     let mut lease_health = heartbeat.health();
@@ -312,6 +323,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         snapshot.last_error = None;
                     }
                 }).await;
+                if let Some(observer) = observability.as_ref() {
+                    observer.sync(&health, &checklist, config.mode, Some(true)).await;
+                }
             }
             Some(command) = control_rx.recv() => {
                 match command {
@@ -320,6 +334,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                             Ok(ids) => {
                                 tracing::info!(strategies = ?ids, "strategy definitions reloaded");
                                 health.mutate(|snapshot| { snapshot.last_error = None; }).await;
+                                if let Some(observer) = observability.as_ref() {
+                                    observer.set_strategy_inventory(ids.clone());
+                                }
                             }
                             Err(error) => {
                                 // A rejected reload is not fatal: the running set is
@@ -356,11 +373,20 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     health
         .mutate(|snapshot| {
             snapshot.ready = false;
+            snapshot.lease_healthy = false;
         })
         .await;
+    if let Some(observer) = observability.as_ref() {
+        observer
+            .sync(&health, &checklist, config.mode, Some(true))
+            .await;
+    }
     heartbeat.stop().await;
     if let Err(error) = store.release_lease(&lease).await {
         tracing::warn!(%error, "failed to release runtime lease during shutdown");
+    }
+    if let Some(observer) = observability {
+        observer.stop().await;
     }
     result
 }

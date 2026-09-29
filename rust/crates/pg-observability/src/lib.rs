@@ -577,6 +577,8 @@ pub enum ObservabilityConfigError {
     InvalidBind(String),
     #[error("invalid numeric environment variable {key}: {value}")]
     InvalidNumber { key: &'static str, value: String },
+    #[error("PG_OBSERVABILITY_TOKEN must be 32-512 printable ASCII characters")]
+    InvalidToken,
     #[error(
         "PG_OBSERVABILITY_TOKEN is required when binding observability to a non-loopback address"
     )]
@@ -598,9 +600,14 @@ impl ObservabilityConfig {
         let bind = bind_text
             .parse::<SocketAddr>()
             .map_err(|_| ObservabilityConfigError::InvalidBind(bind_text.clone()))?;
-        let token = env::var("PG_OBSERVABILITY_TOKEN")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
+        let token = match env::var("PG_OBSERVABILITY_TOKEN") {
+            Ok(value) if valid_bearer_token(&value) => Some(value),
+            Ok(_) => return Err(ObservabilityConfigError::InvalidToken),
+            Err(env::VarError::NotPresent) => None,
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ObservabilityConfigError::InvalidToken);
+            }
+        };
         if !bind.ip().is_loopback() && token.is_none() {
             return Err(ObservabilityConfigError::TokenRequiredForNonLoopback);
         }
@@ -611,6 +618,22 @@ impl ObservabilityConfig {
             event_capacity: parse_env_usize("PG_OBSERVABILITY_EVENT_CAPACITY", 1_024)?.max(1),
         })
     }
+}
+
+fn valid_bearer_token(token: &str) -> bool {
+    (32..=512).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right.iter())
+        .fold(0_u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
 }
 
 fn parse_env_u64(key: &'static str, default: u64) -> Result<u64, ObservabilityConfigError> {
@@ -648,7 +671,9 @@ impl ApiState {
         else {
             return false;
         };
-        value.strip_prefix("Bearer ") == Some(token)
+        value
+            .strip_prefix("Bearer ")
+            .is_some_and(|supplied| constant_time_eq(supplied, token))
     }
 }
 
@@ -758,6 +783,24 @@ mod tests {
             max_market_staleness_ms: 3_000,
             lease_ttl_seconds: 15,
         }
+    }
+
+    #[test]
+    fn bearer_token_policy_rejects_short_or_non_graphic_values() {
+        assert!(!valid_bearer_token(""));
+        assert!(!valid_bearer_token("short"));
+        assert!(!valid_bearer_token(&format!("{}\n", "a".repeat(32))));
+        assert!(valid_bearer_token(&"a".repeat(32)));
+        assert!(valid_bearer_token(&"b".repeat(512)));
+        assert!(!valid_bearer_token(&"c".repeat(513)));
+    }
+
+    #[test]
+    fn bearer_comparison_requires_equal_complete_tokens() {
+        let token = "a".repeat(32);
+        assert!(constant_time_eq(&token, &token));
+        assert!(!constant_time_eq(&token, &"b".repeat(32)));
+        assert!(!constant_time_eq(&token, "short"));
     }
 
     #[test]

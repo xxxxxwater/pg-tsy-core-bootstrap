@@ -400,6 +400,22 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         health.clone(),
         Some(control_tx),
     ));
+    let observability =
+        crate::operator_observability::OperatorObservability::maybe_spawn(
+            &config,
+            registry.strategy_ids(),
+        )
+        .await?;
+    if let Some(observer) = observability.as_ref() {
+        observer
+            .sync(
+                &health,
+                &checklist,
+                config.mode,
+                Some(startup_clean && ambiguous_clean),
+            )
+            .await;
+    }
 
     let heartbeat = store.spawn_lease_heartbeat(lease.clone());
     let mut lease_health = heartbeat.health();
@@ -609,6 +625,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         snapshot.last_error = Some("continuous reconcile entered SAFE_HOLD".into());
                     }
                 }).await;
+                if let Some(observer) = observability.as_ref() {
+                    observer.sync(&health, &checklist, config.mode, Some(clean)).await;
+                }
             }
             _ = universe_tick.tick(), if dynamic_enabled => {
                 risk_limits.allow_new_exposure = false;
@@ -761,6 +780,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         snapshot.last_error = None;
                     }
                 }).await;
+                if let Some(observer) = observability.as_ref() {
+                    observer.sync(&health, &checklist, config.mode, None).await;
+                }
             }
             Some(command) = control_rx.recv() => {
                 match command {
@@ -799,6 +821,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                                         }
                                     }
                                 }
+                                if let Some(observer) = observability.as_ref() {
+                                    observer.set_strategy_inventory(ids.clone());
+                                }
                                 tracing::info!(strategies = ?ids, "strategy definitions reloaded; exposure gated on topology and reconciliation");
                             }
                             Err(error) => {
@@ -833,10 +858,21 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         tracing::warn!(%error, "shutdown policy could not be completed cleanly");
     }
     let _ = trading_started;
-    health.mutate(|snapshot| snapshot.ready = false).await;
+    health
+        .mutate(|snapshot| {
+            snapshot.ready = false;
+            snapshot.lease_healthy = false;
+        })
+        .await;
+    if let Some(observer) = observability.as_ref() {
+        observer.sync(&health, &checklist, config.mode, None).await;
+    }
     heartbeat.stop().await;
     if let Err(error) = store.release_lease(&lease).await {
         tracing::warn!(%error, "failed to release runtime lease during shutdown");
+    }
+    if let Some(observer) = observability {
+        observer.stop().await;
     }
     result
 }

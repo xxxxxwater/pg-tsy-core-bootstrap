@@ -19,6 +19,7 @@ pg-hyperliquid = { path = "../../adapters/pg-hyperliquid", optional = true }
 pg-ibkr = { path = "../../adapters/pg-ibkr", optional = true }
 pg-marketdata = { path = "../pg-marketdata" }
 pg-oms = { path = "../pg-oms" }
+pg-observability = { path = "../pg-observability" }
 pg-orchestrator = { path = "../pg-orchestrator" }
 pg-reconcile = { path = "../pg-reconcile" }
 pg-runtime = { path = "../pg-runtime" }

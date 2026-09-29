@@ -1,6 +1,7 @@
 mod daemon;
 mod dynamic_universe;
 mod health;
+mod operator_observability;
 // The default pg-core build enables Hyperliquid but not IBKR. A small subset of
 // live_daemon helpers exists only for the IBKR feature; keep those default-build
 // lints scoped to this module, while CI separately compiles/clippies pg-core with

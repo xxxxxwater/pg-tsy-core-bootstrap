@@ -3215,6 +3215,7 @@ dependencies = [
  "pg-ibkr",
  "pg-marketdata",
  "pg-oms",
+ "pg-observability",
  "pg-orchestrator",
  "pg-reconcile",
  "pg-risk",
