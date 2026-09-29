@@ -78,25 +78,33 @@ jobs:
           code=$(curl -sS -o /tmp/denied.json -w '%{http_code}' http://127.0.0.1:18787/v1/snapshot)
           test "$code" = "401"
 
-          curl -fsS             -H "Authorization: Bearer $PG_OBSERVABILITY_TOKEN"             http://127.0.0.1:18787/v1/snapshot >/tmp/snapshot.json
-          jq -e '
-            .schema_version == "runtime.snapshot.v1" and
-            .runtime.mode == "shadow" and
-            .startup.ready == true and
-            .safety.state == "SHADOW" and
-            .lease.owned == true and
-            (.lease.fencing_token != null) and
-            ([.feeds[].status] | all(. == "HEALTHY")) and
-            (.feeds | length) >= 4 and
-            (.venues | any(
-              .id == "HYPERLIQUID" and
-              .market_data == "HEALTHY" and
-              .execution == "HEALTHY" and
-              .reconcile == "HEALTHY"
-            )) and
-            (.positions | type == "array") and
-            (.orders.recent | type == "array")
-          ' /tmp/snapshot.json
+          snapshot_ready=0
+          for _ in $(seq 1 10); do
+            curl -fsS               -H "Authorization: Bearer $PG_OBSERVABILITY_TOKEN"               http://127.0.0.1:18787/v1/snapshot >/tmp/snapshot.json
+            if jq -e '
+              .schema_version == "runtime.snapshot.v1" and
+              .runtime.mode == "shadow" and
+              .startup.ready == true and
+              .safety.state == "SHADOW" and
+              .lease.owned == true and
+              (.lease.fencing_token != null) and
+              ([.feeds[].status] | all(. == "HEALTHY")) and
+              (.feeds | length) >= 4 and
+              (.venues | any(
+                .id == "HYPERLIQUID" and
+                .market_data == "HEALTHY" and
+                .execution == "HEALTHY" and
+                .reconcile == "HEALTHY"
+              )) and
+              (.positions | type == "array") and
+              (.orders.recent | type == "array")
+            ' /tmp/snapshot.json >/dev/null; then
+              snapshot_ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$snapshot_ready" -eq 1
 
           curl -fsS             -H "Authorization: Bearer $PG_OBSERVABILITY_TOKEN"             'http://127.0.0.1:18787/v1/events?after=0&limit=20' >/tmp/events.json
           jq -e '.events | any(.type == "observability.enabled")' /tmp/events.json
