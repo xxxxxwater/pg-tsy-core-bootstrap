@@ -8,6 +8,7 @@ use anyhow::Context;
 use std::{collections::BTreeSet, env, time::Duration};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(feature = "telegram-control"), allow(dead_code))]
 pub(crate) enum OperatorCommand {
     Start,
     Stop,
