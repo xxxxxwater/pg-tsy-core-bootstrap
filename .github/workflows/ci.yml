@@ -94,6 +94,7 @@ jobs:
       # cannot silently rot while the default Hyperliquid-only workspace stays green.
       - run: cargo clippy -p pg-core --all-targets --features ibkr-marketdata -- -D warnings
       - run: cargo check -p pg-control --features telegram
+      - run: cargo clippy -p pg-core --all-targets --features ibkr-marketdata,telegram-control -- -D warnings
 
   compose-config:
     runs-on: ubuntu-latest

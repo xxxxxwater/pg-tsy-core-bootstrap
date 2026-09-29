@@ -1,6 +1,7 @@
 use crate::{
     dynamic_universe::{DynamicUniverseResolution, refresh_dynamic_universe},
     health::{ControlCommand, HealthSnapshot, HealthState},
+    operator_control::{OperatorCommand, OperatorControl, OperatorReply},
     secrets::{bool_env, optional_secret, required_secret, required_value},
     unattended_guard::{EntryGuard, policy_order_busy},
 };
@@ -410,6 +411,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
 
     let auto_start = bool_env("PG_AUTO_START", config.mode == RunMode::Paper)?;
     let mut trading_started = auto_start && startup_clean && ambiguous_clean;
+    let mut operator_halt = false;
     let mut entry_guard = EntryGuard::new(startup_clean && ambiguous_clean);
     let mut risk_limits = RiskLimits {
         allow_new_exposure: false,
@@ -440,6 +442,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         lease.fencing_token,
     )
     .await?;
+    let mut operator_control = OperatorControl::from_env()?;
     if let Some(observer) = observability.as_ref() {
         observer
             .sync(
@@ -532,6 +535,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 let mut decisions = 0_u64;
 
                 for routed in registry.route_event(&event) {
+                    if operator_halt {
+                        continue;
+                    }
                     let strategy_id = routed.strategy_id.clone();
                     match routed.output.decision {
                         StrategyDecision::Submit(intent) => {
@@ -563,6 +569,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 }
 
                 for routed in registry.route_live_policy_event(&event, &position) {
+                    if operator_halt {
+                        continue;
+                    }
                     decisions = decisions.saturating_add(1);
                     if policy_order_busy(
                         &routed.strategy_id,
@@ -699,11 +708,12 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     );
                 }
                 entry_guard.reconcile_result(clean);
-                risk_limits.allow_new_exposure = entry_guard.may_increase(
-                    trading_started,
-                    checklist.ready_for(config.mode),
-                    supervisor.all_connected(),
-                );
+                risk_limits.allow_new_exposure = !operator_halt
+                    && entry_guard.may_increase(
+                        trading_started,
+                        checklist.ready_for(config.mode),
+                        supervisor.all_connected(),
+                    );
                 health.mutate(|snapshot| {
                     snapshot.open_orders = open_orders;
                     if !clean {
@@ -857,14 +867,20 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     risk_limits.allow_new_exposure = false;
                 }
                 let checklist_ready = checklist.ready_for(config.mode);
-                let ready = entry_guard.ready(checklist_ready);
+                let ready = !operator_halt && entry_guard.ready(checklist_ready);
                 let mut blocking = blocking_gate_names(&checklist, config.mode);
                 if let Some(reason) = entry_guard.topology_blocker() {
                     blocking.push(format!("DynamicTopology: {reason}"));
                 }
-                risk_limits.allow_new_exposure = entry_guard.may_increase(
-                    trading_started, checklist_ready, supervisor.all_connected(),
-                );
+                if operator_halt {
+                    blocking.push("OperatorHalt: restart required after emergency exit".into());
+                }
+                risk_limits.allow_new_exposure = !operator_halt
+                    && entry_guard.may_increase(
+                        trading_started,
+                        checklist_ready,
+                        supervisor.all_connected(),
+                    );
                 health.mutate(|snapshot| {
                     snapshot.ready = ready;
                     snapshot.feeds_connected = supervisor.connected_count();
@@ -877,6 +893,161 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     observer.sync(&health, &checklist, config.mode, None).await;
                     observer.sync_market_data(&supervisor, now_ns());
                 }
+            }
+            request = operator_control.recv() => {
+                let request_id = request.request_id.clone();
+                let actor_user_id = request.actor_user_id;
+                let chat_id = request.chat_id;
+                let reply = match request.command {
+                    OperatorCommand::Status => {
+                        let snapshot = health.snapshot().await;
+                        OperatorReply::Text(format!(
+                            "mode={} ready={} lease={} feeds={}/{} open_orders={} new_exposure={}",
+                            snapshot.mode,
+                            snapshot.ready,
+                            snapshot.lease_healthy,
+                            snapshot.feeds_connected,
+                            snapshot.feeds_total,
+                            snapshot.open_orders,
+                            risk_limits.allow_new_exposure,
+                        ))
+                    }
+                    OperatorCommand::Positions => {
+                        OperatorReply::Text(format_positions(&latest_positions))
+                    }
+                    OperatorCommand::Orders => {
+                        OperatorReply::Text(format_orders(&latest_orders))
+                    }
+                    OperatorCommand::Risk => OperatorReply::Text(format!(
+                        "trading_started={} operator_halt={} allow_new_exposure={} safe_hold_assets={}",
+                        trading_started,
+                        operator_halt,
+                        risk_limits.allow_new_exposure,
+                        runtime_pins.safe_hold.len(),
+                    )),
+                    OperatorCommand::Stop => {
+                        trading_started = false;
+                        risk_limits.allow_new_exposure = false;
+                        let _ = store
+                            .append_event(
+                                &format!("runtime:{}", config.instance_id),
+                                "control.stop",
+                                &json!({
+                                    "request_id": request_id,
+                                    "actor_user_id": actor_user_id,
+                                    "chat_id": chat_id,
+                                }),
+                                lease.fencing_token,
+                            )
+                            .await;
+                        OperatorReply::Accepted("stopped · new exposure disabled".into())
+                    }
+                    OperatorCommand::Start => {
+                        let checklist_ready = checklist.ready_for(config.mode);
+                        if operator_halt {
+                            OperatorReply::Rejected(
+                                "operator halt is sticky after emergency exit; restart required".into(),
+                            )
+                        } else if !checklist_ready || !supervisor.all_connected() || !entry_guard.ready(checklist_ready) {
+                            OperatorReply::Rejected(
+                                "runtime is not clean/ready; start remains fail-closed".into(),
+                            )
+                        } else {
+                            trading_started = true;
+                            risk_limits.allow_new_exposure = entry_guard.may_increase(
+                                true,
+                                checklist_ready,
+                                supervisor.all_connected(),
+                            );
+                            let _ = store
+                                .append_event(
+                                    &format!("runtime:{}", config.instance_id),
+                                    "control.start",
+                                    &json!({
+                                        "request_id": request_id,
+                                        "actor_user_id": actor_user_id,
+                                        "chat_id": chat_id,
+                                    }),
+                                    lease.fencing_token,
+                                )
+                                .await;
+                            OperatorReply::Accepted("started · clean runtime gates permit execution".into())
+                        }
+                    }
+                    OperatorCommand::EmergencyExit => {
+                        operator_halt = true;
+                        trading_started = false;
+                        risk_limits.allow_new_exposure = false;
+                        health.mutate(|snapshot| {
+                            snapshot.ready = false;
+                            snapshot.last_error = Some(
+                                "operator emergency exit engaged; restart required".into(),
+                            );
+                        }).await;
+                        let audit = json!({
+                            "request_id": request_id,
+                            "actor_user_id": actor_user_id,
+                            "chat_id": chat_id,
+                            "scope": "strategy-owned-only",
+                        });
+                        if let Err(error) = store
+                            .append_event(
+                                &format!("runtime:{}", config.instance_id),
+                                "control.emergency_exit.requested",
+                                &audit,
+                                lease.fencing_token,
+                            )
+                            .await
+                        {
+                            tracing::error!(%error, "failed to journal emergency request; runtime remains halted");
+                        }
+                        let summary = emergency_flatten_owned(
+                            execution.as_ref(),
+                            store.as_ref(),
+                            &venues,
+                        ).await;
+                        let result_payload = json!({
+                            "request_id": request_id,
+                            "actor_user_id": actor_user_id,
+                            "chat_id": chat_id,
+                            "cancelled_orders": summary.cancelled_orders,
+                            "cancel_failures": summary.cancel_failures,
+                            "flatten_attempted": summary.flatten_attempted,
+                            "flatten_acknowledged": summary.flatten_acknowledged,
+                            "unresolved_dispatches": summary.unresolved_dispatches,
+                            "manual_positions_skipped": summary.manual_positions_skipped,
+                            "unknown_positions_skipped": summary.unknown_positions_skipped,
+                        });
+                        if let Err(error) = store
+                            .append_event(
+                                &format!("runtime:{}", config.instance_id),
+                                "control.emergency_exit.completed",
+                                &result_payload,
+                                lease.fencing_token,
+                            )
+                            .await
+                        {
+                            tracing::error!(%error, "failed to journal emergency result; runtime remains halted");
+                        }
+                        OperatorReply::Text(format!(
+                            "EMERGENCY HALT · cancelled={} cancel_failures={} flatten_attempted={} ack={} unresolved={} manual_skipped={} unknown_skipped={} · restart required",
+                            summary.cancelled_orders,
+                            summary.cancel_failures,
+                            summary.flatten_attempted,
+                            summary.flatten_acknowledged,
+                            summary.unresolved_dispatches,
+                            summary.manual_positions_skipped,
+                            summary.unknown_positions_skipped,
+                        ))
+                    }
+                    OperatorCommand::Refresh => OperatorReply::Rejected(
+                        "manual refresh is not enabled; reconciliation is continuous".into(),
+                    ),
+                    OperatorCommand::Unsupported(command) => OperatorReply::Rejected(format!(
+                        "command {command} is not wired to runtime authority"
+                    )),
+                };
+                let _ = request.reply.send(reply);
             }
             Some(command) = control_rx.recv() => {
                 match command {
@@ -940,6 +1111,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
 
     trading_started = false;
     risk_limits.allow_new_exposure = false;
+    operator_control.stop();
     feed_tasks.stop_all();
     if let Err(error) = apply_shutdown_policy(
         config.shutdown_policy,
@@ -1571,6 +1743,183 @@ async fn ingest_owned_fills(
     Ok(inserted)
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct EmergencyExitSummary {
+    cancelled_orders: usize,
+    cancel_failures: usize,
+    flatten_attempted: usize,
+    flatten_acknowledged: usize,
+    unresolved_dispatches: usize,
+    manual_positions_skipped: usize,
+    unknown_positions_skipped: usize,
+}
+
+fn emergency_intent_for_position(position: &VenuePosition) -> Option<OrderIntent> {
+    let Ownership::Strategy(strategy_id) = &position.ownership else {
+        return None;
+    };
+    if position.quantity.is_zero() {
+        return None;
+    }
+    Some(OrderIntent {
+        intent_id: uuid::Uuid::new_v4(),
+        strategy_id: strategy_id.clone(),
+        asset: position.asset.clone(),
+        venue: position.venue,
+        side: if position.quantity > Decimal::ZERO {
+            Side::Sell
+        } else {
+            Side::Buy
+        },
+        quantity: position.quantity.abs(),
+        limit_price: None,
+        effect: ExposureEffect::ReduceOnly,
+        source_signal_id: Some("operator:emergency_exit".into()),
+    })
+}
+
+async fn emergency_flatten_owned(
+    execution: &DurableExecution<PostgresStore>,
+    store: &PostgresStore,
+    venues: &[Venue],
+) -> EmergencyExitSummary {
+    let mut summary = EmergencyExitSummary::default();
+
+    for venue in venues.iter().copied() {
+        match store.load_orders_for_venue(venue).await {
+            Ok(orders) => {
+                for order in orders.into_iter().filter(|order| !order.is_terminal()) {
+                    match execution.cancel_order(&order).await {
+                        Ok(()) => summary.cancelled_orders = summary.cancelled_orders.saturating_add(1),
+                        Err(error) => {
+                            summary.cancel_failures = summary.cancel_failures.saturating_add(1);
+                            tracing::error!(
+                                ?venue,
+                                client_order_id = %order.client_order_id,
+                                %error,
+                                "emergency cancel unresolved"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                summary.cancel_failures = summary.cancel_failures.saturating_add(1);
+                tracing::error!(?venue, %error, "cannot load durable orders during emergency exit");
+            }
+        }
+
+        let cycle = match execution.reconcile_once(venue).await {
+            Ok(cycle) => cycle,
+            Err(error) => {
+                summary.unresolved_dispatches = summary.unresolved_dispatches.saturating_add(1);
+                tracing::error!(?venue, %error, "emergency reconcile failed");
+                continue;
+            }
+        };
+        for position in cycle.positions {
+            match &position.ownership {
+                Ownership::Manual => {
+                    summary.manual_positions_skipped =
+                        summary.manual_positions_skipped.saturating_add(1);
+                    continue;
+                }
+                Ownership::Unknown => {
+                    summary.unknown_positions_skipped =
+                        summary.unknown_positions_skipped.saturating_add(1);
+                    continue;
+                }
+                Ownership::Strategy(_) => {}
+            }
+            let Some(intent) = emergency_intent_for_position(&position) else {
+                continue;
+            };
+            summary.flatten_attempted = summary.flatten_attempted.saturating_add(1);
+            let limits = RiskLimits {
+                allow_new_exposure: false,
+                ..RiskLimits::default()
+            };
+            match submit_intent(
+                execution,
+                &limits,
+                &BTreeSet::new(),
+                "operator:emergency_exit",
+                &intent,
+            )
+            .await
+            {
+                DispatchOutcome::Attempted {
+                    acknowledged: true,
+                    ..
+                } => {
+                    summary.flatten_acknowledged =
+                        summary.flatten_acknowledged.saturating_add(1);
+                }
+                DispatchOutcome::Attempted {
+                    acknowledged: false,
+                    ..
+                }
+                | DispatchOutcome::Rejected => {
+                    summary.unresolved_dispatches =
+                        summary.unresolved_dispatches.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    summary
+}
+
+fn format_positions(positions: &BTreeMap<AssetKey, VenuePosition>) -> String {
+    let mut rows = positions
+        .values()
+        .filter(|position| !position.quantity.is_zero())
+        .take(20)
+        .map(|position| {
+            let owner = match &position.ownership {
+                Ownership::Strategy(id) => format!("strategy:{id}"),
+                Ownership::Manual => "manual".into(),
+                Ownership::Unknown => "unknown".into(),
+            };
+            format!(
+                "{:?} {} qty={} owner={}",
+                position.venue, position.asset, position.quantity, owner
+            )
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        "positions · none".into()
+    } else {
+        rows.insert(0, "positions".into());
+        rows.join("\n")
+    }
+}
+
+fn format_orders(orders: &BTreeMap<String, OrderRecord>) -> String {
+    let mut rows = orders
+        .values()
+        .filter(|order| !order.is_terminal())
+        .take(20)
+        .map(|order| {
+            format!(
+                "{:?} {} {:?} filled={}/{} state={:?}",
+                order.venue,
+                order.asset,
+                order.side,
+                order.filled_quantity,
+                order.requested_quantity,
+                order.state
+            )
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        "orders · none open".into()
+    } else {
+        rows.insert(0, "open orders".into());
+        rows.join("\n")
+    }
+}
+
 async fn apply_shutdown_policy(
     policy: ShutdownPolicy,
     execution: &DurableExecution<PostgresStore>,
@@ -1998,6 +2347,32 @@ mod position_view_tests {
         .unwrap();
         assert_eq!(view.average_entry_price, Some(Decimal::from(80)));
         assert_eq!(view.filled_entries, 1);
+    }
+
+    #[test]
+    fn emergency_intent_never_adopts_manual_or_unknown_positions() {
+        let manual = VenuePosition {
+            venue: Venue::Hyperliquid,
+            asset: "HYPE".into(),
+            quantity: Decimal::from(2),
+            ownership: Ownership::Manual,
+        };
+        let unknown = VenuePosition {
+            ownership: Ownership::Unknown,
+            ..manual.clone()
+        };
+        assert!(emergency_intent_for_position(&manual).is_none());
+        assert!(emergency_intent_for_position(&unknown).is_none());
+
+        let owned = VenuePosition {
+            ownership: Ownership::Strategy("owned".into()),
+            ..manual
+        };
+        let intent = emergency_intent_for_position(&owned).unwrap();
+        assert_eq!(intent.effect, ExposureEffect::ReduceOnly);
+        assert_eq!(intent.side, Side::Sell);
+        assert_eq!(intent.quantity, Decimal::from(2));
+        assert_eq!(intent.strategy_id, "owned");
     }
 
     #[test]
