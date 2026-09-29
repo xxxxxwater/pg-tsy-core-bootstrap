@@ -177,9 +177,14 @@ fn map_command(command: &pg_control::ControlCommand) -> OperatorCommand {
 
 #[cfg(feature = "telegram-control")]
 fn parse_id_set(name: &'static str) -> Result<Vec<i64>> {
-    let raw = env::var(name).with_context(|| format!("missing required environment variable {name}"))?;
+    let raw =
+        env::var(name).with_context(|| format!("missing required environment variable {name}"))?;
     let mut ids = BTreeSet::new();
-    for value in raw.split(',').map(str::trim).filter(|value| !value.is_empty()) {
+    for value in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let id = value
             .parse::<i64>()
             .with_context(|| format!("invalid integer in {name}"))?;
@@ -195,7 +200,10 @@ fn parse_id_set(name: &'static str) -> Result<Vec<i64>> {
 fn env_u64(name: &'static str, default: u64, min: u64, max: u64) -> Result<u64> {
     let value = env::var(name)
         .ok()
-        .map(|raw| raw.parse::<u64>().with_context(|| format!("invalid {name}")))
+        .map(|raw| {
+            raw.parse::<u64>()
+                .with_context(|| format!("invalid {name}"))
+        })
         .transpose()?
         .unwrap_or(default);
     if !(min..=max).contains(&value) {
@@ -208,7 +216,10 @@ fn env_u64(name: &'static str, default: u64, min: u64, max: u64) -> Result<u64> 
 fn env_usize(name: &'static str, default: usize, min: usize, max: usize) -> Result<usize> {
     let value = env::var(name)
         .ok()
-        .map(|raw| raw.parse::<usize>().with_context(|| format!("invalid {name}")))
+        .map(|raw| {
+            raw.parse::<usize>()
+                .with_context(|| format!("invalid {name}"))
+        })
         .transpose()?
         .unwrap_or(default);
     if !(min..=max).contains(&value) {

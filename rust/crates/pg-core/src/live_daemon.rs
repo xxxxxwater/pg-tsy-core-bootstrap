@@ -1790,7 +1790,9 @@ async fn emergency_flatten_owned(
             Ok(orders) => {
                 for order in orders.into_iter().filter(|order| !order.is_terminal()) {
                     match execution.cancel_order(&order).await {
-                        Ok(()) => summary.cancelled_orders = summary.cancelled_orders.saturating_add(1),
+                        Ok(()) => {
+                            summary.cancelled_orders = summary.cancelled_orders.saturating_add(1)
+                        }
                         Err(error) => {
                             summary.cancel_failures = summary.cancel_failures.saturating_add(1);
                             tracing::error!(
@@ -1849,19 +1851,16 @@ async fn emergency_flatten_owned(
             .await
             {
                 DispatchOutcome::Attempted {
-                    acknowledged: true,
-                    ..
+                    acknowledged: true, ..
                 } => {
-                    summary.flatten_acknowledged =
-                        summary.flatten_acknowledged.saturating_add(1);
+                    summary.flatten_acknowledged = summary.flatten_acknowledged.saturating_add(1);
                 }
                 DispatchOutcome::Attempted {
                     acknowledged: false,
                     ..
                 }
                 | DispatchOutcome::Rejected => {
-                    summary.unresolved_dispatches =
-                        summary.unresolved_dispatches.saturating_add(1);
+                    summary.unresolved_dispatches = summary.unresolved_dispatches.saturating_add(1);
                 }
             }
         }
