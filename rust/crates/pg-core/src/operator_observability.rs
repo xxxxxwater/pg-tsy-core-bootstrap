@@ -243,19 +243,13 @@ fn venue_snapshots(
                 .all(|state| *state == SubscriptionState::Connected)
             {
                 "HEALTHY"
-            } else if states
-                .iter()
-                .any(|state| *state == SubscriptionState::Failed)
+            } else if states.contains(&SubscriptionState::Failed)
             {
                 "FAILED"
-            } else if states
-                .iter()
-                .any(|state| *state == SubscriptionState::Stale)
+            } else if states.contains(&SubscriptionState::Stale)
             {
                 "STALE"
-            } else if states
-                .iter()
-                .any(|state| *state == SubscriptionState::Degraded)
+            } else if states.contains(&SubscriptionState::Degraded)
             {
                 "DEGRADED"
             } else {
