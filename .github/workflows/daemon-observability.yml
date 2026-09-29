@@ -158,4 +158,66 @@ jobs:
           wait "$pid"
           trap - EXIT
 
+      - name: Lease theft must fence and terminate old owner
+        shell: bash
+        env:
+          PG_INSTANCE_ID: daemon-observability-lease-ci
+          PG_LEASE_KEY: pg-core:ci:daemon-observability-lease
+          PG_LEASE_TTL_SECONDS: "6"
+        run: |
+          set -euo pipefail
+          target/debug/pg-core --serve >/tmp/pg-core-lease.log 2>&1 &
+          pid=$!
+          cleanup() {
+            kill -INT "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            cat /tmp/pg-core-lease.log || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/readyz >/tmp/lease-ready.json; then
+              if jq -e '.ready == true and .lease_healthy == true' /tmp/lease-ready.json >/dev/null; then
+                ready=1
+                break
+              fi
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "lease-injection daemon exited before initial readiness"
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+          before=$(docker run --rm --network host             -e PGPASSWORD=only-for-ci postgres:16             psql -h 127.0.0.1 -U pgtsy_ci -d pgtsy_daemon_test -Atc             "SELECT holder_id || ':' || fencing_token FROM runtime_leases WHERE lease_key = '$PG_LEASE_KEY'")
+          echo "lease before theft: $before"
+          test -n "$before"
+
+          docker run --rm --network host             -e PGPASSWORD=only-for-ci postgres:16             psql -h 127.0.0.1 -U pgtsy_ci -d pgtsy_daemon_test -v ON_ERROR_STOP=1 -c             "UPDATE runtime_leases SET holder_id='fault-injector', fencing_token=fencing_token+1, lease_expires_at=now()+interval '60 seconds', updated_at=now() WHERE lease_key='$PG_LEASE_KEY';"
+
+          after=$(docker run --rm --network host             -e PGPASSWORD=only-for-ci postgres:16             psql -h 127.0.0.1 -U pgtsy_ci -d pgtsy_daemon_test -Atc             "SELECT holder_id || ':' || fencing_token FROM runtime_leases WHERE lease_key = '$PG_LEASE_KEY'")
+          echo "lease after theft: $after"
+          [[ "$after" == fault-injector:* ]]
+          test "$after" != "$before"
+
+          exited=0
+          for _ in $(seq 1 12); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              exited=1
+              break
+            fi
+            sleep 1
+          done
+          test "$exited" -eq 1
+
+          set +e
+          wait "$pid"
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          grep -Eq 'runtime lease lost|runtime fencing lease invalid|fencing' /tmp/pg-core-lease.log
+          trap - EXIT
+
       - run: cargo clippy -p pg-core -p pg-observability --all-targets -- -D warnings
