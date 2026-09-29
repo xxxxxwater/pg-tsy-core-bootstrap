@@ -774,6 +774,12 @@ impl ObservabilityServer {
 mod tests {
     use super::*;
     use pg_runtime::ShutdownPolicy;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+    };
+
+    const TEST_BEARER: &str = "0123456789abcdefghijklmnopqrstuvwxyz";
 
     fn config(mode: RunMode) -> RunConfig {
         RunConfig {
@@ -803,6 +809,62 @@ mod tests {
         assert!(constant_time_eq(&token, &token));
         assert!(!constant_time_eq(&token, &"b".repeat(32)));
         assert!(!constant_time_eq(&token, "short"));
+    }
+
+    async fn http_request(addr: SocketAddr, request: &str) -> String {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_surface_enforces_bearer_and_serves_snapshot_and_events() {
+        let config = config(RunMode::Shadow);
+        let observatory = RuntimeObservatory::new(&config, "test-build", 10_000, 16);
+        observatory.record_event("smoke", "info", "acceptance", None, None);
+        let server = ObservabilityServer::spawn(
+            ObservabilityConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                token: Some(TEST_BEARER.into()),
+                stale_after_ms: 10_000,
+                event_capacity: 16,
+            },
+            observatory,
+        )
+        .await
+        .unwrap();
+        let addr = server.local_addr();
+
+        let denied = http_request(
+            addr,
+            "GET /v1/snapshot HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(denied.starts_with("HTTP/1.1 401 Unauthorized"));
+
+        let snapshot = http_request(
+            addr,
+            &format!(
+                "GET /v1/snapshot HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_BEARER}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(snapshot.starts_with("HTTP/1.1 200 OK"));
+        assert!(snapshot.contains(SNAPSHOT_SCHEMA_VERSION));
+
+        let events = http_request(
+            addr,
+            &format!(
+                "GET /v1/events?after=0&limit=10 HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_BEARER}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(events.starts_with("HTTP/1.1 200 OK"));
+        assert!(events.contains("\"type\":\"smoke\""));
+
+        server.stop().await;
     }
 
     #[test]

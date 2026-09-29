@@ -403,6 +403,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let observability = crate::operator_observability::OperatorObservability::maybe_spawn(
         &config,
         registry.strategy_ids(),
+        lease.fencing_token,
     )
     .await?;
     if let Some(observer) = observability.as_ref() {
@@ -423,6 +424,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let mut supervisor = SubscriptionSupervisor::new();
     let mut feed_tasks = FeedTaskManager::default();
     feed_tasks.sync(feeds.clone(), &mut supervisor, &event_tx, &fatal_tx)?;
+    if let Some(observer) = observability.as_ref() {
+        observer.sync_market_data(&supervisor, now_ns());
+    }
 
     let max_staleness_ns = config.max_market_staleness_ms.saturating_mul(1_000_000);
     let reconcile_interval_ms = env_u64("PG_RECONCILE_INTERVAL_MS", 2_000)?;
@@ -781,6 +785,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 }).await;
                 if let Some(observer) = observability.as_ref() {
                     observer.sync(&health, &checklist, config.mode, None).await;
+                    observer.sync_market_data(&supervisor, now_ns());
                 }
             }
             Some(command) = control_rx.recv() => {

@@ -4,7 +4,7 @@ use pg_execution::{
     ExecutionAdapter, OrderLocator, ShadowAdapterConfig, ShadowExecutionAdapter, ShadowFillMode,
     ShadowPosition,
 };
-use pg_marketdata::{FeedSpec, MarketDataSource, MarketEvent, SubscriptionSupervisor};
+use pg_marketdata::{FeedKind, FeedSpec, MarketDataSource, MarketEvent, SubscriptionSupervisor};
 use pg_orchestrator::{AdapterRegistry, DurableExecution};
 use pg_risk::{RiskLimits, evaluate_order};
 use pg_runtime::{RunConfig, RunMode, ShutdownPolicy, StartupChecklist, StartupGate};
@@ -21,7 +21,14 @@ use pg_strategy::{
 use pg_types::{AssetKey, ExposureEffect, OrderIntent, RiskDecision, Side, Venue};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde_json::json;
-use std::{collections::BTreeMap, env, net::SocketAddr, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 #[cfg(feature = "hyperliquid-marketdata")]
@@ -147,6 +154,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let observability = crate::operator_observability::OperatorObservability::maybe_spawn(
         &config,
         registry.strategy_ids(),
+        lease.fencing_token,
     )
     .await?;
     if let Some(observer) = observability.as_ref() {
@@ -160,13 +168,23 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let (event_tx, mut event_rx) = mpsc::channel(16_384);
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<FeedFatal>(feeds.len().max(1));
 
-    for spec in feeds.iter().cloned() {
-        spawn_shadow_feed(spec, event_tx.clone(), fatal_tx.clone())?;
-    }
+    let fixture_path = shadow_fixture_path();
+    let _fixture_fatal_guard = if let Some(path) = fixture_path.as_deref() {
+        spawn_shadow_fixture(path, &feeds, event_tx.clone())?;
+        Some(fatal_tx.clone())
+    } else {
+        for spec in feeds.iter().cloned() {
+            spawn_shadow_feed(spec, event_tx.clone(), fatal_tx.clone())?;
+        }
+        None
+    };
     drop(fatal_tx);
 
     let mut supervisor = SubscriptionSupervisor::new();
     supervisor.apply_derived_feeds(feeds);
+    if let Some(observer) = observability.as_ref() {
+        observer.sync_market_data(&supervisor, now_ns());
+    }
     let max_staleness_ns = config.max_market_staleness_ms.saturating_mul(1_000_000);
     let mut health_tick = tokio::time::interval(Duration::from_secs(1));
     health_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -324,6 +342,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 }).await;
                 if let Some(observer) = observability.as_ref() {
                     observer.sync(&health, &checklist, config.mode, Some(true)).await;
+                    observer.sync_market_data(&supervisor, now_ns());
                 }
             }
             Some(command) = control_rx.recv() => {
@@ -913,6 +932,103 @@ async fn open_feed_stream(
             "no runtime market-data source for venue {:?}",
             spec.venue
         ))),
+    }
+}
+
+fn shadow_fixture_path() -> Option<PathBuf> {
+    env::var("PG_SHADOW_MARKET_FIXTURE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn spawn_shadow_fixture(path: &Path, feeds: &[FeedSpec], sink: mpsc::Sender<MarketEvent>) -> Result<()> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("failed to read shadow market fixture {}", path.display()))?;
+    let mut events = Vec::new();
+    for (index, line) in input.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let event: MarketEvent = serde_json::from_str(line).with_context(|| {
+            format!(
+                "invalid shadow MarketEvent JSON at {} line {}",
+                path.display(),
+                index + 1
+            )
+        })?;
+        events.push(event);
+    }
+    if events.is_empty() {
+        bail!("shadow market fixture {} contains no events", path.display());
+    }
+
+    let missing = feeds
+        .iter()
+        .filter(|feed| !events.iter().any(|event| event_matches_feed(event, feed)))
+        .map(|feed| format!("{:?}:{}:{:?}", feed.venue, feed.asset, feed.kind))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "shadow market fixture {} does not cover required feeds: {}",
+            path.display(),
+            missing.join(", ")
+        );
+    }
+
+    let interval_ms = env::var("PG_SHADOW_FIXTURE_INTERVAL_MS")
+        .unwrap_or_else(|_| "25".into())
+        .parse::<u64>()
+        .context("invalid PG_SHADOW_FIXTURE_INTERVAL_MS")?;
+    if !(1..=10_000).contains(&interval_ms) {
+        bail!("PG_SHADOW_FIXTURE_INTERVAL_MS must be in [1, 10000]");
+    }
+
+    let fixture_name = path.display().to_string();
+    tokio::spawn(async move {
+        tracing::info!(
+            fixture = %fixture_name,
+            events = events.len(),
+            interval_ms,
+            "shadow deterministic market fixture enabled"
+        );
+        loop {
+            for template in &events {
+                let mut event = template.clone();
+                set_receive_time(&mut event, now_ns());
+                if sink.send(event).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+            }
+        }
+    });
+    Ok(())
+}
+
+fn event_matches_feed(event: &MarketEvent, feed: &FeedSpec) -> bool {
+    if event.asset_key() != pg_types::AssetKey::new(feed.venue, feed.asset.clone()) {
+        return false;
+    }
+    matches!(
+        (event, &feed.kind),
+        (MarketEvent::Trade(_), FeedKind::Trades)
+            | (MarketEvent::BestBidAsk(_), FeedKind::BestBidAsk)
+            | (MarketEvent::L2Book(_), FeedKind::L2Book)
+            | (
+                MarketEvent::Candle(pg_marketdata::Candle { interval_ns, .. }),
+                FeedKind::Candle { interval_ns: required }
+            ) if interval_ns == required
+    )
+}
+
+fn set_receive_time(event: &mut MarketEvent, now_ns: u64) {
+    match event {
+        MarketEvent::Trade(value) => value.ts_recv_ns = now_ns,
+        MarketEvent::BestBidAsk(value) => value.ts_recv_ns = now_ns,
+        MarketEvent::L2Book(value) => value.ts_recv_ns = now_ns,
+        MarketEvent::Candle(value) => value.ts_recv_ns = now_ns,
     }
 }
 

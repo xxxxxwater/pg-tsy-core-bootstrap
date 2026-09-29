@@ -1,0 +1,6 @@
+# Deterministic shadow-daemon smoke fixture. The runtime rebases ts_recv_ns
+# to wall clock and loops these events only when PG_SHADOW_MARKET_FIXTURE is set.
+{"Trade":{"venue":"HYPERLIQUID","asset":"HYPE","ts_event_ns":1000000000,"ts_recv_ns":1000000000,"price":"30.00","quantity":"5","aggressor":"Buy","sequence":1}}
+{"BestBidAsk":{"venue":"HYPERLIQUID","asset":"HYPE","ts_event_ns":1000000000,"ts_recv_ns":1000000000,"bid_price":"30.00","bid_quantity":"20","ask_price":"30.01","ask_quantity":"15","sequence":null}}
+{"L2Book":{"venue":"HYPERLIQUID","asset":"HYPE","ts_event_ns":1000000000,"ts_recv_ns":1000000000,"bids":[{"price":"30.00","quantity":"20","order_count":2}],"asks":[{"price":"30.01","quantity":"15","order_count":2}],"sequence":null,"is_snapshot":true}}
+{"Candle":{"venue":"HYPERLIQUID","asset":"HYPE","interval_ns":300000000000,"start_ns":0,"end_ns":300000000000,"ts_recv_ns":1000000000,"open":"29.90","high":"30.20","low":"29.80","close":"30.00","volume":"1000","trades":120}}
