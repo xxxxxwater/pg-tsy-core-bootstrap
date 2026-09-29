@@ -238,11 +238,20 @@ fn venue_snapshots(
                 .collect::<Vec<_>>();
             let market_data = if states.is_empty() {
                 "NOT_REQUIRED"
-            } else if states.iter().all(|state| *state == SubscriptionState::Connected) {
+            } else if states
+                .iter()
+                .all(|state| *state == SubscriptionState::Connected)
+            {
                 "HEALTHY"
-            } else if states.iter().any(|state| *state == SubscriptionState::Failed) {
+            } else if states
+                .iter()
+                .any(|state| *state == SubscriptionState::Failed)
+            {
                 "FAILED"
-            } else if states.iter().any(|state| *state == SubscriptionState::Stale) {
+            } else if states
+                .iter()
+                .any(|state| *state == SubscriptionState::Stale)
+            {
                 "STALE"
             } else if states
                 .iter()

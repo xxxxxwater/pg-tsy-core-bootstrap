@@ -197,8 +197,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     if !(250..=60_000).contains(&reconcile_interval_ms) {
         bail!("PG_RECONCILE_INTERVAL_MS must be in [250, 60000]");
     }
-    let mut reconcile_tick =
-        tokio::time::interval(Duration::from_millis(reconcile_interval_ms));
+    let mut reconcile_tick = tokio::time::interval(Duration::from_millis(reconcile_interval_ms));
     reconcile_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut health_tick = tokio::time::interval(Duration::from_secs(1));
     health_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1020,9 +1019,7 @@ async fn open_feed_stream(
     }
 }
 
-fn spawn_shadow_reconcile_fault(
-    venues: &BTreeMap<Venue, ShadowExecutionAdapter>,
-) -> Result<()> {
+fn spawn_shadow_reconcile_fault(venues: &BTreeMap<Venue, ShadowExecutionAdapter>) -> Result<()> {
     let Some(raw_delay) = env::var("PG_SHADOW_RECONCILE_FAULT_AFTER_MS")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1046,8 +1043,8 @@ fn spawn_shadow_reconcile_fault(
         "BINANCE_PM" | "BINANCEPM" => Venue::BinancePm,
         other => bail!("invalid PG_SHADOW_RECONCILE_FAULT_VENUE={other}"),
     };
-    let asset = env::var("PG_SHADOW_RECONCILE_FAULT_ASSET")
-        .unwrap_or_else(|_| "PG_TEST_GHOST".into());
+    let asset =
+        env::var("PG_SHADOW_RECONCILE_FAULT_ASSET").unwrap_or_else(|_| "PG_TEST_GHOST".into());
     if asset.trim().is_empty() {
         bail!("PG_SHADOW_RECONCILE_FAULT_ASSET must not be empty");
     }

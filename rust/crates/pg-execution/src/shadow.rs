@@ -187,11 +187,7 @@ impl ShadowExecutionAdapter {
     /// Test-only shadow fault helper: expose unmatched in-memory venue state so
     /// reconciliation tests can prove unknown ownership fails closed. This adapter
     /// never communicates with a real venue.
-    pub fn inject_unmatched_position_for_test(
-        &self,
-        asset: impl Into<String>,
-        quantity: Decimal,
-    ) {
+    pub fn inject_unmatched_position_for_test(&self, asset: impl Into<String>, quantity: Decimal) {
         let asset = asset.into();
         let mut book = self.book.lock().expect("shadow book lock poisoned");
         if quantity.is_zero() {
