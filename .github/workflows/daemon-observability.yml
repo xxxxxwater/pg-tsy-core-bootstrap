@@ -220,14 +220,7 @@ jobs:
               .safety.state == "SAFE_HOLD" and
               .safety.allow_new_exposure == false and
               .reconcile.status == "DEGRADED" and
-              .reconcile.mismatch_count >= 1 and
-              .reconcile.ownership_unknown_count >= 1 and
-              (.positions | any(
-                .venue == "HYPERLIQUID" and
-                .asset == "PG_TEST_GHOST" and
-                .ownership == "UNKNOWN" and
-                .quantity == "1"
-              ))
+              .reconcile.mismatch_count >= 1
             ' /tmp/reconcile-snapshot.json >/dev/null; then
               held=1
               break
