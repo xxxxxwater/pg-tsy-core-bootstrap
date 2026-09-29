@@ -264,6 +264,43 @@ impl PostgresStore {
         Ok(FillInsertOutcome::Inserted)
     }
 
+    /// Ordered immutable fill evidence for one strategy-owned venue position.
+    /// This read is fenced and intentionally joins durable ownership rather than
+    /// trusting a caller-supplied client id list.
+    pub async fn load_execution_fills_for_position(
+        &self,
+        lease: &RuntimeLease,
+        venue: Venue,
+        symbol: &str,
+        owner_strategy_id: &str,
+    ) -> Result<Vec<ExecutionFill>, FillLedgerError> {
+        self.assert_lease(lease)
+            .await
+            .map_err(|_| FillLedgerError::FencingLost)?;
+        let stored: Vec<Value> = sqlx::query_scalar(
+            r#"
+            SELECT fills.fill_data
+            FROM execution_fills AS fills
+            JOIN order_records AS orders
+              ON orders.client_order_id = fills.client_order_id
+            WHERE fills.venue = $1
+              AND fills.symbol = $2
+              AND orders.owner_strategy_id = $3
+            ORDER BY fills.created_at, fills.venue_fill_id
+            "#,
+        )
+        .bind(venue_key(venue))
+        .bind(symbol)
+        .bind(owner_strategy_id)
+        .fetch_all(self.pool())
+        .await?;
+        stored
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(FillLedgerError::from)
+    }
+
     /// Read-only ledger sum; MUST be compared with authenticated order history
     /// before an OMS quantity change or a SAFE_HOLD release.
     pub async fn recorded_fill_quantity(
