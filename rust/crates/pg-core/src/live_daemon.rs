@@ -1434,8 +1434,8 @@ fn position_view_from_fills(
             reconciled_quantity
         );
     }
-    let filled_entries = u32::try_from(entry_orders.len())
-        .context("filled entry order count exceeds u32")?;
+    let filled_entries =
+        u32::try_from(entry_orders.len()).context("filled entry order count exceeds u32")?;
     Ok(PositionView {
         net_quantity: net,
         average_entry_price,
@@ -1914,7 +1914,6 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
-
 #[cfg(test)]
 mod position_view_tests {
     use super::*;
@@ -1976,7 +1975,12 @@ mod position_view_tests {
     #[test]
     fn position_basis_resets_after_flat_and_reopen() {
         let entry = order(Uuid::from_u128(3), Side::Buy, ExposureEffect::Increase, 2);
-        let exit = order(Uuid::from_u128(4), Side::Sell, ExposureEffect::ReduceOnly, 2);
+        let exit = order(
+            Uuid::from_u128(4),
+            Side::Sell,
+            ExposureEffect::ReduceOnly,
+            2,
+        );
         let reopen = order(Uuid::from_u128(5), Side::Sell, ExposureEffect::Increase, 1);
         let mut orders = BTreeMap::new();
         for order in [&entry, &exit, &reopen] {
@@ -2002,12 +2006,8 @@ mod position_view_tests {
         let mut orders = BTreeMap::new();
         orders.insert(entry.client_order_id.clone(), entry.clone());
         assert!(
-            position_view_from_fills(
-                Decimal::from(2),
-                &[fill(&entry, "6", 1, 100)],
-                &orders,
-            )
-            .is_err()
+            position_view_from_fills(Decimal::from(2), &[fill(&entry, "6", 1, 100)], &orders,)
+                .is_err()
         );
     }
 }
