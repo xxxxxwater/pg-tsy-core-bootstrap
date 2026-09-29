@@ -207,11 +207,7 @@ impl ShadowExecutionAdapter {
     /// Test-only reconciliation drift: a venue-side working order that has no
     /// corresponding durable OMS record. This must be reported as
     /// VenueOrderMissingLocally rather than adopted or ignored.
-    pub fn inject_unmatched_order_for_test(
-        &self,
-        asset: impl Into<String>,
-        quantity: Decimal,
-    ) {
+    pub fn inject_unmatched_order_for_test(&self, asset: impl Into<String>, quantity: Decimal) {
         let asset = asset.into();
         let mut book = self.book.lock().expect("shadow book lock poisoned");
         book.next_order_id = book.next_order_id.saturating_add(1);
@@ -525,7 +521,10 @@ mod tests {
         let orders = adapter.open_orders().await.unwrap();
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].asset, "PG_TEST_GHOST");
-        assert_eq!(orders[0].client_order_id.as_deref(), Some("fault-unowned-client"));
+        assert_eq!(
+            orders[0].client_order_id.as_deref(),
+            Some("fault-unowned-client")
+        );
         assert_eq!(orders[0].requested_quantity, d(3));
     }
 
