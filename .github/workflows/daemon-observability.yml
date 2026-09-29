@@ -158,6 +158,70 @@ jobs:
           wait "$pid"
           trap - EXIT
 
+      - name: Reconcile drift must enter SAFE_HOLD without killing daemon
+        shell: bash
+        env:
+          PG_INSTANCE_ID: daemon-observability-reconcile-ci
+          PG_LEASE_KEY: pg-core:ci:daemon-observability-reconcile
+          PG_RECONCILE_INTERVAL_MS: "250"
+          PG_SHADOW_RECONCILE_FAULT_AFTER_MS: "5000"
+          PG_SHADOW_RECONCILE_FAULT_VENUE: HYPERLIQUID
+          PG_SHADOW_RECONCILE_FAULT_ASSET: PG_TEST_GHOST
+          PG_SHADOW_RECONCILE_FAULT_QUANTITY: "1"
+        run: |
+          set -euo pipefail
+          target/debug/pg-core --serve >/tmp/pg-core-reconcile.log 2>&1 &
+          pid=$!
+          cleanup() {
+            kill -INT "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            cat /tmp/pg-core-reconcile.log || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/readyz >/tmp/reconcile-ready.json; then
+              if jq -e '.ready == true' /tmp/reconcile-ready.json >/dev/null; then
+                ready=1
+                break
+              fi
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "reconcile-injection daemon exited before initial readiness"
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+          held=0
+          for _ in $(seq 1 15); do
+            code=$(curl -sS -o /tmp/reconcile-ready.json -w '%{http_code}' http://127.0.0.1:18080/readyz || true)
+            curl -fsS               -H "Authorization: Bearer $PG_OBSERVABILITY_TOKEN"               http://127.0.0.1:18787/v1/snapshot >/tmp/reconcile-snapshot.json
+            if [ "$code" = "503" ] && jq -e '
+              .startup.ready == false and
+              .safety.state == "SAFE_HOLD" and
+              .safety.allow_new_exposure == false and
+              .reconcile.status == "DEGRADED" and
+              .reconcile.mismatch_count >= 1
+            ' /tmp/reconcile-snapshot.json >/dev/null; then
+              held=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "reconcile fault killed daemon instead of holding safely"
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$held" -eq 1
+          kill -0 "$pid"
+
+          kill -INT "$pid"
+          wait "$pid"
+          trap - EXIT
+
       - name: Lease theft must fence and terminate old owner
         shell: bash
         env:
