@@ -123,9 +123,9 @@ impl ExecutionFill {
 fn valid_identifier(value: &str, max_len: usize) -> bool {
     !value.is_empty()
         && value.len() <= max_len
-        && value.bytes().all(|ch| {
-            ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-' | b'.' | b':' | b'/')
-        })
+        && value
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-' | b'.' | b':' | b'/'))
 }
 
 fn venue_key(venue: Venue) -> &'static str {
