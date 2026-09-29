@@ -1,6 +1,6 @@
 use crate::health::HealthState;
 use anyhow::{Context, Result, bail};
-use pg_marketdata::{FeedKind, FeedSpec, SubscriptionState, SubscriptionSupervisor};
+use pg_marketdata::{FeedKind, SubscriptionState, SubscriptionSupervisor};
 use pg_observability::{
     FeedSnapshot, LeaseSnapshot, ObservabilityConfig, ObservabilityServer, OrdersSnapshot,
     ReconcileSnapshot, RuntimeObservatory, StorageSnapshot,

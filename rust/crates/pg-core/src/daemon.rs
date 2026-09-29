@@ -1018,16 +1018,18 @@ fn event_matches_feed(event: &MarketEvent, feed: &FeedSpec) -> bool {
     if event.asset_key() != pg_types::AssetKey::new(feed.venue, feed.asset.clone()) {
         return false;
     }
-    matches!(
-        (event, &feed.kind),
-        (MarketEvent::Trade(_), FeedKind::Trades)
-            | (MarketEvent::BestBidAsk(_), FeedKind::BestBidAsk)
-            | (MarketEvent::L2Book(_), FeedKind::L2Book)
-            | (
-                MarketEvent::Candle(pg_marketdata::Candle { interval_ns, .. }),
-                FeedKind::Candle { interval_ns: required }
-            ) if interval_ns == required
-    )
+    match (event, &feed.kind) {
+        (MarketEvent::Trade(_), FeedKind::Trades) => true,
+        (MarketEvent::BestBidAsk(_), FeedKind::BestBidAsk) => true,
+        (MarketEvent::L2Book(_), FeedKind::L2Book) => true,
+        (
+            MarketEvent::Candle(pg_marketdata::Candle { interval_ns, .. }),
+            FeedKind::Candle {
+                interval_ns: required,
+            },
+        ) => interval_ns == required,
+        _ => false,
+    }
 }
 
 fn set_receive_time(event: &mut MarketEvent, now_ns: u64) {
