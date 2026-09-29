@@ -1790,7 +1790,7 @@ async fn emergency_flatten_owned(
             Ok(orders) => {
                 for order in orders.into_iter().filter(|order| !order.is_terminal()) {
                     match execution.cancel_order(&order).await {
-                        Ok(()) => {
+                        Ok(_) => {
                             summary.cancelled_orders = summary.cancelled_orders.saturating_add(1)
                         }
                         Err(error) => {

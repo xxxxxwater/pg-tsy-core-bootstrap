@@ -1,6 +1,11 @@
-use anyhow::{Context, Result, bail};
-use std::{collections::BTreeSet, env, future::pending, time::Duration};
+use anyhow::{Result, bail};
+use std::future::pending;
 use tokio::sync::{mpsc, oneshot};
+
+#[cfg(feature = "telegram-control")]
+use anyhow::Context;
+#[cfg(feature = "telegram-control")]
+use std::{collections::BTreeSet, env, time::Duration};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OperatorCommand {
