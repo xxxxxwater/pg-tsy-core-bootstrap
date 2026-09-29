@@ -204,6 +204,30 @@ impl ShadowExecutionAdapter {
         );
     }
 
+    /// Test-only reconciliation drift: a venue-side working order that has no
+    /// corresponding durable OMS record. This must be reported as
+    /// VenueOrderMissingLocally rather than adopted or ignored.
+    pub fn inject_unmatched_order_for_test(
+        &self,
+        asset: impl Into<String>,
+        quantity: Decimal,
+    ) {
+        let asset = asset.into();
+        let mut book = self.book.lock().expect("shadow book lock poisoned");
+        book.next_order_id = book.next_order_id.saturating_add(1);
+        let venue_order_id = format!("fault-{}", book.next_order_id);
+        book.orders.push(VenueOrderSnapshot {
+            venue_order_id,
+            client_order_id: Some("fault-unowned-client".into()),
+            asset,
+            side: Side::Buy,
+            requested_quantity: quantity.abs(),
+            filled_quantity: Decimal::ZERO,
+            limit_price: Some(Decimal::ONE),
+            state: VenueOrderState::Open,
+        });
+    }
+
     pub fn filled_quantity(&self, client_order_id: &str) -> Decimal {
         self.book
             .lock()
@@ -492,6 +516,17 @@ mod tests {
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0].asset, "PG_TEST_GHOST");
         assert!(adapter.open_orders().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unmatched_test_order_is_visible_to_reconciliation() {
+        let adapter = adapter(ShadowFillMode::Rest);
+        adapter.inject_unmatched_order_for_test("PG_TEST_GHOST", d(3));
+        let orders = adapter.open_orders().await.unwrap();
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].asset, "PG_TEST_GHOST");
+        assert_eq!(orders[0].client_order_id.as_deref(), Some("fault-unowned-client"));
+        assert_eq!(orders[0].requested_quantity, d(3));
     }
 
     #[tokio::test]

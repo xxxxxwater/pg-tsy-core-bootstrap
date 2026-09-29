@@ -1062,12 +1062,12 @@ fn spawn_shadow_reconcile_fault(venues: &BTreeMap<Venue, ShadowExecutionAdapter>
 
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        adapter.inject_unmatched_position_for_test(asset.clone(), quantity);
+        adapter.inject_unmatched_order_for_test(asset.clone(), quantity);
         tracing::warn!(
             ?venue,
             %asset,
             %quantity,
-            "shadow unmatched position fault activated"
+            "shadow venue-only order drift fault activated"
         );
     });
     Ok(())
