@@ -111,11 +111,7 @@ impl OperatorObservability {
         }
     }
 
-    pub(crate) fn sync_market_data(
-        &self,
-        supervisor: &SubscriptionSupervisor,
-        now_ns: u64,
-    ) {
+    pub(crate) fn sync_market_data(&self, supervisor: &SubscriptionSupervisor, now_ns: u64) {
         self.observatory
             .set_configured_feeds(feed_snapshots(supervisor, now_ns));
     }

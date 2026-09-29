@@ -942,7 +942,11 @@ fn shadow_fixture_path() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn spawn_shadow_fixture(path: &Path, feeds: &[FeedSpec], sink: mpsc::Sender<MarketEvent>) -> Result<()> {
+fn spawn_shadow_fixture(
+    path: &Path,
+    feeds: &[FeedSpec],
+    sink: mpsc::Sender<MarketEvent>,
+) -> Result<()> {
     let input = fs::read_to_string(path)
         .with_context(|| format!("failed to read shadow market fixture {}", path.display()))?;
     let mut events = Vec::new();
@@ -961,7 +965,10 @@ fn spawn_shadow_fixture(path: &Path, feeds: &[FeedSpec], sink: mpsc::Sender<Mark
         events.push(event);
     }
     if events.is_empty() {
-        bail!("shadow market fixture {} contains no events", path.display());
+        bail!(
+            "shadow market fixture {} contains no events",
+            path.display()
+        );
     }
 
     let missing = feeds
