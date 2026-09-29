@@ -32,10 +32,13 @@ pub struct ExecutionFill {
     pub side: Side,
     pub quantity: Decimal,
     pub price: Decimal,
-    pub commission: Decimal,
-    pub commission_asset: String,
-    pub realized_pnl: Decimal,
-    pub trade_time_ms: i64,
+    pub commission: Option<Decimal>,
+    pub commission_asset: Option<String>,
+    pub realized_pnl: Option<Decimal>,
+    pub trade_time_ms: Option<i64>,
+    /// Exact venue timestamp when no safe epoch conversion is available (IBKR).
+    #[serde(default)]
+    pub venue_time: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,12 +79,23 @@ impl ExecutionFill {
         if !valid_identifier(&self.symbol, 64) {
             return Err(FillLedgerError::Invalid("invalid symbol"));
         }
-        if !valid_identifier(&self.commission_asset, 32) {
-            return Err(FillLedgerError::Invalid("invalid commission asset"));
+        if self
+            .commission_asset
+            .as_deref()
+            .is_some_and(|asset| !valid_identifier(asset, 32))
+            || self.commission.is_some() != self.commission_asset.is_some()
+        {
+            return Err(FillLedgerError::Invalid("invalid commission evidence"));
         }
+        let valid_time = self.trade_time_ms.is_some_and(|value| value > 0)
+            || self.venue_time.as_deref().is_some_and(|value| {
+                !value.trim().is_empty()
+                    && value.len() <= 128
+                    && value.bytes().all(|ch| ch.is_ascii_graphic() || ch == b' ')
+            });
         let venue_fill_key = self.venue_fill_key();
         if self.trade_id < 0
-            || self.trade_time_ms <= 0
+            || !valid_time
             || venue_fill_key.is_empty()
             || venue_fill_key.len() > 160
             || !venue_fill_key.bytes().all(|ch| ch.is_ascii_graphic())
@@ -307,10 +321,11 @@ mod tests {
             side: Side::Buy,
             quantity: Decimal::new(5, 3),
             price: Decimal::from(80_000),
-            commission: Decimal::new(1, 3),
-            commission_asset: "USDC".into(),
-            realized_pnl: Decimal::ZERO,
-            trade_time_ms: 1_700_000_000_000,
+            commission: Some(Decimal::new(1, 3)),
+            commission_asset: Some("USDC".into()),
+            realized_pnl: Some(Decimal::ZERO),
+            trade_time_ms: Some(1_700_000_000_000),
+            venue_time: None,
         };
         (fill, order)
     }
@@ -334,7 +349,9 @@ mod tests {
         fill.symbol = "AAPL".into();
         fill.trade_id = 0;
         fill.venue_fill_id = "0000e1a7.0001.01".into();
-        fill.commission_asset = "USD".into();
+        fill.commission_asset = Some("USD".into());
+        fill.trade_time_ms = None;
+        fill.venue_time = Some("20260929 09:30:00 UTC".into());
         order.venue = Venue::InteractiveBrokers;
         order.asset = "AAPL".into();
         assert!(fill.validate().is_ok());

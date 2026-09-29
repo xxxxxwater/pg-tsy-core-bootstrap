@@ -50,10 +50,11 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
         side: Side::Buy,
         quantity: Decimal::new(4, 3),
         price: Decimal::from(80_000),
-        commission: Decimal::new(1, 3),
-        commission_asset: "USDC".into(),
-        realized_pnl: Decimal::ZERO,
-        trade_time_ms: 1_700_000_000_000,
+        commission: Some(Decimal::new(1, 3)),
+        commission_asset: Some("USDC".into()),
+        realized_pnl: Some(Decimal::ZERO),
+        trade_time_ms: Some(1_700_000_000_000),
+        venue_time: None,
     };
     let mut history = CompleteOrderHistory {
         account_scope: first.account_scope.clone(),
@@ -85,7 +86,7 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
     assert_eq!(replay.inserted_trades, 0);
 
     let mut tampered = history.clone();
-    tampered.trades[0].commission = Decimal::new(2, 3);
+    tampered.trades[0].commission = Some(Decimal::new(2, 3));
     assert!(matches!(
         store.settle_complete_order_history(&lease, &tampered).await,
         Err(FillLedgerError::Conflict)

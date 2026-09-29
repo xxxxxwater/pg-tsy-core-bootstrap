@@ -49,10 +49,11 @@ async fn fill_is_atomic_idempotent_owned_and_fenced() {
         side: Side::Buy,
         quantity: Decimal::new(4, 3),
         price: Decimal::from(80_000),
-        commission: Decimal::new(1, 3),
-        commission_asset: "USDC".into(),
-        realized_pnl: Decimal::new(-2, 2),
-        trade_time_ms: 1_700_000_000_000,
+        commission: Some(Decimal::new(1, 3)),
+        commission_asset: Some("USDC".into()),
+        realized_pnl: Some(Decimal::new(-2, 2)),
+        trade_time_ms: Some(1_700_000_000_000),
+        venue_time: None,
     };
     assert_eq!(
         store.insert_execution_fill(&lease, &fill).await.unwrap(),
@@ -71,7 +72,7 @@ async fn fill_is_atomic_idempotent_owned_and_fenced() {
     );
 
     let mut contradictory = fill.clone();
-    contradictory.commission = Decimal::new(2, 3);
+    contradictory.commission = Some(Decimal::new(2, 3));
     assert!(matches!(
         store.insert_execution_fill(&lease, &contradictory).await,
         Err(FillLedgerError::Conflict)
