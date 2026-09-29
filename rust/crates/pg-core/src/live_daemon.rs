@@ -336,13 +336,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             latest_positions.insert(position.key(), position);
         }
     }
-    if let Err(error) = ingest_owned_fills(
-        store.as_ref(),
-        execution.as_ref(),
-        &venues,
-        &latest_orders,
-    )
-    .await
+    if let Err(error) =
+        ingest_owned_fills(store.as_ref(), execution.as_ref(), &venues, &latest_orders).await
     {
         fill_ingestion_clean = false;
         startup_clean = false;
@@ -1353,7 +1348,10 @@ async fn ingest_owned_fills(
 
     // A cumulative OMS fill is trusted only when immutable venue fill evidence
     // explains it exactly. Missing venue history therefore remains fail-closed.
-    for order in orders.values().filter(|order| order.filled_quantity > Decimal::ZERO) {
+    for order in orders
+        .values()
+        .filter(|order| order.filled_quantity > Decimal::ZERO)
+    {
         let recorded = store
             .recorded_fill_quantity(execution.lease(), &order.client_order_id)
             .await?;
