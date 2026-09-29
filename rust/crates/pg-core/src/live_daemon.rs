@@ -14,7 +14,10 @@ use pg_orchestrator::{AdapterRegistry, DurableExecution};
 use pg_reconcile::{Ownership, VenuePosition};
 use pg_risk::{RiskLimits, evaluate_order};
 use pg_runtime::{RunConfig, RunMode, ShutdownPolicy, StartupChecklist, StartupGate};
-use pg_store::{LeaseHealth, PostgresStore};
+use pg_store::{
+    LeaseHealth, PostgresStore,
+    fill_ledger::{ExecutionFill, FillInsertOutcome},
+};
 use pg_strategy::{
     StrategyDecision,
     definition::PolicyInstance,
@@ -312,6 +315,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let mut reconcile_safe_hold = BTreeSet::new();
     let mut startup_clean = true;
     let mut ambiguous_clean = true;
+    let mut fill_ingestion_clean = true;
     for venue in venues.iter().copied() {
         let recovery = execution.recover_ambiguous(venue).await?;
         for item in &recovery.items {
@@ -332,6 +336,19 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             latest_positions.insert(position.key(), position);
         }
     }
+    if let Err(error) = ingest_owned_fills(
+        store.as_ref(),
+        execution.as_ref(),
+        &venues,
+        &latest_orders,
+    )
+    .await
+    {
+        fill_ingestion_clean = false;
+        startup_clean = false;
+        tracing::error!(%error, "startup fill ingestion is incomplete; freezing new exposure");
+    }
+
     let mut runtime_pins =
         derive_runtime_pins(&latest_positions, &latest_orders, &reconcile_safe_hold);
 
@@ -365,12 +382,16 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             "startup reconcile found venue/local drift or unknown position ownership",
         );
     }
-    if ambiguous_clean {
+    if ambiguous_clean && fill_ingestion_clean {
         checklist.pass(StartupGate::UnknownStateClear);
     } else {
         checklist.fail(
             StartupGate::UnknownStateClear,
-            "one or more ambiguous order outcomes remain unresolved",
+            if fill_ingestion_clean {
+                "one or more ambiguous order outcomes remain unresolved"
+            } else {
+                "owned fill ingestion is incomplete or conflicts with durable OMS state"
+            },
         );
     }
 
@@ -605,6 +626,17 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                             );
                         }
                     }
+                }
+                if let Err(error) = ingest_owned_fills(
+                    store.as_ref(),
+                    execution.as_ref(),
+                    &venues,
+                    &next_orders,
+                )
+                .await
+                {
+                    clean = false;
+                    tracing::error!(%error, "continuous fill ingestion failed; freezing new exposure");
                 }
                 let observed_positions = next_positions.values().cloned().collect::<Vec<_>>();
                 let observed_orders = next_orders.values().cloned().collect::<Vec<_>>();
@@ -1256,6 +1288,86 @@ fn event_asset_key(event: &MarketEvent) -> AssetKey {
         MarketEvent::L2Book(value) => AssetKey::new(value.venue, value.asset.clone()),
         MarketEvent::Candle(value) => AssetKey::new(value.venue, value.asset.clone()),
     }
+}
+
+async fn ingest_owned_fills(
+    store: &PostgresStore,
+    execution: &DurableExecution<PostgresStore>,
+    venues: &[Venue],
+    orders: &BTreeMap<String, OrderRecord>,
+) -> Result<usize> {
+    let mut inserted = 0_usize;
+
+    for venue in venues.iter().copied() {
+        let adapter = execution
+            .adapters()
+            .get(venue)
+            .with_context(|| format!("missing fill-history adapter for {venue:?}"))?;
+        for evidence in adapter.fills().await? {
+            let Some(client_order_id) = evidence.client_order_id.as_deref() else {
+                continue;
+            };
+            let Some(order) = orders.get(client_order_id) else {
+                // Manual/foreign executions are not adopted into strategy ownership.
+                continue;
+            };
+            if order.venue != venue
+                || order.asset != evidence.asset
+                || order.side != Some(evidence.side)
+                || order.venue_order_id.as_deref() != Some(evidence.venue_order_id.as_str())
+            {
+                bail!(
+                    "venue fill {} conflicts with durable order {}",
+                    evidence.venue_fill_id,
+                    client_order_id
+                );
+            }
+
+            let fill = ExecutionFill {
+                account_scope: evidence.account_scope,
+                venue,
+                symbol: evidence.asset,
+                trade_id: evidence.legacy_trade_id.unwrap_or(0),
+                venue_fill_id: evidence.venue_fill_id,
+                venue_order_id: evidence.venue_order_id,
+                client_order_id: client_order_id.to_string(),
+                side: evidence.side,
+                quantity: evidence.quantity,
+                price: evidence.price,
+                commission: evidence.commission,
+                commission_asset: evidence.commission_asset,
+                realized_pnl: evidence.realized_pnl,
+                trade_time_ms: evidence.trade_time_ms,
+                venue_time: evidence.venue_time,
+            };
+            if matches!(
+                store
+                    .insert_execution_fill(execution.lease(), &fill)
+                    .await?,
+                FillInsertOutcome::Inserted
+            ) {
+                inserted = inserted.saturating_add(1);
+            }
+        }
+    }
+
+    // A cumulative OMS fill is trusted only when immutable venue fill evidence
+    // explains it exactly. Missing venue history therefore remains fail-closed.
+    for order in orders.values().filter(|order| order.filled_quantity > Decimal::ZERO) {
+        let recorded = store
+            .recorded_fill_quantity(execution.lease(), &order.client_order_id)
+            .await?;
+        if recorded != order.filled_quantity {
+            bail!(
+                "fill ledger mismatch for {}: OMS={} ledger={}",
+                order.client_order_id,
+                order.filled_quantity,
+                recorded
+            );
+        }
+    }
+
+    Ok(inserted)
 }
 
 async fn apply_shutdown_policy(
