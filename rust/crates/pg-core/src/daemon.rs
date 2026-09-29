@@ -5,7 +5,9 @@ use pg_execution::{
     ShadowPosition,
 };
 use pg_marketdata::{FeedKind, FeedSpec, MarketDataSource, MarketEvent, SubscriptionSupervisor};
+use pg_oms::OrderRecord;
 use pg_orchestrator::{AdapterRegistry, DurableExecution};
+use pg_reconcile::VenuePosition;
 use pg_risk::{RiskLimits, evaluate_order};
 use pg_runtime::{RunConfig, RunMode, ShutdownPolicy, StartupChecklist, StartupGate};
 use pg_store::{LeaseHealth, PostgresStore};
@@ -213,6 +215,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let mut peak_returns: BTreeMap<AssetKey, f64> = BTreeMap::new();
     // Strategy id -> client order id of the intent the policy path is still working.
     // Without this the portable path would re-emit the same entry on every tick.
+    let shadow_venue_ids = shadow_venues.keys().copied().collect::<Vec<_>>();
     let mut live_policy_intents: BTreeMap<String, (Venue, String)> = BTreeMap::new();
     let mut orders_journaled: u64 = 0;
     let mut reconcile_clean = true;
@@ -335,6 +338,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
             _ = reconcile_tick.tick() => {
                 let mut clean = true;
                 let mut issue_count = 0_u64;
+                let mut observed_positions = Vec::<VenuePosition>::new();
+                let mut observed_orders = Vec::<OrderRecord>::new();
                 for venue in shadow_venues.keys().copied() {
                     match execution.recover_ambiguous(venue).await {
                         Ok(recovery) => {
@@ -354,6 +359,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                                 issue_count = issue_count
                                     .saturating_add(cycle.report.issues.len() as u64);
                             }
+                            observed_orders.extend(cycle.orders);
+                            observed_positions.extend(cycle.positions);
                         }
                         Err(error) => {
                             clean = false;
@@ -384,6 +391,13 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 }).await;
                 if let Some(observer) = observability.as_ref() {
                     observer.sync(&health, &checklist, config.mode, Some(clean)).await;
+                    observer.sync_execution_inventory(
+                        &supervisor,
+                        &shadow_venue_ids,
+                        &observed_positions,
+                        &observed_orders,
+                        clean,
+                    );
                 }
             }
             _ = health_tick.tick() => {

@@ -426,6 +426,15 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     feed_tasks.sync(feeds.clone(), &mut supervisor, &event_tx, &fatal_tx)?;
     if let Some(observer) = observability.as_ref() {
         observer.sync_market_data(&supervisor, now_ns());
+        let positions = latest_positions.values().cloned().collect::<Vec<_>>();
+        let orders = latest_orders.values().cloned().collect::<Vec<_>>();
+        observer.sync_execution_inventory(
+            &supervisor,
+            &venues,
+            &positions,
+            &orders,
+            startup_clean && ambiguous_clean,
+        );
     }
 
     let max_staleness_ns = config.max_market_staleness_ms.saturating_mul(1_000_000);
@@ -597,6 +606,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         }
                     }
                 }
+                let observed_positions = next_positions.values().cloned().collect::<Vec<_>>();
+                let observed_orders = next_orders.values().cloned().collect::<Vec<_>>();
                 if clean {
                     latest_positions = next_positions;
                     latest_orders = next_orders;
@@ -630,6 +641,13 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 }).await;
                 if let Some(observer) = observability.as_ref() {
                     observer.sync(&health, &checklist, config.mode, Some(clean)).await;
+                    observer.sync_execution_inventory(
+                        &supervisor,
+                        &venues,
+                        &observed_positions,
+                        &observed_orders,
+                        clean,
+                    );
                 }
             }
             _ = universe_tick.tick(), if dynamic_enabled => {

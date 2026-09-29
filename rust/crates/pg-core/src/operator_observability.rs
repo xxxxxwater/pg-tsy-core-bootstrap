@@ -10,6 +10,7 @@ use pg_oms::{OrderRecord, OrderState};
 use pg_reconcile::{Ownership, VenuePosition};
 use pg_runtime::{RunConfig, RunMode, StartupChecklist, required_gates};
 use pg_types::{Side, Venue};
+use rust_decimal::Decimal;
 use std::env;
 
 pub(crate) struct OperatorObservability {
@@ -284,7 +285,7 @@ fn position_snapshots(positions: &[VenuePosition]) -> Vec<PositionSnapshot> {
             PositionSnapshot {
                 venue: venue_name(position.venue).into(),
                 asset: position.asset.clone(),
-                side: if position.quantity.is_sign_positive() {
+                side: if position.quantity > Decimal::ZERO {
                     "LONG".into()
                 } else {
                     "SHORT".into()
