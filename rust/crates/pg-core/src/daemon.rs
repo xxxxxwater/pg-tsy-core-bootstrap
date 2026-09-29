@@ -96,8 +96,10 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     ));
     // Exposure created here is simulated. The real-venue equivalent stays closed:
     // `serve` refuses to run whenever real-venue routing is enabled.
-    let risk_limits = RiskLimits {
-        allow_new_exposure: true,
+    let mut risk_limits = RiskLimits {
+        // Shadow starts closed and opens only after both market-data and the
+        // continuous durable reconciliation path are healthy.
+        allow_new_exposure: false,
         ..RiskLimits::default()
     };
 
@@ -186,8 +188,19 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         observer.sync_market_data(&supervisor, now_ns());
     }
     let max_staleness_ns = config.max_market_staleness_ms.saturating_mul(1_000_000);
+    let reconcile_interval_ms = env::var("PG_RECONCILE_INTERVAL_MS")
+        .unwrap_or_else(|_| "2000".into())
+        .parse::<u64>()
+        .context("invalid PG_RECONCILE_INTERVAL_MS")?;
+    if !(250..=60_000).contains(&reconcile_interval_ms) {
+        bail!("PG_RECONCILE_INTERVAL_MS must be in [250, 60000]");
+    }
+    let mut reconcile_tick =
+        tokio::time::interval(Duration::from_millis(reconcile_interval_ms));
+    reconcile_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut health_tick = tokio::time::interval(Duration::from_secs(1));
     health_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    spawn_shadow_reconcile_fault(&shadow_venues)?;
 
     tracing::info!(
         feeds = supervisor.feed_count(),
@@ -202,6 +215,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     // Without this the portable path would re-emit the same entry on every tick.
     let mut live_policy_intents: BTreeMap<String, (Venue, String)> = BTreeMap::new();
     let mut orders_journaled: u64 = 0;
+    let mut reconcile_clean = true;
     let result: Result<()> = loop {
         tokio::select! {
             maybe_event = event_rx.recv() => {
@@ -318,6 +332,60 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     }
                 }
             }
+            _ = reconcile_tick.tick() => {
+                let mut clean = true;
+                let mut issue_count = 0_u64;
+                for venue in shadow_venues.keys().copied() {
+                    match execution.recover_ambiguous(venue).await {
+                        Ok(recovery) => {
+                            if recovery.items.iter().any(|item| !item.resolved) {
+                                clean = false;
+                            }
+                        }
+                        Err(error) => {
+                            clean = false;
+                            tracing::warn!(?venue, %error, "shadow ambiguous recovery failed");
+                        }
+                    }
+                    match execution.reconcile_once(venue).await {
+                        Ok(cycle) => {
+                            if !cycle.report.clean() {
+                                clean = false;
+                                issue_count = issue_count
+                                    .saturating_add(cycle.report.issues.len() as u64);
+                            }
+                        }
+                        Err(error) => {
+                            clean = false;
+                            issue_count = issue_count.saturating_add(1);
+                            tracing::warn!(?venue, %error, "shadow continuous reconcile failed");
+                        }
+                    }
+                }
+                reconcile_clean = clean;
+                if clean {
+                    checklist.pass(StartupGate::OwnershipReconciled);
+                } else {
+                    checklist.fail(
+                        StartupGate::OwnershipReconciled,
+                        format!("shadow continuous reconcile found {issue_count} issue(s)"),
+                    );
+                }
+                risk_limits.allow_new_exposure =
+                    clean && checklist.ready_for(RunMode::Shadow) && supervisor.all_connected();
+                let blocking_gates = blocking_gate_names(&checklist);
+                health.mutate(|snapshot| {
+                    if !clean {
+                        snapshot.ready = false;
+                        snapshot.last_error =
+                            Some("continuous reconcile entered SAFE_HOLD".into());
+                    }
+                    snapshot.blocking_gates = blocking_gates;
+                }).await;
+                if let Some(observer) = observability.as_ref() {
+                    observer.sync(&health, &checklist, config.mode, Some(clean)).await;
+                }
+            }
             _ = health_tick.tick() => {
                 supervisor.refresh_staleness(now_ns(), max_staleness_ns);
                 if supervisor.all_connected() {
@@ -329,6 +397,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     );
                 }
                 let ready = checklist.ready_for(RunMode::Shadow);
+                risk_limits.allow_new_exposure = ready && reconcile_clean;
                 // Recomputed every tick so /healthz reports which gate is actually
                 // holding readiness back, not a snapshot taken at boot.
                 let blocking_gates = blocking_gate_names(&checklist);
@@ -341,7 +410,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     }
                 }).await;
                 if let Some(observer) = observability.as_ref() {
-                    observer.sync(&health, &checklist, config.mode, Some(true)).await;
+                    observer
+                        .sync(&health, &checklist, config.mode, Some(reconcile_clean))
+                        .await;
                     observer.sync_market_data(&supervisor, now_ns());
                 }
             }
@@ -933,6 +1004,62 @@ async fn open_feed_stream(
             spec.venue
         ))),
     }
+}
+
+fn spawn_shadow_reconcile_fault(
+    venues: &BTreeMap<Venue, ShadowExecutionAdapter>,
+) -> Result<()> {
+    let Some(raw_delay) = env::var("PG_SHADOW_RECONCILE_FAULT_AFTER_MS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let delay_ms = raw_delay
+        .parse::<u64>()
+        .context("invalid PG_SHADOW_RECONCILE_FAULT_AFTER_MS")?;
+    if !(100..=60_000).contains(&delay_ms) {
+        bail!("PG_SHADOW_RECONCILE_FAULT_AFTER_MS must be in [100, 60000]");
+    }
+    let venue = match env::var("PG_SHADOW_RECONCILE_FAULT_VENUE")
+        .unwrap_or_else(|_| "HYPERLIQUID".into())
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "HYPERLIQUID" => Venue::Hyperliquid,
+        "IBKR" | "INTERACTIVEBROKERS" | "INTERACTIVE_BROKERS" => Venue::InteractiveBrokers,
+        "BINANCE_PM" | "BINANCEPM" => Venue::BinancePm,
+        other => bail!("invalid PG_SHADOW_RECONCILE_FAULT_VENUE={other}"),
+    };
+    let asset = env::var("PG_SHADOW_RECONCILE_FAULT_ASSET")
+        .unwrap_or_else(|_| "PG_TEST_GHOST".into());
+    if asset.trim().is_empty() {
+        bail!("PG_SHADOW_RECONCILE_FAULT_ASSET must not be empty");
+    }
+    let quantity = env::var("PG_SHADOW_RECONCILE_FAULT_QUANTITY")
+        .unwrap_or_else(|_| "1".into())
+        .parse::<Decimal>()
+        .context("invalid PG_SHADOW_RECONCILE_FAULT_QUANTITY")?;
+    if quantity.is_zero() {
+        bail!("PG_SHADOW_RECONCILE_FAULT_QUANTITY must be non-zero");
+    }
+    let adapter = venues
+        .get(&venue)
+        .cloned()
+        .with_context(|| format!("shadow fault venue {venue:?} is not registered"))?;
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        adapter.inject_unmatched_position_for_test(asset.clone(), quantity);
+        tracing::warn!(
+            ?venue,
+            %asset,
+            %quantity,
+            "shadow unmatched position fault activated"
+        );
+    });
+    Ok(())
 }
 
 fn shadow_fixture_path() -> Option<PathBuf> {
