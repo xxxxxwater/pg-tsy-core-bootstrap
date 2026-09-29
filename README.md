@@ -50,7 +50,7 @@ An adapter compiling, being registered, authenticating, accepting an order and p
 | Strategy | Normalized trade/BBO/L2/candle features, registry, legacy automation and portable policy graph | Exactly one policy/legacy engine dispatches per definition; missing features fail closed |
 | Risk/OMS | Freshness, entry guard, ownership, persisted stable intent, partial-fill-aware lifecycle | Need physical crash/venue evidence for end-to-end at-most-once exposure |
 | Persistence/recovery | PostgreSQL lease/fencing, journal, records, ownership and reconciliation; live daemon invokes `recover_ambiguous` + `reconcile_once` periodically | Not equivalent to authenticated complete fills/fees and safe unattended operations on all three venues |
-| Observability/control | Wired `/healthz`, `/readyz`, `/metrics`; deny-by-default authenticated reload; opt-in integrated `pg-observability` API | `/v1/snapshot` and `/v1/events` are disabled by default and currently mirror startup gates, lease ownership, strategy inventory, open-order count and reconcile health; detailed feed/venue/position/performance producers remain incomplete; Telegram emergency end-to-end unproven |
+| Observability/control | Wired `/healthz`, `/readyz`, `/metrics`; deny-by-default authenticated reload; opt-in integrated `pg-observability` API; Postgres-backed shadow daemon acceptance CI | Snapshot now mirrors startup gates, lease ownership + fencing token, strategy inventory, open-order count, reconcile health and authoritative per-feed status/age; per-venue execution detail, positions and performance remain incomplete; Telegram emergency end-to-end unproven |
 
 ## Actual mode dispatch
 
@@ -61,7 +61,7 @@ pg-core --serve
                                                           └── Binance PM: fail closed
 ```
 
-`PG_RUN_MODE=live` additionally requires `PG_LIVE_TRADING=true`, startup checks and operator start; **those are software gates, not acceptance evidence**. `paper` uses real API adapters: Hyperliquid requires Testnet; IBKR's paper-account enforcement is an outstanding review item. `PG_SHADOW_FILL_MODE=rest|immediate` applies only to shadow. Never send real credentials through Actions or publish a credential in documentation.
+`PG_RUN_MODE=live` additionally requires `PG_LIVE_TRADING=true`, startup checks and operator start; **those are software gates, not acceptance evidence**. `paper` uses real API adapters: Hyperliquid requires Testnet; IBKR's paper-account enforcement is an outstanding review item. `PG_SHADOW_FILL_MODE=rest|immediate` applies only to shadow. Shadow also supports an explicitly configured deterministic `PG_SHADOW_MARKET_FIXTURE` JSONL source for CI/research; it is never read by paper/live. Never send real credentials through Actions or publish a credential in documentation.
 
 ## Repository map
 

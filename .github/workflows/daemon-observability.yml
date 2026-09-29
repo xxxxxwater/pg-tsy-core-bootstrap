@@ -26,7 +26,7 @@ jobs:
     env:
       PG_RUN_MODE: shadow
       PG_LIVE_TRADING: "false"
-      PG_ENVIRONMENT: ci
+      PG_ENV: ci
       PG_INSTANCE_ID: daemon-observability-ci
       PG_DATABASE_URL: postgres://pgtsy_ci:only-for-ci@127.0.0.1:5432/pgtsy_daemon_test
       PG_LEASE_KEY: pg-core:ci:daemon-observability

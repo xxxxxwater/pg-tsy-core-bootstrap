@@ -29,15 +29,15 @@ The feature is disabled by default to preserve existing deployment behavior and 
 
 ## Authoritative fields wired today
 
-The integrated bridge updates the observatory from actual daemon state for required startup gates, lease ownership, loaded strategy inventory (including successful reloads), open-order count, reconciliation health, and durable journal availability established at startup.
+The integrated bridge updates the observatory from actual daemon state for required startup gates, lease ownership and the active fencing token, loaded strategy inventory (including successful reloads), open-order count, reconciliation health, durable journal availability established at startup, and each configured market-data feed's state plus receive-age derived from `SubscriptionSupervisor`.
 
 These fields participate in conservative safety recomputation. Missing or failed startup/reconcile/lease evidence remains fail-closed.
 
 ## Still incomplete
 
-Detailed per-feed age/status, per-venue latency/execution/reconcile rows, full position ownership rows, recent order detail, checkpoint/tail sequence numbers, and PnL/exposure performance are not yet authoritative producers. They must remain unknown/empty rather than being synthesized from process health.
+Per-venue execution/latency rows, full position ownership rows, recent order detail, checkpoint/tail sequence numbers, and PnL/exposure performance are not yet authoritative producers. They must remain unknown/empty rather than being synthesized from process health.
 
-The next acceptance step is an integration test that launches the real `pg-core` daemon against isolated Postgres, verifies `/v1/snapshot` and `/v1/events`, exercises Bearer denial, forces lease/feed/reconcile failures, and proves the API never unlocks exposure.
+`.github/workflows/daemon-observability.yml` now launches a real shadow `pg-core --serve` process against isolated PostgreSQL, feeds it a deterministic normalized JSONL stream, waits for `/readyz`, proves all required feeds are connected, proves unauthenticated snapshot access is rejected, verifies the authenticated `runtime.snapshot.v1` payload (including fencing token and healthy feed rows), checks `/v1/events`, and shuts the daemon down with SIGINT. The remaining acceptance work is **fault injection**: deliberately lose the lease, stale/fail a feed, and create reconciliation drift to prove the operator API follows SAFE_HOLD transitions without being able to clear them.
 
 ## Safety boundary
 

@@ -154,3 +154,21 @@ PG_INSTANCE_ID=local-policy-replay PG_STRATEGY_DIR=../data/replay/strategies \
 
 On a host without a local Rust toolchain, run the same cargo commands in the pinned
 toolchain image — see the repository README.
+
+
+## Deterministic shadow daemon smoke
+
+`data/replay/daemon_smoke.jsonl` is intentionally small and covers Trades, BBO, L2 and the 5-minute candle required by `data/replay/strategies/hype_policy.toml`. It can drive the actual shadow daemon without external market-data connectivity:
+
+```bash
+cd rust
+PG_RUN_MODE=shadow \
+PG_INSTANCE_ID=local-shadow-smoke \
+PG_DATABASE_URL=postgres://... \
+PG_STRATEGY_DIR=../data/replay/strategies \
+PG_SHADOW_MARKET_FIXTURE=../data/replay/daemon_smoke.jsonl \
+PG_SHADOW_FIXTURE_INTERVAL_MS=25 \
+cargo run -p pg-core -- --serve
+```
+
+The runtime rebases only receive timestamps to wall clock and loops the fixture. Startup fails if the fixture does not cover every derived feed. This path exists only in the shadow daemon; paper/live never read `PG_SHADOW_MARKET_FIXTURE`.
