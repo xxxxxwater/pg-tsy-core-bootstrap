@@ -400,12 +400,11 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         health.clone(),
         Some(control_tx),
     ));
-    let observability =
-        crate::operator_observability::OperatorObservability::maybe_spawn(
-            &config,
-            registry.strategy_ids(),
-        )
-        .await?;
+    let observability = crate::operator_observability::OperatorObservability::maybe_spawn(
+        &config,
+        registry.strategy_ids(),
+    )
+    .await?;
     if let Some(observer) = observability.as_ref() {
         observer
             .sync(

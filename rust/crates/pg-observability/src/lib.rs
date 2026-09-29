@@ -632,7 +632,9 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
     }
     left.iter()
         .zip(right.iter())
-        .fold(0_u8, |difference, (left, right)| difference | (left ^ right))
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
         == 0
 }
 

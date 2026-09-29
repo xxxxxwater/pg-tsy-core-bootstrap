@@ -22,8 +22,8 @@ impl OperatorObservability {
             return Ok(None);
         }
 
-        let server_config =
-            ObservabilityConfig::from_env().context("invalid runtime observability configuration")?;
+        let server_config = ObservabilityConfig::from_env()
+            .context("invalid runtime observability configuration")?;
         let observatory = RuntimeObservatory::new(
             config,
             env!("CARGO_PKG_VERSION"),
@@ -116,9 +116,16 @@ impl OperatorObservability {
 }
 
 fn enabled_from_env() -> Result<bool> {
-    let Ok(raw) = env::var("PG_OBSERVABILITY_ENABLED") else {
-        return Ok(false);
-    };
+    match env::var("PG_OBSERVABILITY_ENABLED") {
+        Ok(raw) => parse_enabled(&raw),
+        Err(env::VarError::NotPresent) => Ok(false),
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("PG_OBSERVABILITY_ENABLED must be valid UTF-8")
+        }
+    }
+}
+
+fn parse_enabled(raw: &str) -> Result<bool> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
         "0" | "false" | "no" | "off" | "" => Ok(false),
@@ -136,14 +143,16 @@ fn admin_reload_configured() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::parse_enabled;
 
     #[test]
-    fn observability_is_opt_in_and_boolean_parser_is_strict() {
-        assert!(matches!(
-            "true".trim().to_ascii_lowercase().as_str(),
-            "true"
-        ));
-        assert!((32..=512).contains(&32));
+    fn observability_boolean_parser_is_strict() {
+        assert!(parse_enabled("true").unwrap());
+        assert!(parse_enabled("1").unwrap());
+        assert!(parse_enabled(" yes ").unwrap());
+        assert!(!parse_enabled("false").unwrap());
+        assert!(!parse_enabled("0").unwrap());
+        assert!(!parse_enabled("").unwrap());
+        assert!(parse_enabled("maybe").is_err());
     }
 }
