@@ -87,7 +87,15 @@ jobs:
             .lease.owned == true and
             (.lease.fencing_token != null) and
             ([.feeds[].status] | all(. == "HEALTHY")) and
-            (.feeds | length) >= 4
+            (.feeds | length) >= 4 and
+            (.venues | any(
+              .id == "HYPERLIQUID" and
+              .market_data == "HEALTHY" and
+              .execution == "HEALTHY" and
+              .reconcile == "HEALTHY"
+            )) and
+            (.positions | type == "array") and
+            (.orders.recent | type == "array")
           ' /tmp/snapshot.json
 
           curl -fsS             -H "Authorization: Bearer $PG_OBSERVABILITY_TOKEN"             'http://127.0.0.1:18787/v1/events?after=0&limit=20' >/tmp/events.json
@@ -204,7 +212,14 @@ jobs:
               .safety.state == "SAFE_HOLD" and
               .safety.allow_new_exposure == false and
               .reconcile.status == "DEGRADED" and
-              .reconcile.mismatch_count >= 1
+              .reconcile.mismatch_count >= 1 and
+              .reconcile.ownership_unknown_count >= 1 and
+              (.positions | any(
+                .venue == "HYPERLIQUID" and
+                .asset == "PG_TEST_GHOST" and
+                .ownership == "UNKNOWN" and
+                .quantity == "1"
+              ))
             ' /tmp/reconcile-snapshot.json >/dev/null; then
               held=1
               break
