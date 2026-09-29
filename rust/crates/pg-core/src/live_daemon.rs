@@ -28,7 +28,7 @@ use pg_strategy::{
     registry::StrategyRegistry,
 };
 use pg_types::{AssetKey, ExposureEffect, OrderIntent, RiskDecision, Side, Venue};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -344,6 +344,24 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
         tracing::error!(%error, "startup fill ingestion is incomplete; freezing new exposure");
     }
 
+    let mut position_views = match rebuild_position_views(
+        store.as_ref(),
+        execution.as_ref(),
+        &latest_positions,
+        &latest_orders,
+        &BTreeMap::new(),
+    )
+    .await
+    {
+        Ok(views) => views,
+        Err(error) => {
+            fill_ingestion_clean = false;
+            startup_clean = false;
+            tracing::error!(%error, "startup PositionView reconstruction failed; freezing new exposure");
+            BTreeMap::new()
+        }
+    };
+
     let mut runtime_pins =
         derive_runtime_pins(&latest_positions, &latest_orders, &reconcile_safe_hold);
 
@@ -496,13 +514,21 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 };
                 supervisor.observe(&event);
                 let key = event_asset_key(&event);
-                let position = position_view(
-                    runtime_pins
-                        .strategy_positions
-                        .get(&key)
-                        .copied()
-                        .unwrap_or(Decimal::ZERO),
-                );
+                let reconciled_quantity = runtime_pins
+                    .strategy_positions
+                    .get(&key)
+                    .copied()
+                    .unwrap_or(Decimal::ZERO);
+                let position = {
+                    let view = position_views
+                        .entry(key.clone())
+                        .or_insert_with(|| position_view(reconciled_quantity));
+                    if view.net_quantity != reconciled_quantity {
+                        *view = position_view(reconciled_quantity);
+                    }
+                    update_position_mark(view, &event)?;
+                    view.clone()
+                };
                 let mut decisions = 0_u64;
 
                 for routed in registry.route_event(&event) {
@@ -633,6 +659,24 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     clean = false;
                     tracing::error!(%error, "continuous fill ingestion failed; freezing new exposure");
                 }
+                let mut next_position_views = None;
+                if clean {
+                    match rebuild_position_views(
+                        store.as_ref(),
+                        execution.as_ref(),
+                        &next_positions,
+                        &next_orders,
+                        &position_views,
+                    )
+                    .await
+                    {
+                        Ok(views) => next_position_views = Some(views),
+                        Err(error) => {
+                            clean = false;
+                            tracing::error!(%error, "PositionView reconstruction failed; freezing new exposure");
+                        }
+                    }
+                }
                 let observed_positions = next_positions.values().cloned().collect::<Vec<_>>();
                 let observed_orders = next_orders.values().cloned().collect::<Vec<_>>();
                 if clean {
@@ -644,6 +688,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         &latest_orders,
                         &reconcile_safe_hold,
                     );
+                    position_views = next_position_views.unwrap_or_default();
                     checklist.pass(StartupGate::OwnershipReconciled);
                     checklist.pass(StartupGate::UnknownStateClear);
                 } else {
@@ -1285,6 +1330,164 @@ fn event_asset_key(event: &MarketEvent) -> AssetKey {
     }
 }
 
+async fn rebuild_position_views(
+    store: &PostgresStore,
+    execution: &DurableExecution<PostgresStore>,
+    positions: &BTreeMap<AssetKey, VenuePosition>,
+    orders: &BTreeMap<String, OrderRecord>,
+    previous: &BTreeMap<AssetKey, PositionView>,
+) -> Result<BTreeMap<AssetKey, PositionView>> {
+    let mut views = BTreeMap::new();
+    for (key, position) in positions {
+        let Ownership::Strategy(strategy_id) = &position.ownership else {
+            continue;
+        };
+        if position.quantity.is_zero() {
+            continue;
+        }
+        let fills = store
+            .load_execution_fills_for_position(
+                execution.lease(),
+                position.venue,
+                &position.asset,
+                strategy_id,
+            )
+            .await?;
+        let mut view = position_view_from_fills(position.quantity, &fills, orders)?;
+        if let Some(old) = previous.get(key)
+            && old.net_quantity == view.net_quantity
+            && old.average_entry_price == view.average_entry_price
+        {
+            view.peak_return = old.peak_return;
+        }
+        views.insert(key.clone(), view);
+    }
+    Ok(views)
+}
+
+fn position_view_from_fills(
+    reconciled_quantity: Decimal,
+    fills: &[ExecutionFill],
+    orders: &BTreeMap<String, OrderRecord>,
+) -> Result<PositionView> {
+    let mut net = Decimal::ZERO;
+    let mut average_entry_price = None;
+    let mut entry_orders = BTreeSet::new();
+
+    for fill in fills {
+        let order = orders.get(&fill.client_order_id).with_context(|| {
+            format!(
+                "fill {} references unavailable durable order {}",
+                fill.venue_fill_id, fill.client_order_id
+            )
+        })?;
+        let signed = match fill.side {
+            Side::Buy => fill.quantity,
+            Side::Sell => -fill.quantity,
+        };
+        match order.effect {
+            Some(ExposureEffect::Increase) => {
+                if !net.is_zero() && net.is_sign_positive() != signed.is_sign_positive() {
+                    bail!(
+                        "increase fill {} crosses an existing position instead of increasing it",
+                        fill.venue_fill_id
+                    );
+                }
+                let next_abs = net.abs() + fill.quantity;
+                average_entry_price = Some(match average_entry_price {
+                    Some(average) if !net.is_zero() => {
+                        ((average * net.abs()) + (fill.price * fill.quantity)) / next_abs
+                    }
+                    _ => fill.price,
+                });
+                net += signed;
+                entry_orders.insert(fill.client_order_id.clone());
+            }
+            Some(ExposureEffect::ReduceOnly) => {
+                if net.is_zero()
+                    || net.is_sign_positive() == signed.is_sign_positive()
+                    || fill.quantity > net.abs()
+                {
+                    bail!(
+                        "reduce-only fill {} cannot be applied to reconstructed quantity {}",
+                        fill.venue_fill_id,
+                        net
+                    );
+                }
+                net += signed;
+                if net.is_zero() {
+                    average_entry_price = None;
+                    entry_orders.clear();
+                }
+            }
+            None => bail!(
+                "fill {} references an order without exposure effect",
+                fill.venue_fill_id
+            ),
+        }
+    }
+
+    if net != reconciled_quantity {
+        bail!(
+            "reconstructed position quantity {} does not match reconciled quantity {}",
+            net,
+            reconciled_quantity
+        );
+    }
+    let filled_entries = u32::try_from(entry_orders.len())
+        .context("filled entry order count exceeds u32")?;
+    Ok(PositionView {
+        net_quantity: net,
+        average_entry_price,
+        filled_entries,
+        unrealized_return: None,
+        peak_return: None,
+    })
+}
+
+fn update_position_mark(view: &mut PositionView, event: &MarketEvent) -> Result<()> {
+    if view.net_quantity.is_zero() {
+        view.unrealized_return = None;
+        view.peak_return = None;
+        return Ok(());
+    }
+    let Some(entry) = view.average_entry_price else {
+        return Ok(());
+    };
+    let Some(mark) = event_mark_price(event) else {
+        return Ok(());
+    };
+    if entry <= Decimal::ZERO || mark <= Decimal::ZERO {
+        bail!("position mark/entry price must be positive");
+    }
+    let direction = if view.net_quantity.is_sign_positive() {
+        Decimal::ONE
+    } else {
+        -Decimal::ONE
+    };
+    let value = (((mark - entry) / entry) * direction)
+        .to_f64()
+        .context("position unrealized return cannot be represented as f64")?;
+    view.unrealized_return = Some(value);
+    view.peak_return = Some(view.peak_return.map_or(value, |peak| peak.max(value)));
+    Ok(())
+}
+
+fn event_mark_price(event: &MarketEvent) -> Option<Decimal> {
+    match event {
+        MarketEvent::Trade(value) => Some(value.price),
+        MarketEvent::BestBidAsk(value) => {
+            Some((value.bid_price + value.ask_price) / Decimal::from(2))
+        }
+        MarketEvent::L2Book(value) => {
+            let bid = value.bids.first()?.price;
+            let ask = value.asks.first()?.price;
+            Some((bid + ask) / Decimal::from(2))
+        }
+        MarketEvent::Candle(value) => Some(value.close),
+    }
+}
+
 async fn ingest_owned_fills(
     store: &PostgresStore,
     execution: &DurableExecution<PostgresStore>,
@@ -1709,4 +1912,102 @@ fn now_ns() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock before unix epoch")
         .as_nanos() as u64
+}
+
+
+#[cfg(test)]
+mod position_view_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn order(id: Uuid, side: Side, effect: ExposureEffect, quantity: i64) -> OrderRecord {
+        let intent = OrderIntent {
+            intent_id: id,
+            strategy_id: "basis-test".into(),
+            asset: "HYPE".into(),
+            venue: Venue::Hyperliquid,
+            side,
+            quantity: Decimal::from(quantity),
+            limit_price: None,
+            effect,
+            source_signal_id: None,
+        };
+        OrderRecord::from_intent(&intent)
+    }
+
+    fn fill(order: &OrderRecord, id: &str, quantity: i64, price: i64) -> ExecutionFill {
+        ExecutionFill {
+            account_scope: "hl:test".into(),
+            venue: Venue::Hyperliquid,
+            symbol: "HYPE".into(),
+            trade_id: id.parse().unwrap_or(0),
+            venue_fill_id: id.into(),
+            venue_order_id: "1".into(),
+            client_order_id: order.client_order_id.clone(),
+            side: order.side.unwrap(),
+            quantity: Decimal::from(quantity),
+            price: Decimal::from(price),
+            commission: Some(Decimal::ZERO),
+            commission_asset: Some("USDC".into()),
+            realized_pnl: Some(Decimal::ZERO),
+            trade_time_ms: Some(1),
+            venue_time: None,
+        }
+    }
+
+    #[test]
+    fn position_basis_uses_weighted_entry_and_distinct_entry_orders() {
+        let first = order(Uuid::from_u128(1), Side::Buy, ExposureEffect::Increase, 2);
+        let second = order(Uuid::from_u128(2), Side::Buy, ExposureEffect::Increase, 1);
+        let mut orders = BTreeMap::new();
+        orders.insert(first.client_order_id.clone(), first.clone());
+        orders.insert(second.client_order_id.clone(), second.clone());
+        let view = position_view_from_fills(
+            Decimal::from(3),
+            &[fill(&first, "1", 2, 100), fill(&second, "2", 1, 130)],
+            &orders,
+        )
+        .unwrap();
+        assert_eq!(view.net_quantity, Decimal::from(3));
+        assert_eq!(view.average_entry_price, Some(Decimal::from(110)));
+        assert_eq!(view.filled_entries, 2);
+    }
+
+    #[test]
+    fn position_basis_resets_after_flat_and_reopen() {
+        let entry = order(Uuid::from_u128(3), Side::Buy, ExposureEffect::Increase, 2);
+        let exit = order(Uuid::from_u128(4), Side::Sell, ExposureEffect::ReduceOnly, 2);
+        let reopen = order(Uuid::from_u128(5), Side::Sell, ExposureEffect::Increase, 1);
+        let mut orders = BTreeMap::new();
+        for order in [&entry, &exit, &reopen] {
+            orders.insert(order.client_order_id.clone(), order.clone());
+        }
+        let view = position_view_from_fills(
+            Decimal::from(-1),
+            &[
+                fill(&entry, "3", 2, 100),
+                fill(&exit, "4", 2, 90),
+                fill(&reopen, "5", 1, 80),
+            ],
+            &orders,
+        )
+        .unwrap();
+        assert_eq!(view.average_entry_price, Some(Decimal::from(80)));
+        assert_eq!(view.filled_entries, 1);
+    }
+
+    #[test]
+    fn position_basis_rejects_quantity_drift() {
+        let entry = order(Uuid::from_u128(6), Side::Buy, ExposureEffect::Increase, 1);
+        let mut orders = BTreeMap::new();
+        orders.insert(entry.client_order_id.clone(), entry.clone());
+        assert!(
+            position_view_from_fills(
+                Decimal::from(2),
+                &[fill(&entry, "6", 1, 100)],
+                &orders,
+            )
+            .is_err()
+        );
+    }
 }
