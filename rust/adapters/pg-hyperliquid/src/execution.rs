@@ -3,8 +3,8 @@ use std::{collections::HashMap, str::FromStr};
 use alloy::{primitives::Address, signers::local::PrivateKeySigner};
 use async_trait::async_trait;
 use pg_execution::{
-    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck,
-    VenueOrderSnapshot, VenueOrderState, VenuePositionSnapshot,
+    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueFillSnapshot,
+    VenueOrderAck, VenueOrderSnapshot, VenueOrderState, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -394,6 +394,57 @@ impl ExecutionAdapter for HyperliquidExecutionAdapter {
                 Ok(VenuePositionSnapshot {
                     asset: position.position.coin,
                     quantity,
+                })
+            })
+            .collect()
+    }
+
+    async fn fills(&self) -> Result<Vec<VenueFillSnapshot>, ExecutionError> {
+        let historical = self
+            .info
+            .historical_orders(self.account_address)
+            .await
+            .map_err(map_read_error)?;
+        let cloid_by_oid = historical
+            .into_iter()
+            .filter_map(|entry| entry.order.cloid.map(|cloid| (entry.order.oid, cloid)))
+            .collect::<HashMap<_, _>>();
+        let account_scope = format!("hl:{}", self.account_address);
+        self.info
+            .user_fills(self.account_address)
+            .await
+            .map_err(map_read_error)?
+            .into_iter()
+            .map(|fill| {
+                let trade_id = i64::try_from(fill.tid).map_err(|_| {
+                    ExecutionError::Conversion("Hyperliquid tid exceeds i64 audit range".into())
+                })?;
+                let trade_time_ms = i64::try_from(fill.time).map_err(|_| {
+                    ExecutionError::Conversion("Hyperliquid fill time exceeds i64 range".into())
+                })?;
+                Ok(VenueFillSnapshot {
+                    account_scope: account_scope.clone(),
+                    venue_fill_id: fill.tid.to_string(),
+                    legacy_trade_id: Some(trade_id),
+                    venue_order_id: fill.oid.to_string(),
+                    client_order_id: cloid_by_oid.get(&fill.oid).cloned(),
+                    asset: fill.coin,
+                    side: match fill.side.to_ascii_uppercase().as_str() {
+                        "B" | "BUY" => Side::Buy,
+                        "A" | "S" | "SELL" => Side::Sell,
+                        other => {
+                            return Err(ExecutionError::Conversion(format!(
+                                "unknown Hyperliquid fill side {other}"
+                            )));
+                        }
+                    },
+                    quantity: parse_decimal(&fill.sz, "fill size")?,
+                    price: parse_decimal(&fill.px, "fill price")?,
+                    commission: Some(parse_decimal(&fill.fee, "fill fee")?),
+                    commission_asset: Some(fill.fee_token),
+                    realized_pnl: Some(parse_decimal(&fill.closed_pnl, "closed pnl")?),
+                    trade_time_ms: Some(trade_time_ms),
+                    venue_time: None,
                 })
             })
             .collect()

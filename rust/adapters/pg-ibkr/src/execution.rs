@@ -1,10 +1,10 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use pg_execution::{
-    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck,
-    VenueOrderSnapshot, VenueOrderState, VenuePositionSnapshot,
+    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueFillSnapshot,
+    VenueOrderAck, VenueOrderSnapshot, VenueOrderState, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent, Side, Venue};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -274,6 +274,74 @@ impl IbkrExecutionAdapter {
         Ok(executions)
     }
 
+    async fn fill_rows(&self) -> Result<Vec<VenueFillSnapshot>, ExecutionError> {
+        let filter = ExecutionFilter {
+            client_id: Some(self.config.ibkr.client_id),
+            account_code: self.config.ibkr.account.clone().unwrap_or_default(),
+            symbol: self.config.instrument.symbol.clone(),
+            ..ExecutionFilter::default()
+        };
+        let subscription = self
+            .client
+            .executions(filter)
+            .await
+            .map_err(map_read_error)?;
+        let mut stream = subscription.filter_data();
+        let mut executions = Vec::new();
+        let mut commissions = BTreeMap::new();
+        while let Some(item) = stream.next().await {
+            match item.map_err(map_read_error)? {
+                Executions::ExecutionData(execution) => executions.push(execution),
+                Executions::CommissionReport(report) => {
+                    commissions.insert(report.execution_id.clone(), report);
+                }
+            }
+        }
+
+        executions
+            .into_iter()
+            .map(|data| {
+                let execution = data.execution;
+                let report = commissions.remove(&execution.execution_id);
+                let account = if execution.account_number.trim().is_empty() {
+                    self.config
+                        .ibkr
+                        .account
+                        .clone()
+                        .unwrap_or_else(|| "UNKNOWN".into())
+                } else {
+                    execution.account_number.clone()
+                };
+                Ok(VenueFillSnapshot {
+                    account_scope: format!("ibkr:{account}"),
+                    venue_fill_id: execution.execution_id.clone(),
+                    legacy_trade_id: None,
+                    venue_order_id: execution.order_id.to_string(),
+                    client_order_id: (!execution.order_reference.is_empty())
+                        .then_some(execution.order_reference),
+                    asset: data.contract.symbol.to_string(),
+                    side: match execution.side {
+                        ExecutionSide::Bought => Side::Buy,
+                        ExecutionSide::Sold => Side::Sell,
+                    },
+                    quantity: decimal_from_f64(execution.shares, "execution shares")?,
+                    price: decimal_from_f64(execution.price, "execution price")?,
+                    commission: report
+                        .as_ref()
+                        .map(|value| decimal_from_f64(value.commission, "commission"))
+                        .transpose()?,
+                    commission_asset: report.as_ref().map(|value| value.currency.clone()),
+                    realized_pnl: report
+                        .and_then(|value| value.realized_pnl)
+                        .map(|value| decimal_from_f64(value, "realized pnl"))
+                        .transpose()?,
+                    trade_time_ms: None,
+                    venue_time: Some(execution.time),
+                })
+            })
+            .collect()
+    }
+
     async fn lookup_by_client_id(
         &self,
         client_order_id: &str,
@@ -516,6 +584,10 @@ impl ExecutionAdapter for IbkrExecutionAdapter {
                 })
             })
             .collect()
+    }
+
+    async fn fills(&self) -> Result<Vec<VenueFillSnapshot>, ExecutionError> {
+        self.fill_rows().await
     }
 
     async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {

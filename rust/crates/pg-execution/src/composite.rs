@@ -10,8 +10,8 @@
 //! add/remove contracts without replacing the venue adapter held by DurableExecution.
 
 use crate::{
-    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck,
-    VenueOrderSnapshot, VenuePositionSnapshot,
+    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueFillSnapshot,
+    VenueOrderAck, VenueOrderSnapshot, VenuePositionSnapshot,
 };
 use async_trait::async_trait;
 use pg_types::{OrderIntent, Venue};
@@ -160,6 +160,26 @@ impl ExecutionAdapter for CompositeExecutionAdapter {
         // IBKR positions are account-wide, not instrument-client scoped. Querying
         // every per-symbol child would multiply the same API request by top-N.
         adapter.positions().await
+    }
+
+    async fn fills(&self) -> Result<Vec<VenueFillSnapshot>, ExecutionError> {
+        let mut unique = BTreeMap::<(String, String), VenueFillSnapshot>::new();
+        for adapter in self.children() {
+            for fill in adapter.fills().await? {
+                let key = (fill.asset.clone(), fill.venue_fill_id.clone());
+                if let Some(existing) = unique.get(&key) {
+                    if existing != &fill {
+                        return Err(ExecutionError::Unknown(format!(
+                            "conflicting composite fill snapshots for {}:{}",
+                            key.0, key.1
+                        )));
+                    }
+                } else {
+                    unique.insert(key, fill);
+                }
+            }
+        }
+        Ok(unique.into_values().collect())
     }
 
     async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {

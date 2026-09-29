@@ -45,6 +45,26 @@ pub struct VenuePositionSnapshot {
     pub quantity: Decimal,
 }
 
+/// Immutable venue execution evidence normalized without discarding the native
+/// fill identity. Optional fee/time fields stay unknown until the venue proves them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VenueFillSnapshot {
+    pub account_scope: String,
+    pub venue_fill_id: String,
+    pub legacy_trade_id: Option<i64>,
+    pub venue_order_id: String,
+    pub client_order_id: Option<String>,
+    pub asset: String,
+    pub side: Side,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub commission: Option<Decimal>,
+    pub commission_asset: Option<String>,
+    pub realized_pnl: Option<Decimal>,
+    pub trade_time_ms: Option<i64>,
+    pub venue_time: Option<String>,
+}
+
 /// Cross-venue account values used by runtime risk/control surfaces.
 ///
 /// A venue must leave a field `None` when it does not expose an equivalent value.
@@ -104,6 +124,14 @@ pub trait ExecutionAdapter: Send + Sync {
     async fn open_orders(&self) -> Result<Vec<VenueOrderSnapshot>, ExecutionError>;
 
     async fn positions(&self) -> Result<Vec<VenuePositionSnapshot>, ExecutionError>;
+
+    /// Complete venue execution evidence available to the adapter. Callers must
+    /// still verify durable ownership before persisting or mutating OMS state.
+    async fn fills(&self) -> Result<Vec<VenueFillSnapshot>, ExecutionError> {
+        Err(ExecutionError::Unsupported(
+            "fill history is not implemented by this adapter".into(),
+        ))
+    }
 
     /// Read the venue's own account/margin summary. Adapters must not synthesize
     /// unavailable values from local estimates.
