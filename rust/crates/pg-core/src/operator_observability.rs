@@ -243,14 +243,11 @@ fn venue_snapshots(
                 .all(|state| *state == SubscriptionState::Connected)
             {
                 "HEALTHY"
-            } else if states.contains(&SubscriptionState::Failed)
-            {
+            } else if states.contains(&SubscriptionState::Failed) {
                 "FAILED"
-            } else if states.contains(&SubscriptionState::Stale)
-            {
+            } else if states.contains(&SubscriptionState::Stale) {
                 "STALE"
-            } else if states.contains(&SubscriptionState::Degraded)
-            {
+            } else if states.contains(&SubscriptionState::Degraded) {
                 "DEGRADED"
             } else {
                 "RECONNECTING"
