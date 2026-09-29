@@ -1,0 +1,85 @@
+name: paper-fault-matrix
+on:
+  push:
+  pull_request:
+
+jobs:
+  deterministic-contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - run: cargo fmt --check
+
+      - name: Lost ACK and restart recovery must never duplicate submit
+        run: |
+          cargo test -p pg-orchestrator ambiguous_submit_recovers_without_second_submit
+          cargo test -p pg-orchestrator unresolved_ambiguous_never_resubmits
+          cargo test -p pg-orchestrator persisted_crash_window_adopts_venue_order_without_submit
+
+      - name: Fencing and ownership are fail-closed
+        run: |
+          cargo test -p pg-orchestrator fencing_loss_blocks_network_dispatch_and_cancel
+          cargo test -p pg-orchestrator ownership_is_strategy_only_when_signed_fills_equal_venue_position
+          cargo test -p pg-orchestrator no_strategy_fill_evidence_defaults_nonzero_position_to_manual
+
+      - name: Reconcile drift and UNKNOWN state enter SAFE_HOLD
+        run: |
+          cargo test -p pg-reconcile fill_drift_enters_asset_safe_hold
+          cargo test -p pg-reconcile unknown_order_state_is_never_clean_even_if_fills_match
+          cargo test -p pg-reconcile mismatched_remote_identity_freezes_both_assets
+          cargo test -p pg-reconcile side_quantity_and_exchange_order_id_mismatch_hold
+          cargo test -p pg-reconcile manual_position_does_not_block_other_or_same_known_asset
+
+      - name: Hyperliquid paper/testnet contract
+        run: |
+          cargo test -p pg-hyperliquid --features sdk
+          cargo clippy -p pg-hyperliquid --all-targets --features sdk -- -D warnings
+
+      - name: IBKR paper contract
+        run: |
+          cargo test -p pg-ibkr --features sdk
+          cargo clippy -p pg-ibkr --all-targets --features sdk -- -D warnings
+
+      - name: Reconciliation-backed PositionView
+        run: |
+          cargo test -p pg-core position_view_tests
+          cargo clippy -p pg-core --all-targets --features ibkr-marketdata -- -D warnings
+
+  postgres-fill-replay:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pgtsy_ci
+          POSTGRES_PASSWORD: only-for-ci
+          POSTGRES_DB: pgtsy_paper_faults
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pgtsy_ci -d pgtsy_paper_faults"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      PG_TEST_DATABASE_URL: postgres://pgtsy_ci:only-for-ci@127.0.0.1:5432/pgtsy_paper_faults
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt,clippy
+      - run: cargo fmt --check
+      - name: Native fill identity, dedupe, ownership and fencing
+        run: cargo test -p pg-store --test fill_ledger_pg -- --nocapture
+      - name: Atomic fill settlement and restart-safe replay
+        run: cargo test -p pg-store --test fill_settlement_pg -- --nocapture
+      - run: cargo clippy -p pg-store --all-targets -- -D warnings
