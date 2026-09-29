@@ -88,6 +88,9 @@ impl PostgresStore {
         sqlx::raw_sql(include_str!("../migrations/0003_execution_fills.sql"))
             .execute(&self.pool)
             .await?;
+        sqlx::raw_sql(include_str!("../migrations/0004_multi_venue_fill_ids.sql"))
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

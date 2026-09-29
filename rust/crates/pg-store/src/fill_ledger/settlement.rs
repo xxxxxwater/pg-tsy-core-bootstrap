@@ -39,8 +39,7 @@ fn validate_transition(
     record: &OrderRecord,
     history: &CompleteOrderHistory,
 ) -> Result<(), FillLedgerError> {
-    if record.venue != pg_types::Venue::BinancePm
-        || record.client_order_id != history.client_order_id
+    if record.client_order_id != history.client_order_id
         || record.venue_order_id.as_deref() != Some(history.venue_order_id.as_str())
         || record.owner_strategy_id.trim().is_empty()
         || record.side.is_none()
@@ -118,7 +117,7 @@ impl PostgresStore {
                 || fill.venue_order_id != history.venue_order_id
                 || fill.client_order_id != history.client_order_id
                 || !fill.belongs_to(&record)
-                || incoming.insert(fill.trade_id, fill).is_some()
+                || incoming.insert(fill.venue_fill_key(), fill).is_some()
             {
                 return Err(FillLedgerError::Conflict);
             }
@@ -140,25 +139,28 @@ impl PostgresStore {
         for value in existing {
             let fill: ExecutionFill = serde_json::from_value(value)?;
             if fill.account_scope != history.account_scope
-                || incoming.get(&fill.trade_id) != Some(&&fill)
-                || previously_stored.insert(fill.trade_id, fill).is_some()
+                || incoming.get(&fill.venue_fill_key()) != Some(&&fill)
+                || previously_stored
+                    .insert(fill.venue_fill_key(), fill)
+                    .is_some()
             {
                 return Err(FillLedgerError::Conflict);
             }
         }
 
         let mut inserted_trades = 0;
-        for (trade_id, fill) in incoming {
-            if previously_stored.contains_key(&trade_id) {
+        for (venue_fill_id, fill) in incoming {
+            if previously_stored.contains_key(&venue_fill_id) {
                 continue;
             }
             let rows = sqlx::query(
-                "INSERT INTO execution_fills (account_scope,venue,symbol,trade_id,client_order_id,fill_data,fencing_token) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
+                "INSERT INTO execution_fills (account_scope,venue,symbol,trade_id,venue_fill_id,client_order_id,fill_data,fencing_token) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING",
             )
             .bind(&fill.account_scope)
             .bind(venue_key(fill.venue))
             .bind(&fill.symbol)
             .bind(fill.trade_id)
+            .bind(&venue_fill_id)
             .bind(&fill.client_order_id)
             .bind(serde_json::to_value(fill)?)
             .bind(lease.fencing_token)
@@ -173,7 +175,7 @@ impl PostgresStore {
             .bind(Uuid::new_v4())
             .bind(format!("order:{}", history.client_order_id))
             .bind("order.fill.recorded")
-            .bind(json!({"account_scope":history.account_scope,"trade_id":trade_id,"fill":fill}))
+            .bind(json!({"account_scope":history.account_scope,"trade_id":fill.trade_id,"venue_fill_id":venue_fill_id,"fill":fill}))
             .bind(lease.fencing_token)
             .execute(&mut *tx)
             .await?;

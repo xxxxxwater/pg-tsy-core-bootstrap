@@ -43,6 +43,7 @@ async fn fill_is_atomic_idempotent_owned_and_fenced() {
         venue: Venue::BinancePm,
         symbol: "BTCUSDC".into(),
         trade_id: 6001,
+        venue_fill_id: "6001".into(),
         venue_order_id: "987654".into(),
         client_order_id: order.client_order_id.clone(),
         side: Side::Buy,
@@ -77,6 +78,7 @@ async fn fill_is_atomic_idempotent_owned_and_fenced() {
     ));
     let mut second = fill.clone();
     second.trade_id = 6002;
+    second.venue_fill_id = "6002".into();
     second.quantity = Decimal::new(6, 3);
     assert_eq!(
         store.insert_execution_fill(&lease, &second).await.unwrap(),
@@ -91,12 +93,14 @@ async fn fill_is_atomic_idempotent_owned_and_fenced() {
     );
     let mut overfill = fill.clone();
     overfill.trade_id = 6003;
+    overfill.venue_fill_id = "6003".into();
     assert!(matches!(
         store.insert_execution_fill(&lease, &overfill).await,
         Err(FillLedgerError::Conflict)
     ));
     let mut manual = fill.clone();
     manual.trade_id = 6004;
+    manual.venue_fill_id = "6004".into();
     manual.client_order_id = format!("pg{}", "f".repeat(32));
     assert!(matches!(
         store.insert_execution_fill(&lease, &manual).await,
@@ -116,6 +120,7 @@ async fn fill_is_atomic_idempotent_owned_and_fenced() {
     store.release_lease(&lease).await.unwrap();
     let mut after_lease = fill;
     after_lease.trade_id = 6005;
+    after_lease.venue_fill_id = "6005".into();
     assert!(matches!(
         store.insert_execution_fill(&lease, &after_lease).await,
         Err(FillLedgerError::FencingLost)

@@ -44,6 +44,7 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
         venue: Venue::BinancePm,
         symbol: "BTCUSDC".into(),
         trade_id: 9001,
+        venue_fill_id: "9001".into(),
         venue_order_id: "123".into(),
         client_order_id: order.client_order_id.clone(),
         side: Side::Buy,
@@ -91,6 +92,7 @@ async fn complete_history_updates_oms_and_fills_atomically_without_reopening() {
     ));
     let mut second = first.clone();
     second.trade_id = 9002;
+    second.venue_fill_id = "9002".into();
     second.quantity = Decimal::new(6, 3);
     history.trades.push(second);
     history.authoritative_state = OrderState::Filled;
