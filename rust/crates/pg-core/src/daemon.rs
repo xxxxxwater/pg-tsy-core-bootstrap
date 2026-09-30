@@ -1054,9 +1054,7 @@ struct ShadowReconcileFault {
 }
 
 impl ShadowReconcileFault {
-    fn from_env(
-        venues: &BTreeMap<Venue, ShadowExecutionAdapter>,
-    ) -> Result<Option<Self>> {
+    fn from_env(venues: &BTreeMap<Venue, ShadowExecutionAdapter>) -> Result<Option<Self>> {
         let Some(raw_delay) = env::var("PG_SHADOW_RECONCILE_FAULT_AFTER_MS")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -1076,9 +1074,7 @@ impl ShadowReconcileFault {
             .as_str()
         {
             "HYPERLIQUID" => Venue::Hyperliquid,
-            "IBKR" | "INTERACTIVEBROKERS" | "INTERACTIVE_BROKERS" => {
-                Venue::InteractiveBrokers
-            }
+            "IBKR" | "INTERACTIVEBROKERS" | "INTERACTIVE_BROKERS" => Venue::InteractiveBrokers,
             "BINANCE_PM" | "BINANCEPM" => Venue::BinancePm,
             other => bail!("invalid PG_SHADOW_RECONCILE_FAULT_VENUE={other}"),
         };
