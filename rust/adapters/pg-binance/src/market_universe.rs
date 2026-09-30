@@ -77,7 +77,6 @@ pub fn decode_trading_perpetuals(bytes: &[u8]) -> Result<BTreeSet<String>, Marke
     Ok(symbols)
 }
 
-
 fn filter<'a>(filters: &'a [Value], kind: &str) -> Result<&'a Value, MarketDataError> {
     let matches = filters
         .iter()
@@ -89,10 +88,7 @@ fn filter<'a>(filters: &'a [Value], kind: &str) -> Result<&'a Value, MarketDataE
     Ok(matches[0])
 }
 
-fn positive_filter_decimal(
-    value: &Value,
-    names: &[&str],
-) -> Result<String, MarketDataError> {
+fn positive_filter_decimal(value: &Value, names: &[&str]) -> Result<String, MarketDataError> {
     let raw = names
         .iter()
         .find_map(|name| value.get(*name).and_then(Value::as_str))

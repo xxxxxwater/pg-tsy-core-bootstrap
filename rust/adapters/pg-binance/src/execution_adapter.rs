@@ -100,7 +100,6 @@ impl BinancePmExecutionAdapter {
     }
 }
 
-
 fn verify_one_way_position_mode(value: &Value) -> Result<(), ExecutionError> {
     let rows = value
         .as_array()
