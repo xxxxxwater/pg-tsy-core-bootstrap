@@ -124,7 +124,6 @@ pub fn decode_position_risk(json: &Value) -> Result<Vec<VenuePositionSnapshot>, 
         .collect()
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OrderIdentity {
     venue_order_id: String,
@@ -149,7 +148,11 @@ fn decode_order_identity(value: &Value) -> Result<OrderIdentity, ExecutionError>
     let side = match value.get("side").and_then(Value::as_str) {
         Some("BUY") => pg_types::Side::Buy,
         Some("SELL") => pg_types::Side::Sell,
-        _ => return Err(ExecutionError::Conversion("invalid Binance order side".into())),
+        _ => {
+            return Err(ExecutionError::Conversion(
+                "invalid Binance order side".into(),
+            ));
+        }
     };
     let native_client_id = value
         .get("clientOrderId")
@@ -359,7 +362,15 @@ mod tests {
             min_notional: "5".into(),
             symbol_trading: true,
         };
-        assert!(BinancePmExecutionAdapter::new(rest, filters, PositionMode::Unverified, "test-account".into()).is_err());
+        assert!(
+            BinancePmExecutionAdapter::new(
+                rest,
+                filters,
+                PositionMode::Unverified,
+                "test-account".into()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -423,7 +434,13 @@ mod tests {
             min_notional: "5".into(),
             symbol_trading: true,
         };
-        let adapter = BinancePmExecutionAdapter::new(rest, filters, PositionMode::OneWay, "test-account".into()).unwrap();
+        let adapter = BinancePmExecutionAdapter::new(
+            rest,
+            filters,
+            PositionMode::OneWay,
+            "test-account".into(),
+        )
+        .unwrap();
         let durable = format!("pg{}", "42".repeat(16));
         let wrong = OrderLocator {
             asset: "BTCUSDT",
