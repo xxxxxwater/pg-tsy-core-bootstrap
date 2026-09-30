@@ -3,8 +3,8 @@
 
 use async_trait::async_trait;
 use pg_execution::{
-    ExecutionAdapter, ExecutionError, OrderLocator, VenueFillSnapshot, VenueOrderAck,
-    VenueOrderSnapshot, VenuePositionSnapshot,
+    AccountSnapshot, ExecutionAdapter, ExecutionError, OrderLocator, VenueFillSnapshot,
+    VenueOrderAck, VenueOrderSnapshot, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent};
 use rust_decimal::Decimal;
@@ -122,6 +122,55 @@ pub fn decode_position_risk(json: &Value) -> Result<Vec<VenuePositionSnapshot>, 
             })
         })
         .collect()
+}
+
+
+fn required_decimal(value: &Value, key: &str) -> Result<Decimal, ExecutionError> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ExecutionError::Conversion(format!("missing Binance account field {key}")))?
+        .parse::<Decimal>()
+        .map_err(|_| ExecutionError::Conversion(format!("invalid Binance account field {key}")))
+}
+
+fn optional_decimal(value: &Value, key: &str) -> Result<Option<Decimal>, ExecutionError> {
+    let Some(raw) = value.get(key).and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<Decimal>()
+        .map(Some)
+        .map_err(|_| ExecutionError::Conversion(format!("invalid Binance account field {key}")))
+}
+
+fn decode_account_snapshot(value: &Value) -> Result<AccountSnapshot, ExecutionError> {
+    let status = value
+        .get("accountStatus")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ExecutionError::Conversion("missing Binance account status".into()))?;
+    if status != "NORMAL" {
+        return Err(ExecutionError::Unknown(format!(
+            "Binance Portfolio Margin account status is {status}; new-exposure authority is unproven"
+        )));
+    }
+
+    Ok(AccountSnapshot {
+        venue: pg_types::Venue::BinancePm,
+        account_id: None,
+        currency: Some("USD".into()),
+        account_value: Some(required_decimal(value, "accountEquity")?),
+        available_funds: optional_decimal(value, "totalAvailableBalance")?,
+        withdrawable: optional_decimal(value, "virtualMaxWithdrawAmount")?,
+        buying_power: None,
+        initial_margin: Some(required_decimal(value, "accountInitialMargin")?),
+        maintenance_margin: Some(required_decimal(value, "accountMaintMargin")?),
+        margin_used: None,
+        gross_position_value: None,
+        raw_usd: Some(required_decimal(value, "actualEquity")?),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +340,10 @@ impl ExecutionAdapter for BinancePmExecutionAdapter {
         bind_trade_page(&self.account_scope, page, &orders)
     }
 
+    async fn account_snapshot(&self) -> Result<AccountSnapshot, ExecutionError> {
+        decode_account_snapshot(&self.rest.account_info().await?)
+    }
+
     /// Signed historical query, never openOrders-only. A missing record, HTTP
     /// error or disconnected venue is unresolved, never a safe resubmit.
     async fn find_order_by_client_id(
@@ -371,6 +424,48 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn account_snapshot_uses_portfolio_margin_equity_without_synthesizing_free_balance() {
+        let snapshot = decode_account_snapshot(&serde_json::json!({
+            "uniMMR": "5167.92171923",
+            "accountEquity": "73.47428058",
+            "actualEquity": "122607.35137903",
+            "accountInitialMargin": "23.72469206",
+            "accountMaintMargin": "12.50000000",
+            "accountStatus": "NORMAL",
+            "virtualMaxWithdrawAmount": "100.25",
+            "totalAvailableBalance": "",
+            "updateTime": 1657707212154_u64
+        }))
+        .unwrap();
+        assert_eq!(snapshot.venue, pg_types::Venue::BinancePm);
+        assert_eq!(snapshot.account_value, Some(Decimal::new(7347428058, 8)));
+        assert_eq!(snapshot.raw_usd, Some(Decimal::new(12260735137903, 8)));
+        assert_eq!(snapshot.available_funds, None);
+        assert_eq!(snapshot.withdrawable, Some(Decimal::new(10025, 2)));
+        assert_eq!(
+            snapshot.maintenance_margin,
+            Some(Decimal::new(1250000000, 8))
+        );
+    }
+
+    #[test]
+    fn non_normal_portfolio_margin_status_fails_closed() {
+        let value = serde_json::json!({
+            "accountEquity": "100",
+            "actualEquity": "100",
+            "accountInitialMargin": "10",
+            "accountMaintMargin": "5",
+            "accountStatus": "REDUCE_ONLY",
+            "virtualMaxWithdrawAmount": "0",
+            "totalAvailableBalance": "0"
+        });
+        assert!(matches!(
+            decode_account_snapshot(&value),
+            Err(ExecutionError::Unknown(_))
+        ));
     }
 
     #[test]

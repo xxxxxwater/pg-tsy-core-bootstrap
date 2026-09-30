@@ -113,6 +113,7 @@ impl BinanceRestClient {
                 | TRADES_PATH
                 | "/papi/v1/um/openOrders"
                 | "/papi/v1/um/positionRisk"
+                | "/papi/v1/account"
         ) {
             return Err(ExecutionError::Unsupported("unapproved PM endpoint".into()));
         }
@@ -339,6 +340,10 @@ impl BinanceRestClient {
             &[("symbol".into(), SYMBOL.into())],
         )
         .await
+    }
+
+    pub async fn account_info(&self) -> Result<Value, ExecutionError> {
+        self.signed(Method::GET, "/papi/v1/account", &[]).await
     }
 }
 
