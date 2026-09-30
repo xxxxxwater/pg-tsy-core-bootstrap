@@ -3,17 +3,21 @@
 
 use async_trait::async_trait;
 use pg_execution::{
-    ExecutionAdapter, ExecutionError, OrderLocator, VenueOrderAck, VenueOrderSnapshot,
-    VenuePositionSnapshot,
+    ExecutionAdapter, ExecutionError, OrderLocator, VenueFillSnapshot, VenueOrderAck,
+    VenueOrderSnapshot, VenuePositionSnapshot,
 };
 use pg_types::{ExposureEffect, OrderIntent};
 use rust_decimal::Decimal;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::{
     encode_intent_bytes,
-    order_protocol::{OrderStyle, PositionMode, SYMBOL, SymbolFilters, prepare_order},
+    order_protocol::{
+        OrderStyle, PositionMode, SYMBOL, SymbolFilters, prepare_order, valid_client_order_id,
+    },
     rest_transport::BinanceRestClient,
+    trade_history::{TradePage, UmTrade},
 };
 
 /// Convert the persisted 34-character OMS identity back to the exact native
@@ -52,6 +56,7 @@ pub struct BinancePmExecutionAdapter {
     rest: BinanceRestClient,
     filters: SymbolFilters,
     mode: PositionMode,
+    account_scope: String,
 }
 
 impl BinancePmExecutionAdapter {
@@ -59,16 +64,27 @@ impl BinancePmExecutionAdapter {
         rest: BinanceRestClient,
         filters: SymbolFilters,
         mode: PositionMode,
+        account_scope: String,
     ) -> Result<Self, ExecutionError> {
         if filters.symbol != SYMBOL || !filters.symbol_trading || mode != PositionMode::OneWay {
             return Err(ExecutionError::Unsupported(
                 "BTCUSDC trading status or one-way mode is unverified".into(),
             ));
         }
+        let account_scope = account_scope.trim().to_owned();
+        if account_scope.is_empty()
+            || account_scope.len() > 128
+            || !account_scope.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(ExecutionError::Conversion(
+                "invalid Binance account scope".into(),
+            ));
+        }
         Ok(Self {
             rest,
             filters,
             mode,
+            account_scope: format!("binance-pm:{account_scope}"),
         })
     }
 }
@@ -106,6 +122,121 @@ pub fn decode_position_risk(json: &Value) -> Result<Vec<VenuePositionSnapshot>, 
             })
         })
         .collect()
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrderIdentity {
+    venue_order_id: String,
+    client_order_id: Option<String>,
+    asset: String,
+    side: pg_types::Side,
+}
+
+fn decode_order_identity(value: &Value) -> Result<OrderIdentity, ExecutionError> {
+    let venue_order_id = value
+        .get("orderId")
+        .and_then(Value::as_u64)
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ExecutionError::Conversion("invalid Binance order identity".into()))?
+        .to_string();
+    let asset = value
+        .get("symbol")
+        .and_then(Value::as_str)
+        .filter(|symbol| *symbol == SYMBOL)
+        .ok_or_else(|| ExecutionError::Conversion("unexpected Binance order symbol".into()))?
+        .to_owned();
+    let side = match value.get("side").and_then(Value::as_str) {
+        Some("BUY") => pg_types::Side::Buy,
+        Some("SELL") => pg_types::Side::Sell,
+        _ => return Err(ExecutionError::Conversion("invalid Binance order side".into())),
+    };
+    let native_client_id = value
+        .get("clientOrderId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ExecutionError::Conversion("missing Binance client order id".into()))?;
+    let client_order_id = if valid_client_order_id(native_client_id) {
+        crate::durable_client_order_id(native_client_id)
+    } else {
+        None
+    };
+    Ok(OrderIdentity {
+        venue_order_id,
+        client_order_id,
+        asset,
+        side,
+    })
+}
+
+fn bind_trade_page(
+    account_scope: &str,
+    page: TradePage,
+    order_history: &Value,
+) -> Result<Vec<VenueFillSnapshot>, ExecutionError> {
+    if !page.short_page {
+        return Err(ExecutionError::Unknown(
+            "Binance UM userTrades page saturated at 1000 rows; complete recent fill coverage is unproven".into(),
+        ));
+    }
+    let rows = order_history
+        .as_array()
+        .ok_or_else(|| ExecutionError::Conversion("invalid Binance allOrders response".into()))?;
+    let mut identities = BTreeMap::new();
+    for row in rows {
+        let identity = decode_order_identity(row)?;
+        if identities
+            .insert(identity.venue_order_id.clone(), identity)
+            .is_some()
+        {
+            return Err(ExecutionError::Conversion(
+                "duplicate Binance order identity in allOrders".into(),
+            ));
+        }
+    }
+
+    page.trades
+        .into_iter()
+        .map(|trade| bind_trade(account_scope, trade, &identities))
+        .collect()
+}
+
+fn bind_trade(
+    account_scope: &str,
+    trade: UmTrade,
+    identities: &BTreeMap<String, OrderIdentity>,
+) -> Result<VenueFillSnapshot, ExecutionError> {
+    let identity = identities.get(&trade.venue_order_id).ok_or_else(|| {
+        ExecutionError::Unknown(format!(
+            "Binance trade {} cannot be bound to authenticated allOrders identity {}",
+            trade.trade_id, trade.venue_order_id
+        ))
+    })?;
+    if identity.asset != trade.symbol || identity.side != trade.side {
+        return Err(ExecutionError::Unknown(format!(
+            "Binance trade {} conflicts with authenticated order identity",
+            trade.trade_id
+        )));
+    }
+    let trade_id = i64::try_from(trade.trade_id)
+        .map_err(|_| ExecutionError::Conversion("Binance trade id exceeds i64".into()))?;
+    let trade_time_ms = i64::try_from(trade.trade_time_ms)
+        .map_err(|_| ExecutionError::Conversion("Binance trade time exceeds i64".into()))?;
+    Ok(VenueFillSnapshot {
+        account_scope: account_scope.to_owned(),
+        venue_fill_id: trade.trade_id.to_string(),
+        legacy_trade_id: Some(trade_id),
+        venue_order_id: trade.venue_order_id,
+        client_order_id: identity.client_order_id.clone(),
+        asset: trade.symbol,
+        side: trade.side,
+        quantity: trade.quantity,
+        price: trade.price,
+        commission: Some(trade.commission),
+        commission_asset: Some(trade.commission_asset),
+        realized_pnl: Some(trade.realized_pnl),
+        trade_time_ms: Some(trade_time_ms),
+        venue_time: None,
+    })
 }
 
 #[async_trait]
@@ -149,6 +280,12 @@ impl ExecutionAdapter for BinancePmExecutionAdapter {
 
     async fn positions(&self) -> Result<Vec<VenuePositionSnapshot>, ExecutionError> {
         decode_position_risk(&self.rest.position_risk().await?)
+    }
+
+    async fn fills(&self) -> Result<Vec<VenueFillSnapshot>, ExecutionError> {
+        let page = self.rest.user_trades_page(None, 1000).await?;
+        let orders = self.rest.recent_orders().await?;
+        bind_trade_page(&self.account_scope, page, &orders)
     }
 
     /// Signed historical query, never openOrders-only. A missing record, HTTP
@@ -222,7 +359,57 @@ mod tests {
             min_notional: "5".into(),
             symbol_trading: true,
         };
-        assert!(BinancePmExecutionAdapter::new(rest, filters, PositionMode::Unverified).is_err());
+        assert!(BinancePmExecutionAdapter::new(rest, filters, PositionMode::Unverified, "test-account".into()).is_err());
+    }
+
+    #[test]
+    fn immutable_trade_page_binds_only_authenticated_order_identity() {
+        let page = TradePage {
+            trades: vec![UmTrade {
+                symbol: SYMBOL.into(),
+                trade_id: 9,
+                venue_order_id: "123".into(),
+                side: pg_types::Side::Buy,
+                quantity: Decimal::new(5, 3),
+                price: Decimal::from(80_000),
+                quote_quantity: Decimal::from(400),
+                commission: Decimal::new(1, 3),
+                commission_asset: "USDC".into(),
+                realized_pnl: Decimal::new(-125, 2),
+                trade_time_ms: 1_700_000_000_000,
+            }],
+            next_from_id: Some(10),
+            short_page: true,
+        };
+        let native_id = crate::encode_intent_bytes(&[0x42; 16]);
+        let orders = serde_json::json!([{
+            "symbol": SYMBOL,
+            "orderId": 123,
+            "clientOrderId": native_id,
+            "side": "BUY"
+        }]);
+        let fills = bind_trade_page("binance-pm:test", page, &orders).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].venue_fill_id, "9");
+        assert_eq!(
+            fills[0].client_order_id.as_deref(),
+            Some(format!("pg{}", "42".repeat(16)).as_str())
+        );
+        assert_eq!(fills[0].commission, Some(Decimal::new(1, 3)));
+        assert_eq!(fills[0].realized_pnl, Some(Decimal::new(-125, 2)));
+    }
+
+    #[test]
+    fn saturated_trade_page_fails_closed() {
+        let page = TradePage {
+            trades: Vec::new(),
+            next_from_id: None,
+            short_page: false,
+        };
+        assert!(matches!(
+            bind_trade_page("binance-pm:test", page, &serde_json::json!([])),
+            Err(ExecutionError::Unknown(_))
+        ));
     }
 
     #[tokio::test]
@@ -236,7 +423,7 @@ mod tests {
             min_notional: "5".into(),
             symbol_trading: true,
         };
-        let adapter = BinancePmExecutionAdapter::new(rest, filters, PositionMode::OneWay).unwrap();
+        let adapter = BinancePmExecutionAdapter::new(rest, filters, PositionMode::OneWay, "test-account".into()).unwrap();
         let durable = format!("pg{}", "42".repeat(16));
         let wrong = OrderLocator {
             asset: "BTCUSDT",
