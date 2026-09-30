@@ -220,83 +220,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let mut reconcile_clean = true;
     let result: Result<()> = loop {
         tokio::select! {
-            maybe_event = event_rx.recv() => {
-                let Some(event) = maybe_event else {
-                    break Err(anyhow::anyhow!("all market-data event senders stopped"));
-                };
-                supervisor.observe(&event);
-
-                // Mark the simulated venue before strategies run so a fill priced on
-                // this tick and the position view the strategies see agree.
-                let position = observe_position(&shadow_venues, &event, &mut peak_returns);
-
-                let automation_outputs = registry.route_event(&event);
-                let mut decisions = 0_u64;
-                for routed in automation_outputs {
-                    let strategy_id = routed.strategy_id.clone();
-                    match routed.output.decision {
-                        StrategyDecision::Submit(intent) => {
-                            // A definition that declares a portable rule graph is owned
-                            // by the policy engine. Letting the legacy score machine
-                            // dispatch as well would put two independent decision engines
-                            // on one instrument and could open the same exposure twice.
-                            if registry
-                                .policy(&strategy_id)
-                                .is_some_and(PolicyInstance::is_policy_driven)
-                            {
-                                tracing::debug!(
-                                    strategy_id = %strategy_id,
-                                    "automation intent suppressed: definition is policy-driven"
-                                );
-                                continue;
-                            }
-                            decisions = decisions.saturating_add(1);
-                            if submit_intent(&execution, &risk_limits, &strategy_id, &intent)
-                                .await
-                                .is_some()
-                            {
-                                orders_journaled = orders_journaled.saturating_add(1);
-                            }
-                        }
-                        StrategyDecision::Hold(reason) => {
-                            tracing::debug!(strategy_id = %strategy_id, %reason, "strategy hold");
-                        }
-                        StrategyDecision::Noop => {}
-                    }
-                }
-
-                // The portable policy path evaluates rule graphs rather than emitting
-                // order intents, so translate its decisions here and send them through
-                // exactly the same risk / OMS / journal / execution path.
-                for routed in registry.route_live_policy_event(&event, &position) {
-                    decisions = decisions.saturating_add(1);
-                    if strategy_is_busy(&mut live_policy_intents, &shadow_venues, &routed.strategy_id) {
-                        continue;
-                    }
-                    let Some(intent) = policy_intent(&registry, &routed, &position) else {
-                        continue;
-                    };
-                    let strategy_id = routed.strategy_id.clone();
-                    if let Some(client_order_id) =
-                        submit_intent(&execution, &risk_limits, &strategy_id, &intent).await
-                    {
-                        orders_journaled = orders_journaled.saturating_add(1);
-                        live_policy_intents.insert(strategy_id, (intent.venue, client_order_id));
-                    }
-                }
-
-                let open_orders = shadow_venues
-                    .values()
-                    .map(ShadowExecutionAdapter::resting_order_count)
-                    .sum::<usize>();
-                health.mutate(|snapshot| {
-                    snapshot.events_total = snapshot.events_total.saturating_add(1);
-                    snapshot.policy_decisions_total = snapshot.policy_decisions_total.saturating_add(decisions);
-                    snapshot.feeds_connected = supervisor.connected_count();
-                    snapshot.open_orders = open_orders;
-                    snapshot.orders_journaled_total = orders_journaled;
-                }).await;
-            }
+            biased;
             maybe_fatal = fatal_rx.recv() => {
                 let Some(fatal) = maybe_fatal else {
                     continue;
@@ -450,6 +374,83 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         }
                     }
                 }
+            }
+            maybe_event = event_rx.recv() => {
+                let Some(event) = maybe_event else {
+                    break Err(anyhow::anyhow!("all market-data event senders stopped"));
+                };
+                supervisor.observe(&event);
+
+                // Mark the simulated venue before strategies run so a fill priced on
+                // this tick and the position view the strategies see agree.
+                let position = observe_position(&shadow_venues, &event, &mut peak_returns);
+
+                let automation_outputs = registry.route_event(&event);
+                let mut decisions = 0_u64;
+                for routed in automation_outputs {
+                    let strategy_id = routed.strategy_id.clone();
+                    match routed.output.decision {
+                        StrategyDecision::Submit(intent) => {
+                            // A definition that declares a portable rule graph is owned
+                            // by the policy engine. Letting the legacy score machine
+                            // dispatch as well would put two independent decision engines
+                            // on one instrument and could open the same exposure twice.
+                            if registry
+                                .policy(&strategy_id)
+                                .is_some_and(PolicyInstance::is_policy_driven)
+                            {
+                                tracing::debug!(
+                                    strategy_id = %strategy_id,
+                                    "automation intent suppressed: definition is policy-driven"
+                                );
+                                continue;
+                            }
+                            decisions = decisions.saturating_add(1);
+                            if submit_intent(&execution, &risk_limits, &strategy_id, &intent)
+                                .await
+                                .is_some()
+                            {
+                                orders_journaled = orders_journaled.saturating_add(1);
+                            }
+                        }
+                        StrategyDecision::Hold(reason) => {
+                            tracing::debug!(strategy_id = %strategy_id, %reason, "strategy hold");
+                        }
+                        StrategyDecision::Noop => {}
+                    }
+                }
+
+                // The portable policy path evaluates rule graphs rather than emitting
+                // order intents, so translate its decisions here and send them through
+                // exactly the same risk / OMS / journal / execution path.
+                for routed in registry.route_live_policy_event(&event, &position) {
+                    decisions = decisions.saturating_add(1);
+                    if strategy_is_busy(&mut live_policy_intents, &shadow_venues, &routed.strategy_id) {
+                        continue;
+                    }
+                    let Some(intent) = policy_intent(&registry, &routed, &position) else {
+                        continue;
+                    };
+                    let strategy_id = routed.strategy_id.clone();
+                    if let Some(client_order_id) =
+                        submit_intent(&execution, &risk_limits, &strategy_id, &intent).await
+                    {
+                        orders_journaled = orders_journaled.saturating_add(1);
+                        live_policy_intents.insert(strategy_id, (intent.venue, client_order_id));
+                    }
+                }
+
+                let open_orders = shadow_venues
+                    .values()
+                    .map(ShadowExecutionAdapter::resting_order_count)
+                    .sum::<usize>();
+                health.mutate(|snapshot| {
+                    snapshot.events_total = snapshot.events_total.saturating_add(1);
+                    snapshot.policy_decisions_total = snapshot.policy_decisions_total.saturating_add(decisions);
+                    snapshot.feeds_connected = supervisor.connected_count();
+                    snapshot.open_orders = open_orders;
+                    snapshot.orders_journaled_total = orders_journaled;
+                }).await;
             }
             signal = tokio::signal::ctrl_c() => {
                 signal?;
