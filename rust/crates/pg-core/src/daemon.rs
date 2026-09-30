@@ -29,7 +29,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
@@ -201,7 +201,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     reconcile_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut health_tick = tokio::time::interval(Duration::from_secs(1));
     health_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    spawn_shadow_reconcile_fault(&shadow_venues)?;
+    let mut reconcile_fault = ShadowReconcileFault::from_env(&shadow_venues)?;
 
     tracing::info!(
         feeds = supervisor.feed_count(),
@@ -259,6 +259,9 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 }
             }
             _ = reconcile_tick.tick() => {
+                if let Some(fault) = reconcile_fault.as_mut() {
+                    fault.maybe_inject();
+                }
                 let mut clean = true;
                 let mut issue_count = 0_u64;
                 let mut observed_positions = Vec::<VenuePosition>::new();
@@ -1026,58 +1029,87 @@ async fn open_feed_stream(
     }
 }
 
-fn spawn_shadow_reconcile_fault(venues: &BTreeMap<Venue, ShadowExecutionAdapter>) -> Result<()> {
-    let Some(raw_delay) = env::var("PG_SHADOW_RECONCILE_FAULT_AFTER_MS")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return Ok(());
-    };
-    let delay_ms = raw_delay
-        .parse::<u64>()
-        .context("invalid PG_SHADOW_RECONCILE_FAULT_AFTER_MS")?;
-    if !(100..=60_000).contains(&delay_ms) {
-        bail!("PG_SHADOW_RECONCILE_FAULT_AFTER_MS must be in [100, 60000]");
-    }
-    let venue = match env::var("PG_SHADOW_RECONCILE_FAULT_VENUE")
-        .unwrap_or_else(|_| "HYPERLIQUID".into())
-        .trim()
-        .to_ascii_uppercase()
-        .as_str()
-    {
-        "HYPERLIQUID" => Venue::Hyperliquid,
-        "IBKR" | "INTERACTIVEBROKERS" | "INTERACTIVE_BROKERS" => Venue::InteractiveBrokers,
-        "BINANCE_PM" | "BINANCEPM" => Venue::BinancePm,
-        other => bail!("invalid PG_SHADOW_RECONCILE_FAULT_VENUE={other}"),
-    };
-    let asset =
-        env::var("PG_SHADOW_RECONCILE_FAULT_ASSET").unwrap_or_else(|_| "PG_TEST_GHOST".into());
-    if asset.trim().is_empty() {
-        bail!("PG_SHADOW_RECONCILE_FAULT_ASSET must not be empty");
-    }
-    let quantity = env::var("PG_SHADOW_RECONCILE_FAULT_QUANTITY")
-        .unwrap_or_else(|_| "1".into())
-        .parse::<Decimal>()
-        .context("invalid PG_SHADOW_RECONCILE_FAULT_QUANTITY")?;
-    if quantity.is_zero() {
-        bail!("PG_SHADOW_RECONCILE_FAULT_QUANTITY must be non-zero");
-    }
-    let adapter = venues
-        .get(&venue)
-        .cloned()
-        .with_context(|| format!("shadow fault venue {venue:?} is not registered"))?;
+struct ShadowReconcileFault {
+    trigger_after: Duration,
+    armed_at: Instant,
+    venue: Venue,
+    asset: String,
+    quantity: Decimal,
+    adapter: ShadowExecutionAdapter,
+    injected: bool,
+}
 
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        adapter.inject_unmatched_order_for_test(asset.clone(), quantity);
+impl ShadowReconcileFault {
+    fn from_env(
+        venues: &BTreeMap<Venue, ShadowExecutionAdapter>,
+    ) -> Result<Option<Self>> {
+        let Some(raw_delay) = env::var("PG_SHADOW_RECONCILE_FAULT_AFTER_MS")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return Ok(None);
+        };
+        let delay_ms = raw_delay
+            .parse::<u64>()
+            .context("invalid PG_SHADOW_RECONCILE_FAULT_AFTER_MS")?;
+        if !(100..=60_000).contains(&delay_ms) {
+            bail!("PG_SHADOW_RECONCILE_FAULT_AFTER_MS must be in [100, 60000]");
+        }
+        let venue = match env::var("PG_SHADOW_RECONCILE_FAULT_VENUE")
+            .unwrap_or_else(|_| "HYPERLIQUID".into())
+            .trim()
+            .to_ascii_uppercase()
+            .as_str()
+        {
+            "HYPERLIQUID" => Venue::Hyperliquid,
+            "IBKR" | "INTERACTIVEBROKERS" | "INTERACTIVE_BROKERS" => {
+                Venue::InteractiveBrokers
+            }
+            "BINANCE_PM" | "BINANCEPM" => Venue::BinancePm,
+            other => bail!("invalid PG_SHADOW_RECONCILE_FAULT_VENUE={other}"),
+        };
+        let asset =
+            env::var("PG_SHADOW_RECONCILE_FAULT_ASSET").unwrap_or_else(|_| "PG_TEST_GHOST".into());
+        if asset.trim().is_empty() {
+            bail!("PG_SHADOW_RECONCILE_FAULT_ASSET must not be empty");
+        }
+        let quantity = env::var("PG_SHADOW_RECONCILE_FAULT_QUANTITY")
+            .unwrap_or_else(|_| "1".into())
+            .parse::<Decimal>()
+            .context("invalid PG_SHADOW_RECONCILE_FAULT_QUANTITY")?;
+        if quantity.is_zero() {
+            bail!("PG_SHADOW_RECONCILE_FAULT_QUANTITY must be non-zero");
+        }
+        let adapter = venues
+            .get(&venue)
+            .cloned()
+            .with_context(|| format!("shadow fault venue {venue:?} is not registered"))?;
+
+        Ok(Some(Self {
+            trigger_after: Duration::from_millis(delay_ms),
+            armed_at: Instant::now(),
+            venue,
+            asset,
+            quantity,
+            adapter,
+            injected: false,
+        }))
+    }
+
+    fn maybe_inject(&mut self) {
+        if self.injected || self.armed_at.elapsed() < self.trigger_after {
+            return;
+        }
+        self.adapter
+            .inject_unmatched_order_for_test(self.asset.clone(), self.quantity);
+        self.injected = true;
         tracing::warn!(
-            ?venue,
-            %asset,
-            %quantity,
-            "shadow venue-only order drift fault activated"
+            venue = ?self.venue,
+            asset = %self.asset,
+            quantity = %self.quantity,
+            "shadow venue-only order drift fault activated on reconcile tick"
         );
-    });
-    Ok(())
+    }
 }
 
 fn shadow_fixture_path() -> Option<PathBuf> {
