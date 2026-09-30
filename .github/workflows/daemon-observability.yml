@@ -180,7 +180,9 @@ jobs:
           PG_INSTANCE_ID: daemon-observability-reconcile-ci
           PG_LEASE_KEY: pg-core:ci:daemon-observability-reconcile
           PG_RECONCILE_INTERVAL_MS: "250"
-          PG_SHADOW_RECONCILE_FAULT_AFTER_MS: "5000"
+          PG_SHADOW_FIXTURE_CYCLES: "1"
+          PG_MAX_MARKET_STALENESS_MS: "60000"
+          PG_SHADOW_RECONCILE_FAULT_AFTER_MS: "3000"
           PG_SHADOW_RECONCILE_FAULT_VENUE: HYPERLIQUID
           PG_SHADOW_RECONCILE_FAULT_ASSET: PG_TEST_GHOST
           PG_SHADOW_RECONCILE_FAULT_QUANTITY: "1"
