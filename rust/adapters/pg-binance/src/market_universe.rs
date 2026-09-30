@@ -10,7 +10,10 @@ use pg_marketdata::{Candle, MarketDataError};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 
-use crate::market_candles::{REST_KLINES, decode_rest_closed, interval_name, ws_stream};
+use crate::{
+    market_candles::{REST_KLINES, decode_rest_closed, interval_name, ws_stream},
+    order_protocol::SymbolFilters,
+};
 
 pub const REST_EXCHANGE_INFO: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
 const MAX_EXCHANGE_BYTES: usize = 4 * 1024 * 1024;
@@ -74,6 +77,97 @@ pub fn decode_trading_perpetuals(bytes: &[u8]) -> Result<BTreeSet<String>, Marke
     Ok(symbols)
 }
 
+
+fn filter<'a>(filters: &'a [Value], kind: &str) -> Result<&'a Value, MarketDataError> {
+    let matches = filters
+        .iter()
+        .filter(|value| value.get("filterType").and_then(Value::as_str) == Some(kind))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(fail("missing or duplicate symbol filter"));
+    }
+    Ok(matches[0])
+}
+
+fn positive_filter_decimal(
+    value: &Value,
+    names: &[&str],
+) -> Result<String, MarketDataError> {
+    let raw = names
+        .iter()
+        .find_map(|name| value.get(*name).and_then(Value::as_str))
+        .ok_or_else(|| fail("required filter field missing"))?;
+    let parsed = raw
+        .parse::<rust_decimal::Decimal>()
+        .map_err(|_| fail("invalid decimal filter field"))?;
+    if parsed <= rust_decimal::Decimal::ZERO {
+        return Err(fail("non-positive decimal filter field"));
+    }
+    Ok(raw.to_owned())
+}
+
+/// Extract the exact executable BTCUSDC USD-M contract constraints. This
+/// parser rejects duplicate symbols/filters and never substitutes precision
+/// fields for authoritative tick/step filters.
+pub fn decode_symbol_filters(
+    bytes: &[u8],
+    requested_symbol: &str,
+) -> Result<SymbolFilters, MarketDataError> {
+    if requested_symbol != crate::order_protocol::SYMBOL
+        || bytes.is_empty()
+        || bytes.len() > MAX_EXCHANGE_BYTES
+    {
+        return Err(fail("unsupported requested execution symbol"));
+    }
+    let payload: Value = serde_json::from_slice(bytes).map_err(|_| fail("invalid JSON"))?;
+    let symbols = payload
+        .get("symbols")
+        .and_then(Value::as_array)
+        .ok_or_else(|| fail("symbols missing"))?;
+    let matches = symbols
+        .iter()
+        .filter(|row| row.get("symbol").and_then(Value::as_str) == Some(requested_symbol))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(fail("execution symbol missing or duplicated"));
+    }
+    let row = matches[0];
+    if row.get("status").and_then(Value::as_str) != Some("TRADING")
+        || row.get("contractType").and_then(Value::as_str) != Some("PERPETUAL")
+        || row.get("baseAsset").and_then(Value::as_str) != Some("BTC")
+        || row.get("quoteAsset").and_then(Value::as_str) != Some("USDC")
+    {
+        return Err(fail("BTCUSDC contract identity or trading status mismatch"));
+    }
+    let filters = row
+        .get("filters")
+        .and_then(Value::as_array)
+        .ok_or_else(|| fail("symbol filters missing"))?;
+    let price = filter(filters, "PRICE_FILTER")?;
+    let lot = filter(filters, "LOT_SIZE")?;
+    let notional = filters
+        .iter()
+        .filter(|value| {
+            matches!(
+                value.get("filterType").and_then(Value::as_str),
+                Some("MIN_NOTIONAL" | "NOTIONAL")
+            )
+        })
+        .collect::<Vec<_>>();
+    if notional.len() != 1 {
+        return Err(fail("missing or ambiguous notional filter"));
+    }
+
+    Ok(SymbolFilters {
+        symbol: requested_symbol.to_owned(),
+        tick_size: positive_filter_decimal(price, &["tickSize"])?,
+        step_size: positive_filter_decimal(lot, &["stepSize"])?,
+        min_quantity: positive_filter_decimal(lot, &["minQty"])?,
+        min_notional: positive_filter_decimal(notional[0], &["notional", "minNotional"])?,
+        symbol_trading: true,
+    })
+}
+
 /// A separate research-only catalog. All endpoints are keyless HTTPS GETs;
 /// the caller must pace symbol-specific requests within Binance IP weights.
 pub struct PublicUsdMUniverse {
@@ -101,6 +195,33 @@ impl PublicUsdMUniverse {
         let len = next.len();
         self.symbols = next;
         Ok(len)
+    }
+
+    pub async fn fetch_symbol_filters(
+        &self,
+        symbol: &str,
+    ) -> Result<SymbolFilters, MarketDataError> {
+        let response = self
+            .http
+            .get(REST_EXCHANGE_INFO)
+            .send()
+            .await
+            .map_err(|_| {
+                MarketDataError::Disconnected("public exchangeInfo request failed".into())
+            })?;
+        if response.status() != StatusCode::OK
+            || response
+                .content_length()
+                .is_some_and(|size| size > MAX_EXCHANGE_BYTES as u64)
+        {
+            return Err(MarketDataError::Disconnected(
+                "public exchangeInfo unavailable".into(),
+            ));
+        }
+        let bytes = response.bytes().await.map_err(|_| {
+            MarketDataError::Disconnected("public exchangeInfo body incomplete".into())
+        })?;
+        decode_symbol_filters(&bytes, symbol)
     }
 
     pub async fn refresh(&mut self) -> Result<usize, MarketDataError> {
@@ -210,6 +331,52 @@ mod tests {
         assert!(universe.contains("BTCUSDC"));
         assert!(universe.contains("ETHUSDT"));
         assert!(!universe.contains("DELISTUSDT"));
+    }
+
+    #[test]
+    fn executable_filters_come_from_exact_exchange_info_filters() {
+        let payload = serde_json::to_vec(&json!({"symbols":[{
+            "symbol":"BTCUSDC",
+            "baseAsset":"BTC",
+            "quoteAsset":"USDC",
+            "contractType":"PERPETUAL",
+            "status":"TRADING",
+            "filters":[
+                {"filterType":"PRICE_FILTER","tickSize":"0.10","minPrice":"1","maxPrice":"1000000"},
+                {"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"100"},
+                {"filterType":"MIN_NOTIONAL","notional":"5"}
+            ]
+        }]}))
+        .unwrap();
+        let filters = decode_symbol_filters(&payload, "BTCUSDC").unwrap();
+        assert_eq!(filters.tick_size, "0.10");
+        assert_eq!(filters.step_size, "0.001");
+        assert_eq!(filters.min_quantity, "0.001");
+        assert_eq!(filters.min_notional, "5");
+        assert!(filters.symbol_trading);
+    }
+
+    #[test]
+    fn execution_filters_reject_wrong_contract_or_ambiguous_notional() {
+        let wrong = serde_json::to_vec(&json!({"symbols":[{
+            "symbol":"BTCUSDC","baseAsset":"BTC","quoteAsset":"USDT",
+            "contractType":"PERPETUAL","status":"TRADING","filters":[]
+        }]}))
+        .unwrap();
+        assert!(decode_symbol_filters(&wrong, "BTCUSDC").is_err());
+
+        let duplicate = serde_json::to_vec(&json!({"symbols":[{
+            "symbol":"BTCUSDC","baseAsset":"BTC","quoteAsset":"USDC",
+            "contractType":"PERPETUAL","status":"TRADING",
+            "filters":[
+                {"filterType":"PRICE_FILTER","tickSize":"0.1"},
+                {"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"},
+                {"filterType":"MIN_NOTIONAL","notional":"5"},
+                {"filterType":"NOTIONAL","minNotional":"5"}
+            ]
+        }]}))
+        .unwrap();
+        assert!(decode_symbol_filters(&duplicate, "BTCUSDC").is_err());
     }
 
     #[test]

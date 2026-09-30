@@ -60,6 +60,17 @@ pub struct BinancePmExecutionAdapter {
 }
 
 impl BinancePmExecutionAdapter {
+    pub async fn preflight(
+        rest: BinanceRestClient,
+        filters: SymbolFilters,
+        account_scope: String,
+    ) -> Result<Self, ExecutionError> {
+        let position_risk = rest.position_risk().await?;
+        verify_one_way_position_mode(&position_risk)?;
+        decode_account_snapshot(&rest.account_info().await?)?;
+        Self::new(rest, filters, PositionMode::OneWay, account_scope)
+    }
+
     pub fn new(
         rest: BinanceRestClient,
         filters: SymbolFilters,
@@ -89,17 +100,34 @@ impl BinancePmExecutionAdapter {
     }
 }
 
+
+fn verify_one_way_position_mode(value: &Value) -> Result<(), ExecutionError> {
+    let rows = value
+        .as_array()
+        .ok_or_else(|| ExecutionError::Conversion("invalid PM position response".into()))?;
+    if rows.len() != 1 {
+        return Err(ExecutionError::Unknown(
+            "Binance BTCUSDC one-way position mode cannot be proven".into(),
+        ));
+    }
+    let row = &rows[0];
+    if row.get("symbol").and_then(Value::as_str) != Some(SYMBOL)
+        || row.get("positionSide").and_then(Value::as_str) != Some("BOTH")
+    {
+        return Err(ExecutionError::Unknown(
+            "Binance BTCUSDC position mode is not verified one-way/BOTH".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Never infer strategy ownership from an account-wide position. A hedge-mode
 /// or duplicate row must hold the caller until independently reconciled.
 pub fn decode_position_risk(json: &Value) -> Result<Vec<VenuePositionSnapshot>, ExecutionError> {
+    verify_one_way_position_mode(json)?;
     let records = json
         .as_array()
         .ok_or_else(|| ExecutionError::Conversion("invalid PM position response".into()))?;
-    if records.len() > 1 {
-        return Err(ExecutionError::Conversion(
-            "ambiguous PM position rows".into(),
-        ));
-    }
     records
         .iter()
         .map(|row| {
@@ -387,6 +415,7 @@ mod tests {
             }]))
             .is_err()
         );
+        assert!(decode_position_risk(&serde_json::json!([])).is_err());
         assert!(
             decode_position_risk(&serde_json::json!([{
                 "symbol":"BTCUSDC", "positionSide":"LONG", "positionAmt":"1"
