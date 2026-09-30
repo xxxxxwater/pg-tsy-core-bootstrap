@@ -281,6 +281,12 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                                 clean = false;
                                 issue_count = issue_count
                                     .saturating_add(cycle.report.issues.len() as u64);
+                                tracing::warn!(
+                                    ?venue,
+                                    issues = ?cycle.report.issues,
+                                    safe_hold_assets = ?cycle.report.safe_hold_assets,
+                                    "shadow continuous reconcile entered SAFE_HOLD"
+                                );
                             }
                             observed_orders.extend(cycle.orders);
                             observed_positions.extend(cycle.positions);

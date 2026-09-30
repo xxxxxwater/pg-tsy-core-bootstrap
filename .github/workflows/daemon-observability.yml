@@ -233,6 +233,19 @@ jobs:
             fi
             sleep 1
           done
+          if [ "$held" -ne 1 ]; then
+            echo "final reconcile readiness:"
+            cat /tmp/reconcile-ready.json || true
+            echo
+            echo "final reconcile observability snapshot:"
+            cat /tmp/reconcile-snapshot.json || true
+            echo
+            echo "latest durable HYPERLIQUID reconcile reports:"
+            docker run --rm --network host \
+              -e PGPASSWORD=only-for-ci postgres:16 \
+              psql -h 127.0.0.1 -U pgtsy_ci -d pgtsy_daemon_test -Atc \
+              "SELECT created_at::text || '|' || report::text FROM reconcile_runs WHERE venue='HYPERLIQUID' ORDER BY created_at DESC LIMIT 5;" || true
+          fi
           test "$held" -eq 1
           kill -0 "$pid"
 
