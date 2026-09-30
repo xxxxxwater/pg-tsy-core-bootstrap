@@ -124,7 +124,6 @@ pub fn decode_position_risk(json: &Value) -> Result<Vec<VenuePositionSnapshot>, 
         .collect()
 }
 
-
 fn required_decimal(value: &Value, key: &str) -> Result<Decimal, ExecutionError> {
     value
         .get(key)
