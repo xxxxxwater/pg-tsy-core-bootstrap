@@ -218,7 +218,6 @@ jobs:
             code=$(curl -sS -o /tmp/reconcile-ready.json -w '%{http_code}' http://127.0.0.1:18080/readyz || true)
             curl -fsS               -H "Authorization: Bearer $PG_OBSERVABILITY_TOKEN"               http://127.0.0.1:18787/v1/snapshot >/tmp/reconcile-snapshot.json
             if [ "$code" = "503" ] && jq -e '
-              .startup.ready == false and
               .safety.state == "SAFE_HOLD" and
               .safety.allow_new_exposure == false and
               .reconcile.status == "DEGRADED" and

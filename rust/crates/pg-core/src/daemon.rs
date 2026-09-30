@@ -312,7 +312,12 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                 }
                 risk_limits.allow_new_exposure =
                     clean && checklist.ready_for(RunMode::Shadow) && supervisor.all_connected();
-                let blocking_gates = blocking_gate_names(&checklist);
+                let mut blocking_gates = blocking_gate_names(&checklist);
+                if !clean {
+                    blocking_gates.push(
+                        "ContinuousReconciliation: unresolved venue/OMS drift".into(),
+                    );
+                }
                 health.mutate(|snapshot| {
                     if !clean {
                         snapshot.ready = false;
@@ -342,17 +347,26 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                         format!("{}/{} derived feeds connected", supervisor.connected_count(), supervisor.feed_count()),
                     );
                 }
-                let ready = checklist.ready_for(RunMode::Shadow);
-                risk_limits.allow_new_exposure = ready && reconcile_clean;
-                // Recomputed every tick so /healthz reports which gate is actually
-                // holding readiness back, not a snapshot taken at boot.
-                let blocking_gates = blocking_gate_names(&checklist);
+                let startup_ready = checklist.ready_for(RunMode::Shadow);
+                let ready = startup_ready && reconcile_clean && supervisor.all_connected();
+                risk_limits.allow_new_exposure = ready;
+                // Runtime readiness is stronger than static startup readiness:
+                // continuous reconciliation must remain clean after boot.
+                let mut blocking_gates = blocking_gate_names(&checklist);
+                if !reconcile_clean {
+                    blocking_gates.push(
+                        "ContinuousReconciliation: unresolved venue/OMS drift".into(),
+                    );
+                }
                 health.mutate(|snapshot| {
                     snapshot.ready = ready;
                     snapshot.feeds_connected = supervisor.connected_count();
                     snapshot.blocking_gates = blocking_gates;
                     if ready {
                         snapshot.last_error = None;
+                    } else if !reconcile_clean {
+                        snapshot.last_error =
+                            Some("continuous reconcile entered SAFE_HOLD".into());
                     }
                 }).await;
                 if let Some(observer) = observability.as_ref() {
