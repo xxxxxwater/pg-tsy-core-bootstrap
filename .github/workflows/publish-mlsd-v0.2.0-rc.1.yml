@@ -1,0 +1,123 @@
+name: Publish PG-TSY MLSD v0.2.0-rc.1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/publish-mlsd-v0.2.0-rc.1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pg-tsy-mlsd-release-v0.2.0-rc.1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'xxxxxwater/pg-tsy-core-bootstrap'
+    name: Test, build, publish research image and prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ghcr.io/xxxxxwater/pg-tsy-mlsd
+      RELEASE_TAG: v0.2.0-rc.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Require unchanged live execution boundary
+        run: |
+          set -euo pipefail
+          test -f docs/MLSD_FEATURE_ENGINEERING.md
+          test -f docs/RELEASE_READINESS.md
+          test -f research/Dockerfile.mlsd
+          grep -q '^ENTRYPOINT \["pg-tsy-mlsd"\]' research/Dockerfile.mlsd
+          grep -q 'version = "0.2.0rc1"' research/pyproject.toml
+          test -z "${PG_BINANCE_PM_API_KEY:-}${HYPERLIQUID_PRIVATE_KEY:-}${IBKR_TWS_PASSWORD:-}"
+          echo "This is a research-only, credential-free release; no Rust daemon is run"
+      - name: Install pinned upstream MLSD and Python test tools
+        working-directory: research
+        run: |
+          python -m pip install -e '.[dev,mlsd]'
+          python -m pip install build twine
+          python -c "import MLSD; assert MLSD.__version__ == '0.2.1'"
+      - name: Python lint, regression and deterministic CLI smoke
+        working-directory: research
+        run: |
+          python -m ruff check .
+          python -m pytest -q
+          pg-tsy-mlsd --smoke
+      - name: Build wheel and source distribution
+        run: |
+          python -m build research --sdist --wheel --outdir dist
+          python -m twine check dist/*
+          test -f dist/pg_tsy_research-0.2.0rc1-py3-none-any.whl
+          test -f dist/pg_tsy_research-0.2.0rc1.tar.gz
+      - name: Build isolated MLSD research container
+        run: |
+          set -euo pipefail
+          docker build \
+            --file research/Dockerfile.mlsd \
+            --tag "$IMAGE:$RELEASE_TAG" \
+            research
+      - name: Prove research-only, nonroot, disconnected runtime
+        run: |
+          set -euo pipefail
+          test "$(docker run --rm --entrypoint id "$IMAGE:$RELEASE_TAG" -u)" = 10001
+          docker run --rm --network none "$IMAGE:$RELEASE_TAG"
+          test "$(docker image inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Config.Entrypoint}}')" = '["pg-tsy-mlsd"]'
+      - name: Refuse to alter an existing published release or tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release exists; refusing to overwrite"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::release tag already exists; refusing to move it"
+            exit 1
+          fi
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push versioned and latest research images
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:$RELEASE_TAG"
+          docker tag "$IMAGE:$RELEASE_TAG" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+          docker manifest inspect "$IMAGE:$RELEASE_TAG" >/dev/null
+          docker manifest inspect "$IMAGE:latest" >/dev/null
+          echo "## MLSD research GHCR" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \`$IMAGE:$RELEASE_TAG\` and \`$IMAGE:latest\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "No existing pg-core Docker image or trading service was modified." >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish Research/Shadow prerelease with Python artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "PG-TSY Core v0.2.0-rc.1 — MLSD Research Feature Layer" \
+            --notes-file docs/releases/v0.2.0-rc.1.md \
+            --prerelease
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName,isDraft,isPrerelease,assets \
+            --jq '"Release: " + .url + " | artifacts: " + ([.assets[].name] | join(", "))' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
+          test "$actual" = "$GITHUB_SHA"
