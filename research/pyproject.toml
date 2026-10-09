@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pg-tsy-research"
-version = "0.1.0"
+version = "0.2.0rc1"
 description = "Research plane for pg-tsy-core"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,10 +20,16 @@ train = [
   "optuna>=4.0",
   "scikit-learn>=1.5",
 ]
+mlsd = [
+  # The MLSD v0.2.1 tag resolves to this immutable upstream commit.
+  # Source archive pin keeps research reproducible without adding MLSD to live Rust.
+  "mlsd-structured-data @ https://github.com/xxxxxwater/Machine_Learning_For_Structured_Data/archive/85e356c1fb6703fef2b03ac0070c5e0659e8c671.tar.gz",
+]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
 pg-tsy = "pg_tsy.cli:main"
+pg-tsy-mlsd = "pg_tsy.ml.mlsd_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pg_tsy"]
