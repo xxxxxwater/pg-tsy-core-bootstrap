@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("MLSD")
 pytest.importorskip("pandas")
 
-from pg_tsy.ml.mlsd_features import FeatureConfig, build_feature_batch, write_feature_folds
+from pg_tsy.ml.mlsd_features import FeatureConfig, build_feature_batch, write_feature_folds  # noqa: E402
 
 
 def market_rows(n=84):
@@ -67,7 +67,7 @@ def test_older_windows_do_not_change_when_future_prices_change():
 def test_overlong_event_horizons_are_purged():
     raw = market_rows()
     long = raw.with_columns(
-        pl.when(pl.arange(0, pl.len()) < 40)
+        pl.when((pl.arange(0, pl.len()) >= 10) & (pl.arange(0, pl.len()) < 18))
         .then(pl.col("label_end_ns") + 40 * 3_600_000_000_000)
         .otherwise(pl.col("label_end_ns")).alias("label_end_ns")
     )
