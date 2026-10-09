@@ -66,7 +66,7 @@ pg-core --serve
 ## Repository map
 
 ```text
-research/                    Python research, batch environment, replay, challenger
+research/                    Python research, MLSD feature layer, replay, challenger
 rust/crates/pg-sim/           Rust simulation JSONL kernel
 rust/crates/pg-dream/         Dream-RSI worlds, isolated execution contract, scoring and replay
 rust/crates/pg-marketdata/    Normalized feeds, freshness, supervision
@@ -84,6 +84,36 @@ strategies/ contracts/       Strategy definitions and versioned contracts
 .github/workflows/           Rust/Python/venue/Compose/Postgres CI and isolated simulator bridge
 infra/ docker-compose*.yml   Deployment templates, NOT deployment evidence
 ```
+
+## MLSD feature-engineering research layer (v0.2.0-rc.1)
+
+The Python research plane integrates upstream **MLSD v0.2.1** as a pinned,
+optional feature-engineering backend. Single-venue, single-asset historical
+market data is transformed into backward-only price-return and volume windows,
+then into versioned structured features (21 Series + 7 Bag statistics).
+`PurgedEventTimeSeriesSplit` removes training labels whose outcome overlaps a
+validation fold. Features and future labels are exported to **separate**
+Parquet artifacts with SHA-256 provenance and a feature-schema manifest.
+
+```bash
+cd research
+python -m pip install -e '.[dev,mlsd]'
+pg-tsy-mlsd --smoke
+```
+
+A dedicated **non-root, research-only GHCR image** can run the same smoke
+without starting a Rust daemon, connecting to exchange endpoints, or enabling
+trading:
+
+```bash
+docker pull ghcr.io/xxxxxwater/pg-tsy-mlsd:v0.2.0-rc.1
+docker run --rm ghcr.io/xxxxxwater/pg-tsy-mlsd:v0.2.0-rc.1
+```
+
+See [MLSD architecture, data contract, fold artifacts and Docker
+usage](docs/MLSD_FEATURE_ENGINEERING.md). This research prerelease is **not**
+an approved live deployment; all three-venue execution signoff remains NO-GO.
+The existing Rust `Dockerfile` and deployment Compose files are unchanged.
 
 ## Local non-trading verification
 
