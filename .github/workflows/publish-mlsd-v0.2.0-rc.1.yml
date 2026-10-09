@@ -10,6 +10,8 @@ on:
 permissions:
   contents: read
 
+# The release is immutable: never tag the previous trading prerelease again.
+# Every run tests the exact source commit it later publishes.
 concurrency:
   group: pg-tsy-mlsd-release-v0.2.0-rc.1
   cancel-in-progress: false
