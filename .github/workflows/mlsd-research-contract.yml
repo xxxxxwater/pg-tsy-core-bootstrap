@@ -1,0 +1,65 @@
+name: mlsd-research-contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "research/**"
+      - "docs/MLSD_FEATURE_ENGINEERING.md"
+      - ".github/workflows/mlsd-research-contract.yml"
+  pull_request:
+    paths:
+      - "research/**"
+      - ".github/workflows/mlsd-research-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  python-mlsd:
+    name: MLSD Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: research
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install research and pinned MLSD extras
+        run: python -m pip install -e '.[dev,mlsd]'
+      - name: Verify pinned MLSD upstream
+        run: python -c "import MLSD; assert MLSD.__version__ == '0.2.1'"
+      - name: Lint Python research and regression tests
+        run: python -m ruff check .
+      - name: Run full research regression suite
+        run: python -m pytest -q
+      - name: Run MLSD CLI credential-free smoke
+        run: pg-tsy-mlsd --smoke
+
+  container-smoke:
+    name: Non-root MLSD container smoke
+    needs: python-mlsd
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build isolated research container
+        uses: docker/build-push-action@v6
+        with:
+          context: ./research
+          file: ./research/Dockerfile.mlsd
+          tags: pg-tsy-mlsd:ci
+          push: false
+          load: true
+      - name: Require non-root runtime and no live execution
+        run: |
+          set -euo pipefail
+          test "$(docker run --rm --entrypoint id pg-tsy-mlsd:ci -u)" = 10001
+          docker run --rm pg-tsy-mlsd:ci
+          test "$(docker image inspect pg-tsy-mlsd:ci --format '{{json .Config.Entrypoint}}')" = '["pg-tsy-mlsd"]'
