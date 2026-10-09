@@ -1,0 +1,27 @@
+# Standalone offline feature engineering. Deliberately NOT the live Rust Dockerfile.
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="PG-TSY MLSD research" \
+      org.opencontainers.image.description="Offline MLSD feature engineering, event-purged OOS folds; no order authority" \
+      org.opencontainers.image.source="https://github.com/xxxxxwater/pg-tsy-core-bootstrap" \
+      org.opencontainers.image.version="v0.2.0-rc.1" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /opt/pgtsy/research
+COPY pyproject.toml .
+COPY src ./src
+RUN python -m pip install --no-cache-dir '.[mlsd]' \
+    && python -c "import MLSD, pg_tsy; assert MLSD.__version__ == '0.2.1'"
+
+RUN groupadd --gid 10001 pgml \
+    && useradd --uid 10001 --gid pgml --no-create-home pgml
+USER 10001:10001
+WORKDIR /workspace
+
+# Requires no exchange keys, database, model service or network at runtime.
+ENTRYPOINT ["pg-tsy-mlsd"]
+CMD ["--smoke"]
