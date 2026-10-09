@@ -31,6 +31,10 @@ dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 pg-tsy = "pg_tsy.cli:main"
 pg-tsy-mlsd = "pg_tsy.ml.mlsd_cli:main"
 
+[tool.hatch.metadata]
+# MLSD is intentionally pinned to a reviewed immutable upstream source SHA.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pg_tsy"]
 
