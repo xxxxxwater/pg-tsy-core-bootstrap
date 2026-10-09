@@ -9,7 +9,11 @@ import pytest
 pytest.importorskip("MLSD")
 pytest.importorskip("pandas")
 
-from pg_tsy.ml.mlsd_features import FeatureConfig, build_feature_batch, write_feature_folds  # noqa: E402
+from pg_tsy.ml.mlsd_features import (
+    FeatureConfig,
+    build_feature_batch,
+    write_feature_folds,
+)
 
 
 def market_rows(n=84):
