@@ -160,3 +160,21 @@ The first GitHub release, [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-c
 | [Binance PM isolated diagnostics](docs/PM_ISOLATED_READ_ONLY_EVIDENCE.md) | Venue-specific opt-in diagnostic prerequisites; not a project-wide requirement |
 
 The existing Binance PM/Freqtrade production bot and manual positions are **out of scope**. Documentation and CI changes must not alter, migrate or stop that service. `main` is an integration branch; inspect actual merge diff and preserve source branch history until semantic parity is proven. A documentation commit is not a test run, container image, tag or GitHub Release.
+
+
+## PureGamma RSS V4 / Coinbase LIVE integration boundary (October 2026)
+
+The **read-only** PureGamma RSS V4 event-review and independent Telegram
+heartbeat integration lives in [`integrations/puregamma_rss/`](integrations/puregamma_rss/README.md).
+The original English headline is authoritative; Chinese translation is for
+display only. The monitor neither reads Coinbase credentials nor submits
+orders, and existing TSY Rust daemon configuration is unchanged.
+
+**Coinbase LIVE is NOT a registered execution venue in `pg-core`.**
+Current event rules produce only `REVIEW_REQUIRED` candidates and cannot
+create a BUY/SELL order. A future live adapter must pass the existing
+`pg-risk → fenced journal → OMS → fill/position reconciliation` lifecycle.
+
+See [integration operations](integrations/puregamma_rss/README.md),
+[Coinbase LIVE architecture and GO/NO-GO](docs/PUREGAMMA_RSS_COINBASE_LIVE.md)
+and [ADR 0003](docs/adr/0003-rss-events-no-order-authority.md).
