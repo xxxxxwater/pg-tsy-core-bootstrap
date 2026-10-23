@@ -80,8 +80,11 @@ def new_feed_candidates(con, events_db=RSS_DB, now=None):
     source.execute("PRAGMA query_only=ON")
     try:
         existing = source.execute(
-            "SELECT id,title,source,priority,trust,published,discovered,last_seen "
-            "FROM events WHERE last_seen >= ? ORDER BY last_seen ASC LIMIT 500",
+            "SELECT e.id,e.title,e.source,e.priority,e.trust,e.published,e.discovered,e.last_seen, "
+            "(SELECT a.source FROM articles a WHERE a.event_id=e.id "
+            "AND a.source='sec_press' LIMIT 1) AS official_source_id "
+            "FROM events e WHERE e.last_seen >= ? "
+            "ORDER BY e.last_seen ASC LIMIT 500",
             (now - 300,),
         ).fetchall()
         if kv_get(con, "initialized") != "true":
@@ -106,7 +109,7 @@ def new_feed_candidates(con, events_db=RSS_DB, now=None):
                 continue
             # Event source names are display labels, not stable IDs.
             # Explicit whitelist avoids treating community sources as official.
-            source_id = "sec_press" if row["source"] == "SEC Press Releases" else ""
+            source_id = row["official_source_id"] or ""
             event = dict(row)
             event["source_id"] = source_id
             c = candidate_from_event(event, now=now)

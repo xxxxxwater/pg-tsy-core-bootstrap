@@ -52,9 +52,11 @@ class PersistenceTests(unittest.TestCase):
             state_db = str(Path(d) / "state.sqlite")
             c = sqlite3.connect(rss_db)
             c.execute("CREATE TABLE events(id TEXT,title TEXT,source TEXT,priority TEXT,trust TEXT,published INTEGER,discovered INTEGER,last_seen INTEGER)")
+            c.execute("CREATE TABLE articles(event_id TEXT, source TEXT)")
             c.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?)",
                       ("old", "SEC approves spot Bitcoin ETF for listing", "SEC Press Releases",
                        "P1", "A", 1000, 1000, 1000))
+            c.execute("INSERT INTO articles VALUES (?,?)", ("old","sec_press"))
             c.commit()
             c.close()
             state = service.open_state(state_db)
@@ -63,6 +65,7 @@ class PersistenceTests(unittest.TestCase):
             c.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?)",
                       ("new", "SEC approves spot Bitcoin ETF for listing", "SEC Press Releases",
                        "P1", "A", 1020, 1020, 1020))
+            c.execute("INSERT INTO articles VALUES (?,?)", ("new","sec_press"))
             c.commit()
             c.close()
             self.assertEqual(service.new_feed_candidates(state, rss_db, 1050), 1)
