@@ -112,3 +112,30 @@ the original processes untouched.
 Related: [ADR 0003](adr/0003-rss-events-no-order-authority.md),
 [Architecture](ARCHITECTURE.md), [Exchanges](EXCHANGES.md),
 [Release readiness](RELEASE_READINESS.md), [AGENTS.md](../AGENTS.md).
+
+
+## Experimental Coinbase sidecar and verified InstaBox heartbeat (2026-10-23)
+
+There is now a separate experimental sidecar at
+[`integrations/coinbase_rss_live`](../integrations/coinbase_rss_live/README.md),
+with an [operator runbook](../integrations/coinbase_rss_live/OPERATIONS.md).
+This is **not** the native, fenced Coinbase Rust venue/OMS adapter described
+above, does **not** modify `pg-core` or activate live trading, and is
+**NO-GO for unattended production order execution** until order/fill/protective
+order reconciliation and reviewed risk approval are established.
+
+The isolated sidecar's heartbeat Hotfix 1.1 was deployed to
+`instabox-pg-test` and verified through operator logs:
+
+- `health-monitor` started; `probe result=HEALTHY issues=0`.
+- A periodic heartbeat was delivered by Telegram (`alert_id=8`).
+- Existing RSS V4 snapshot: 98 events, 2 formal messages sent, 0 queued.
+- PG-TSY snapshot: `shadow`, `ready=true`, 8/8 feeds connected.
+- Coinbase sidecar: `not_armed`, no real order intents.
+- The TSY feed count was briefly 6/8 and subsequently recovered;
+  transient feed loss is an alerting concern, not an instruction to trade.
+
+This is one time-stamped acceptance snapshot, not continuous uptime or
+exchange order acceptance. Monitoring service does not treat
+`not_armed` as a fault. No private API keys or Telegram credentials are
+committed. The pre-existing read-only bridge remains separate and unchanged.

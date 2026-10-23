@@ -1,0 +1,36 @@
+name: Coinbase RSS Live Sidecar Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'integrations/coinbase_rss_live/**'
+      - '.github/workflows/coinbase-rss-sidecar.yml'
+  pull_request:
+    paths:
+      - 'integrations/coinbase_rss_live/**'
+      - '.github/workflows/coinbase-rss-sidecar.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  safe-unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile and test isolated sidecar (no exchange connectivity or secrets)
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m compileall -q integrations/coinbase_rss_live/src integrations/coinbase_rss_live/tests
+          python -m unittest discover -s integrations/coinbase_rss_live/tests -v
+      - name: Shell syntax check
+        run: |
+          for script in integrations/coinbase_rss_live/scripts/*.sh; do
+            bash -n "$script"
+          done
