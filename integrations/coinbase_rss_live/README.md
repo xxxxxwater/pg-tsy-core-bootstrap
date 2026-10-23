@@ -107,3 +107,17 @@ orders were placed during the construction/testing of this package.
 - Deployed on InstaBox `instabox-pg-test` and verified by the user's terminal evidence: `alert_id=8` delivered, `state=not_armed`, RSS healthy with 98 events and 2 formal messages, TSY 8/8 feeds at the time of verification. This is not evidence of Coinbase execution readiness.
 
 Do not commit `.env`, `secrets/`, `state/`, sessions, database snapshots, or private API keys.
+
+## Versioned prerelease package — `v0.2.1-rc.1`
+
+Release: https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.2.1-rc.1
+
+OCI image: `ghcr.io/xxxxxwater/pg-tsy-coinbase-rss-sidecar:v0.2.1-rc.1`
+
+```sh
+docker pull ghcr.io/xxxxxwater/pg-tsy-coinbase-rss-sidecar:v0.2.1-rc.1
+# Credential-free image identity check; does not start the trading service.
+docker run --rm --network none --entrypoint id ghcr.io/xxxxxwater/pg-tsy-coinbase-rss-sidecar:v0.2.1-rc.1 -u
+```
+
+The supplied `compose.yaml` continues to **build from this checked-out source**; pulling the GHCR image alone does not replace, arm or restart any InstaBox containers. For an image-based rollout, explicitly review Compose, mounts, private credentials and checked-in version against the published digest before deploying. Both commands (`python /app/worker.py` and `python /app/monitor.py`) are baked into the same credential-free artifact, not an exchange-account initialization. Refer to [Release notes](../../docs/releases/v0.2.1-rc.1.md) for exclusions, checksums and the NO-GO boundary.

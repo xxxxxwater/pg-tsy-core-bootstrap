@@ -4,6 +4,8 @@
 
 > **Release status (2026-09-22): [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.1.0-rc.1) is a published, source-only Research/Shadow prerelease; unattended/live GO/NO-GO = NO-GO.** The frozen RC1 tag does **not** include post-RC1 `main` updates such as the JSONL simulator executable. Source includes a real-venue `paper/live` daemon for Hyperliquid and IBKR, but source presence and CI do not prove an accepted real-account trading chain. Binance PM's real adapter is explicitly not registered and its runtime feed is missing. Read [release readiness and exact evidence](docs/RELEASE_READINESS.md) before deployment. Post-RC1 `main` now also includes the Rust `pg-dream` Dream-RSI control plane for recorded worlds, isolated experiment execution, deterministic scoring and off-policy replay; it does not add live order authority.
 
+> **Current prerelease line (October 2026): [`v0.2.1-rc.1`](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.2.1-rc.1)** includes the PureGamma RSS V4 + Coinbase experimental sidecar distribution and Telegram monitoring hotfix; the original Rust TSY engine still has **no registered Coinbase live execution venue**. The packaged sidecar is **not armed by default** and is NO-GO for unattended real-money trading. See [release notes](docs/releases/v0.2.1-rc.1.md) and [GHCR sidecar usage](integrations/coinbase_rss_live/README.md).
+
 ## Architecture at a glance
 
 ```mermaid
@@ -145,6 +147,7 @@ The first GitHub release, [`v0.1.0-rc.1`](https://github.com/xxxxxwater/pg-tsy-c
 
 | Document | Purpose |
 | --- | --- |
+| [Coinbase RSS / Telegram sidecar v0.2.1-rc.1](docs/releases/v0.2.1-rc.1.md) | Prerelease scope, GHCR package, asset checksums, evidence and live-trading NO-GO |
 | [Architecture](docs/ARCHITECTURE.md) | End-to-end component, runtime, order and recovery diagrams |
 | [Engineering automation](docs/ENGINEERING_AUTOMATION.md) | Engineering ownership, full CI quality gates, commands, exact-SHA evidence, change review and rollback |
 | [2026-09-29 review](docs/REVIEW_2026-09-29.md) | Source review, completed hardening, remaining P0/P1 blockers and next upgrade path |
@@ -178,3 +181,12 @@ create a BUY/SELL order. A future live adapter must pass the existing
 See [integration operations](integrations/puregamma_rss/README.md),
 [Coinbase LIVE architecture and GO/NO-GO](docs/PUREGAMMA_RSS_COINBASE_LIVE.md)
 and [ADR 0003](docs/adr/0003-rss-events-no-order-authority.md).
+
+## Distribution: `v0.2.1-rc.1` — RSS / Coinbase sidecar (experimental)
+
+- [GitHub prerelease and scoped ZIP/TAR assets](https://github.com/xxxxxwater/pg-tsy-core-bootstrap/releases/tag/v0.2.1-rc.1) — includes `SHA256SUMS.txt`.
+- GHCR: `ghcr.io/xxxxxwater/pg-tsy-coinbase-rss-sidecar:v0.2.1-rc.1` (versioned experimental image; **not** `latest`).
+- The image bundles Python code for `live-strategy` and `health-monitor`; the local Compose chooses their individual commands. Its default runtime is **not a self-contained autonomous trader**. Follow the [installation and disarmed startup instructions](integrations/coinbase_rss_live/README.md) rather than assuming `docker run` alone installs a safe system.
+- The previously released MLSD research package `ghcr.io/xxxxxwater/pg-tsy-mlsd:v0.2.0-rc.1` is unchanged.
+
+**Security:** Never commit `.env`, API private keys, Telegram bot tokens, chat IDs, SQLite state or session files. The published assets exclude credentials, but downloading the image is not evidence of approved trading or Coinbase fills. TSY remains `shadow` unless separately operated; neither this release nor its CI changes that mode.
