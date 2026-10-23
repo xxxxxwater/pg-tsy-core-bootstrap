@@ -1,0 +1,109 @@
+# PureGamma RSS V4 × PG-TSY × Coinbase Advanced **LIVE** (experimental integration)
+
+## Verified host and runtime on 2026-10-23
+
+- Target `instabox-pg-test` (4 vCPU, 8 GiB RAM, 20 GiB persistent /data volume).
+- `/data/workspace/pg-tsy-core-bootstrap` exists. `pg-core /healthz` replied `mode=shadow`, `ready=true`, `feeds_connected=8/8`, `policy_decisions_total=0`.
+- PureGamma RSS V4 `/status` replied `events=98`, `sent=2`, `pending=0`; `watcherguru_chat` previously 503.
+- TSY's versioned `signal.v1` cannot represent venue COINBASE, and the present TSY daemon's live adapter is Hyperliquid/IBKR. **Do not set its `PG_RUN_MODE=live` expecting Coinbase orders.**
+- Coinbase SDK read-only preflight exists in TSY; private `.env` is unreadable by the remote management agent (0600), and no key values were inspected.
+
+## Architecture and explicitly scoped LIVE behavior
+
+```text
+Raw RSS/Atom → RSSHub → event normalization/dedup/classification (original titles)
+       └─  /data/home/puregamma-event-collector/data/events.db  [READ ONLY]
+                 ↓
+  Coinbase Live RSS Signal Filter (strict A trust, SEC original title, <=120s)
+                 ↓
+   Durable signal / intent journal + rule version + event fingerprint
+                 ↓
+    Gates: explicit real Coinbase portfolio, spot BTC-USD, live flag, max order,
+          max daily order notional, fresh product/orderbook, <=20bp spread
+                 ↓
+       Coinbase Advanced Trade GET key permissions, product, best bid/ask
+                 ↓
+      Preview market order + attached native bracket (stop 0.6% / TP 1.2%)
+                 ↓
+     CREATE ORDER **LIVE** with persistent deterministic client_order_id
+                 ↓
+      Coinbase response and order_id saved; status='submitted', then
+      **HALT FURTHER ENTRIES** until order/fill/attached protection reconciled.
+```
+
+This is **not paper trading**. When armed it sends real Coinbase orders. It does not attempt to turn TSY's pre-existing shadow adapter live, and it must not be called a native PG-TSY Coinbase execution integration: that needs an explicit Rust venue registration and full OMS reconciliation.
+
+**Critical limitations: do not arm until addressed**
+
+1. This is a narrow experimental one-shot live RSS entry test, not an unattended production risk engine. `preparing`, `submitted` and `unknown` intents **block further orders indefinitely until manual reconciliation**. It does **not** automatically close positions. The attached stop/TP parameters are attempted through Coinbase's native order preview, but acceptance and protection must be verified against the actual portfolio/product. Stops are NOT guaranteed to fill, especially during price gaps or high volatility.
+2. `BTC-USD` only, BUY only; event rule is *direct official SEC spot BTC ETF approval*, excludes proposals/rumors/denials. It will probably fire infrequently. It will not trade arbitrary WatcherGuru headlines.
+3. No automatic order submission unless operator configures **all**: `PG_LIVE_TRADING=true`, `COINBASE_PORTFOLIO_ID`, `LIVE_ORDER_USD`, `LIVE_MAX_ORDER_USD`, `LIVE_MAX_DAILY_USD`. Defaults are all disabled / zero, and the program contains **no paper branch**.
+4. Coinbase preview / trade permissions are required; errors fail closed. Network timeout after POST freezes `unknown` intent, never resubmits automatically. Existing TSY credentials are mounted read-only, do not print/copy them.
+5. No strategy performance claims; news latency, slippage, feed updating, market impact and bracket suitability have not been live-tested or measured.
+
+## Independent Telegram heartbeat (same RSS Bot)
+
+- 60-second probes; requires RSS `/status`, TSY `/healthz`, and Coinbase sidecar internal heartbeat.
+- 3 consecutive failures -> alert, state recovery -> alert; hourly heartbeat with RSS event/queue counts, TSY 8/8 & mode, Coinbase `armed/not_armed/fault` status.
+- `watcherguru_chat` unavailable is not treated as total RSS failure (but is still unfixed until separately authorized).
+- Telegram Bot Token mounted from existing RSS V4 file **read-only**. Chat ID stored as a separate local root-owned file. No secrets in this package.
+- Trading alerts are queued in persistent `/state/live.sqlite`, and delivered with retries by the independent monitor. No user replies / remote Telegram trading commands are accepted.
+- A host-level suspension will stop **both** heartbeat processes. For an offline-server alert, a separate off-host watcher is required. InstaBox auto-suspend must be disabled for continuous operation.
+
+## Installation on existing InstaBox by SSH
+
+This package is designed to be uploaded into an isolated persistent folder under `/data/home/pg-rss-tsy-live` owned by the VM's `christse` user. DO NOT overwrite existing TSY/RSS projects.
+
+On your Mac, after downloading and unzipping this package, run:
+
+```bash
+sh scripts/install_over_ssh.sh 'YOUR_INSTABOX_USER@ssh.instabox.sh'
+```
+
+The script checks the exact hostname and uploads only code. On a new host, before startup create `secrets/chat-id` as a private local file containing the authorized Telegram recipient ID (no bot token); the script deliberately refuses to invent or commit a recipient ID. The existing InstaBox deployment already has this file and can be upgraded without changing it. The sidecar starts **not armed** and the independent heartbeat watcher. Before changing `PG_LIVE_TRADING` to true, validate your Coinbase dedicated portfolio's trade permissions, preview support, and set a real order budget and fee/stop policy.
+
+Inspect:
+
+```bash
+ssh -p 2222 YOUR_INSTABOX_USER@ssh.instabox.sh \
+  'cd "$HOME/pg-rss-tsy-live" && docker compose ps && docker compose logs --tail=50'
+```
+
+Do not paste Coinbase private keys or Telegram Bot Token into chat. If keys are in a different TSY-owned file, update `TSY_ENV_FILE` to the exact existing location without copying them.
+
+## Explicit LIVE arming — only after trade key/portfolio preview is accepted
+
+This is a LIVE environment with **no paper route**. Initial service installation is
+intentionally disarmed because the user has not supplied a quote-dollar order
+size, per-order cap, daily budget or confirmed isolated Coinbase Portfolio ID.
+These are real-money constraints and must not be guessed. The operator can
+activate in `~/pg-rss-tsy-live/.env` only after approving the limits. Example
+structure (the values below are placeholders, NOT pre-approved parameters):
+
+```dotenv
+PG_LIVE_TRADING=true
+COINBASE_PORTFOLIO_ID=<verified-dedicated-portfolio-uuid>
+LIVE_ORDER_USD=<approved-usd-per-order>
+LIVE_MAX_ORDER_USD=<approved-max-usd>
+LIVE_MAX_DAILY_USD=<approved-daily-usd>
+```
+
+Then restart only the sidecar: `docker compose up -d --no-deps --force-recreate live-strategy`.
+No modifications to the TSY main daemon. Confirm no transfers are allowed on
+the API key; the sidecar checks `can_transfer=false`, `can_trade=true` and portfolio
+UUID match. Coinbase native order preview and post-fill reconciliation still need
+real-portfolio acceptance.
+
+**IMPORTANT:** `get_api_key_permissions` only checks token scope, not full
+operational readiness. The first accepted order must be supervised. No live
+orders were placed during the construction/testing of this package.
+
+## Hotfix 1.1 (2026-10-23)
+
+- Explicit `not_armed` is a normal, safe state and **not** an incident.
+- Monitor writes startup, minute probe results, queued heartbeat, and Telegram delivery result to logs without leaking secrets.
+- Hourly operational heartbeats, three consecutive health-check failures before alerting and recovery notices.
+- `scripts/audit_status.py` reads locally persisted Telegram delivery metadata without printing token values or Coinbase API material.
+- Deployed on InstaBox `instabox-pg-test` and verified by the user's terminal evidence: `alert_id=8` delivered, `state=not_armed`, RSS healthy with 98 events and 2 formal messages, TSY 8/8 feeds at the time of verification. This is not evidence of Coinbase execution readiness.
+
+Do not commit `.env`, `secrets/`, `state/`, sessions, database snapshots, or private API keys.

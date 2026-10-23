@@ -1,0 +1,41 @@
+name: pg-rss-tsy-live
+services:
+  live-strategy:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    cpus: '0.35'
+    mem_limit: 240m
+    command: ["python","/app/worker.py"]
+    environment:
+      PG_LIVE_TRADING: ${PG_LIVE_TRADING:-false}
+      COINBASE_PORTFOLIO_ID: ${COINBASE_PORTFOLIO_ID:-}
+      LIVE_ORDER_USD: ${LIVE_ORDER_USD:-0}
+      LIVE_MAX_ORDER_USD: ${LIVE_MAX_ORDER_USD:-0}
+      LIVE_MAX_DAILY_USD: ${LIVE_MAX_DAILY_USD:-0}
+    volumes:
+      - ${RSS_DATA_DIR:?}:/rss:ro
+      - ${TSY_ENV_FILE:?}:/run/tsy-env:ro
+      - ./state:/state
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    logging: &logs
+      driver: json-file
+      options: {max-size: '5m',max-file: '3'}
+  health-monitor:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    cpus: '0.2'
+    mem_limit: 140m
+    command: ["python","/app/monitor.py"]
+    depends_on: [live-strategy]
+    volumes:
+      - ./state:/state
+      - ${RSS_BOT_TOKEN_FILE:?}:/run/telegram-token:ro
+      - ./secrets/chat-id:/run/chat-id:ro
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logs

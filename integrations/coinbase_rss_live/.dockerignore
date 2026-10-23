@@ -1,0 +1,6 @@
+.env
+state/
+secrets/
+__pycache__/
+*.pyc
+*.zip
