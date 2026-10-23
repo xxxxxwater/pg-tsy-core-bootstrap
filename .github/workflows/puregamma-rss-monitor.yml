@@ -1,0 +1,22 @@
+name: PureGamma RSS read-only bridge
+on:
+  push:
+    paths:
+      - 'integrations/puregamma_rss/**'
+      - '.github/workflows/puregamma-rss-monitor.yml'
+  pull_request:
+    paths:
+      - 'integrations/puregamma_rss/**'
+      - '.github/workflows/puregamma-rss-monitor.yml'
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: No live trading imports and deterministic unit tests
+        run: |
+          python -m unittest discover -s integrations/puregamma_rss/tests -v
+          ! grep -RE 'from coinbase\.|import coinbase\.|create_order\(' integrations/puregamma_rss/*.py

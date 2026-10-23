@@ -1,0 +1,35 @@
+# Non-trading sidecar. Never enable pg-core live mode from this Compose file.
+name: pg-rss-tsy-monitor
+services:
+  monitor:
+    image: python:3.13-alpine
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app
+    command: ["python", "/app/service.py"]
+    cpus: "0.25"
+    mem_limit: 192m
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    environment:
+      RSS_EVENTS_DB: /rss/events.db
+      MONITOR_STATE_DB: /state/monitor.sqlite
+      RSS_STATUS_URL: http://127.0.0.1:8765/status
+      TSY_STATUS_URL: http://127.0.0.1:8080/healthz
+      TELEGRAM_TOKEN_FILE: /run/secrets/bot_token
+      TELEGRAM_CHAT_ID: "\${TELEGRAM_CHAT_ID:?Set TELEGRAM_CHAT_ID}"
+      HEARTBEAT_SECONDS: "3600"
+      CYCLE_SECONDS: "60"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./policy.py:/app/policy.py:ro
+      - ./service.py:/app/service.py:ro
+      - "\${RSS_DATA_DIR:?Set RSS_DATA_DIR}:/rss:ro"
+      - ./state:/state
+      - "\${TELEGRAM_TOKEN_PATH:?Set TELEGRAM_TOKEN_PATH}:/run/secrets/bot_token:ro"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
