@@ -36,19 +36,18 @@ From the operator's terminal following Hotfix 1.1:
 
 These are **point-in-time observations** only. They do not prove 24/7 uptime, Coinbase order execution, fills, or safety of real-money automation. Later health may differ: the market-feed count briefly fell to 6/8 and recovered in subsequent probes.
 
-## Monitor logic and alerts
+## Monitor logic and notifications
 
-- Polls RSS + TSY health plus `service_status` in the local SQLite state every 60 seconds.
-- `coinbase_live=not_armed` is expected and should appear in heartbeats, not outage alerts.
-- After three consecutive failing probes: enqueue and deliver a Telegram fault alert.
-- After recovery: enqueue a recovery notice; periodic status every hour.
-- State and delivery metadata remain in local `state/live.sqlite`; do not commit or copy it to GitHub.
-- Same-host watchdog cannot detect complete InstaBox auto-suspend or host outage. Configure an independent external watcher when continuous alerts are required.
+- RSS V4 alone delivers news to Telegram.
+- The sidecar polls RSS + TSY health and local `service_status` every 60 seconds and records state transitions in its container logs.
+- It does not enqueue or deliver Telegram heartbeat, health, trading signal, or strategy messages. Previously queued sidecar alerts are not replayed to the news chat.
+- Existing sidecar alert records remain in local `state/live.sqlite` for inspection. Do not commit or copy it to GitHub.
+- Same-host checks cannot detect complete InstaBox suspension or outage.
 
 ## Security, rollback and change review
 
 Never commit `.env`, Coinbase key material, Telegram tokens, chat recipient IDs, Docker volumes, sessions, `/state`, backups or screenshots of credentials. Only the pre-existing private TSY environment is mounted read-only in the strategy container; the monitoring container receives only the RSS Bot token and the chat ID. The `README.md` in this integration explains the intentionally restricted LIVE gates.
 
-To roll back **monitor-only** edits after a failed upgrade: restore the timestamped `src/monitor.py.backup.*` captured by the operator, rebuild `health-monitor` only, and recheck `scripts/audit_status.py`. Do not change `PG_LIVE_TRADING` during a monitoring rollback.
+To roll back **monitor-only** edits after a failed upgrade: restore the timestamped `src/monitor.py.backup.*` captured by the operator, rebuild `health-monitor` only, and recheck `scripts/audit_status.py`. The older monitor will replay pending sidecar alerts to Telegram, so review and archive that queue before restoring its delivery code. Do not change `PG_LIVE_TRADING` during a monitoring rollback.
 
 The execution sidecar is experimental and lacks fully automated fill/fees/protection-order reconciliation. Treat the LIVE path as NO-GO for unattended production use until native OMS ownership and reconciliation acceptance is complete.

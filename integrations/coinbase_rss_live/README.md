@@ -41,14 +41,12 @@ This is **not paper trading**. When armed it sends real Coinbase orders. It does
 4. Coinbase preview / trade permissions are required; errors fail closed. Network timeout after POST freezes `unknown` intent, never resubmits automatically. Existing TSY credentials are mounted read-only, do not print/copy them.
 5. No strategy performance claims; news latency, slippage, feed updating, market impact and bracket suitability have not been live-tested or measured.
 
-## Independent Telegram heartbeat (same RSS Bot)
+## Local health checks and Telegram news
 
-- 60-second probes; requires RSS `/status`, TSY `/healthz`, and Coinbase sidecar internal heartbeat.
-- 3 consecutive failures -> alert, state recovery -> alert; hourly heartbeat with RSS event/queue counts, TSY 8/8 & mode, Coinbase `armed/not_armed/fault` status.
-- `watcherguru_chat` unavailable is not treated as total RSS failure (but is still unfixed until separately authorized).
-- Telegram Bot Token mounted from existing RSS V4 file **read-only**. Chat ID stored as a separate local root-owned file. No secrets in this package.
-- Trading alerts are queued in persistent `/state/live.sqlite`, and delivered with retries by the independent monitor. No user replies / remote Telegram trading commands are accepted.
-- A host-level suspension will stop **both** heartbeat processes. For an offline-server alert, a separate off-host watcher is required. InstaBox auto-suspend must be disabled for continuous operation.
+- The RSS V4 service owns Telegram news delivery, including the bilingual article and news digest. This integration does not send Telegram messages.
+- The sidecar monitor still probes RSS `/status`, TSY `/healthz`, and its local strategy status every 60 seconds. Health transitions and faults appear in container logs.
+- Existing and future sidecar alert rows stay in local `state/live.sqlite` as operational records; the monitor does not replay queued heartbeats, health alerts, trading signals, or strategy notices into the news chat.
+- The Coinbase strategy's live arming and risk controls are unchanged. Inspect local status and logs for incidents.
 
 ## Installation on existing InstaBox by SSH
 
@@ -60,7 +58,7 @@ On your Mac, after downloading and unzipping this package, run:
 sh scripts/install_over_ssh.sh 'YOUR_INSTABOX_USER@ssh.instabox.sh'
 ```
 
-The script checks the exact hostname and uploads only code. On a new host, before startup create `secrets/chat-id` as a private local file containing the authorized Telegram recipient ID (no bot token); the script deliberately refuses to invent or commit a recipient ID. The existing InstaBox deployment already has this file and can be upgraded without changing it. The sidecar starts **not armed** and the independent heartbeat watcher. Before changing `PG_LIVE_TRADING` to true, validate your Coinbase dedicated portfolio's trade permissions, preview support, and set a real order budget and fee/stop policy.
+The script checks the exact hostname and uploads only code. On a new host, before startup create `secrets/chat-id` as a private local file containing the authorized Telegram recipient ID (no bot token); the script deliberately refuses to invent or commit a recipient ID. The existing InstaBox deployment already has this file and can be upgraded without changing it. The sidecar starts **not armed** alongside a local health monitor. Before changing `PG_LIVE_TRADING` to true, validate your Coinbase dedicated portfolio's trade permissions, preview support, and set a real order budget and fee/stop policy.
 
 Inspect:
 

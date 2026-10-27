@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only status of isolated RSS/TSY heartbeat; never prints credentials or messages."""
+"""Read-only local status of RSS/TSY sidecar; never prints credentials or messages."""
 import datetime as dt
 import json
 from pathlib import Path
@@ -18,7 +18,7 @@ with sqlite3.connect('file:'+str(path)+'?mode=ro',uri=True) as con:
     for r in con.execute('SELECT name,state,ts,detail FROM service_status ORDER BY name'):
         age=now-int(r['ts'])
         print('service=%s state=%s age_seconds=%d detail=%s' % (r['name'],r['state'],age,str(r['detail'])[:160]))
-    print('=== Telegram notifications (recent, metadata only) ===')
+    print('=== Local alert records (Telegram delivery disabled; metadata only) ===')
     for r in con.execute('SELECT id,kind,created,sent,attempts,next_at FROM alerts ORDER BY id DESC LIMIT 12'):
         sent='yes' if r['sent'] else 'no'
         print('id=%s kind=%s telegram_sent=%s attempts=%s age_seconds=%d next_due_seconds=%d' % (

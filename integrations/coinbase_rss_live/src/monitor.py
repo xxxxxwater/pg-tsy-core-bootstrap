@@ -1,10 +1,6 @@
-"""Independent health/heartbeat daemon for RSS V4 and TSY + Coinbase live sidecar."""
-import json,sqlite3,time,urllib.request,urllib.error,logging
-from shared import db,alert,status,secret_file,send_telegram
-from pathlib import Path
-
-TOKEN='/run/telegram-token'
-CHAT_ID_FILE='/run/chat-id'
+"""Local health probe for RSS V4, TSY and Coinbase sidecar; no Telegram delivery."""
+import json,time,urllib.request,logging
+from shared import db
 LOG = logging.getLogger('health-monitor')
 
 
@@ -49,42 +45,24 @@ def probe(now,conn):
 def main():
     logging.Formatter.converter = time.gmtime
     logging.basicConfig(level=logging.INFO,format='%(asctime)sZ %(levelname)s %(name)s %(message)s')
-    LOG.info('monitor process starting; probe interval=60s; regular Telegram heartbeat interval=3600s')
-    conn=db();token=secret_file(TOKEN);chat_id=secret_file(CHAT_ID_FILE)
-    last_beat=0;last_problems=None;failure_count=0
+    LOG.info('monitor process starting; probe interval=60s; Telegram delivery disabled')
+    conn=db()
+    last_problems=None;failure_count=0
     while True:
         now=int(time.time())
         problems,info=probe(now,conn)
         failure_count=failure_count+1 if problems else 0
         state='DOWN' if failure_count>=3 else 'HEALTHY'
-        # Check every minute, alert after 3 consecutive failures, recover immediately.
+        # Check every minute and record transitions locally; RSS owns Telegram news delivery.
         new_problems=tuple(sorted(problems)) if state=='DOWN' else tuple()
         LOG.info('probe result=%s issues=%d consecutive_failures=%d',state,len(problems),failure_count)
         if last_problems!=new_problems:
             if last_problems is not None:
                 if new_problems:
-                    alert(conn,'health','🚨 系统健康告警\n'+'\n'.join('• '+p for p in new_problems))
-                    LOG.warning('health state transition to DOWN, alert queued; issue_count=%d',len(new_problems))
+                    LOG.warning('health state transition to DOWN: %s', ', '.join(new_problems))
                 elif last_problems:
-                    alert(conn,'health','✅ 系统健康恢复\n'+'\n'.join(info))
-                    LOG.info('health state recovered; Telegram recovery alert queued')
+                    LOG.info('health state recovered: %s', '; '.join(info))
             last_problems=new_problems
-        if now-last_beat>=3600:
-            alert(conn,'heartbeat','💓 RSS V4 + TSY + Coinbase LIVE 心跳\n'+'\n'.join(info)+('\n问题：'+', '.join(problems) if problems else '\n检查结果：正常'))
-            last_beat=now
-            LOG.info('periodic heartbeat enqueued')
-        for item in conn.execute("SELECT id,text,attempts FROM alerts WHERE sent IS NULL AND next_at<=? ORDER BY id LIMIT 10",(now,)).fetchall():
-            ok,delay=send_telegram(token,chat_id,item['text'])
-            if ok:
-                conn.execute('UPDATE alerts SET sent=? WHERE id=?',(now,item['id']))
-                conn.commit()
-                LOG.info('Telegram notification sent; alert_id=%d',item['id'])
-            else:
-                conn.execute('UPDATE alerts SET attempts=attempts+1,next_at=? WHERE id=?',(now+max(delay,60),item['id']))
-                conn.commit()
-                LOG.warning('Telegram delivery failed; alert_id=%d retry_in=%ds',item['id'],max(delay,60))
-                break
-            time.sleep(1.1)
         time.sleep(60)
 
 if __name__=='__main__':main()

@@ -1,7 +1,8 @@
 import sys,time,unittest,sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
+import monitor
 from monitor import probe
 class Check(unittest.TestCase):
     def setUp(self):
@@ -29,5 +30,19 @@ class Check(unittest.TestCase):
         with patch('monitor.fetch',side_effect=self.fake):
             issues,info=probe(self.now,self.c)
         self.assertIn('Coinbase LIVE strategy loop no heartbeat',issues)
+    def test_monitor_keeps_probing_without_telegram_delivery(self):
+        sender=Mock();enqueue=Mock()
+        with patch('monitor.db',return_value=self.c), \
+             patch('monitor.probe',return_value=(['TSY not ready'],[])) as health, \
+             patch('monitor.time.sleep',side_effect=[None,None,StopIteration]), \
+             patch('monitor.time.time',return_value=self.now), \
+             patch('shared.send_telegram',sender), \
+             patch('shared.alert',enqueue):
+            with self.assertRaises(StopIteration):
+                monitor.main()
+        self.assertEqual(health.call_count,3)
+        sender.assert_not_called()
+        enqueue.assert_not_called()
+
 if __name__=='__main__':unittest.main()
 
