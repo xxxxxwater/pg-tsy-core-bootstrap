@@ -19,7 +19,12 @@ class Signal:
     source: str
     published: int
 
-BLOCK = re.compile(r'\b(?:not|no|fake|hoax|rumou?r|denies|denied|rejects?|rejected|proposes?|proposed|considering|may|might|plans?|draft|delays?|delayed|hacks?|warning|potential|unconfirmed)\b',re.I)
+# Mirrors integrations/puregamma_rss/policy.py (_OFFICIAL, _UNCERTAIN). Kept as a
+# copy, not an import: this sidecar's image only contains src/. Keep in sync.
+# Stable RSS article source IDs (articles.source), never display names: a
+# label such as "SecurityWeek" must not be treated as the SEC.
+OFFICIAL_SOURCE_IDS = frozenset({'sec_press','sec_press_releases'})
+BLOCK = re.compile(r'\b(?:not|no|fake|hoax|rumou?r|denies|denied|rejects?|rejected|proposes?|proposed|considering|may|might|could|alleged|plans?|draft|delays?|delayed|hacks?|warning|potential|unconfirmed)\b',re.I)
 APPROVAL = re.compile(r'\b(?:approves?|approved|approval|authorized|authorizes?|authorised)\b',re.I)
 BTC = re.compile(r'\b(?:bitcoin|btc)\b',re.I)
 SPOT = re.compile(r'\bspot\b',re.I)
@@ -35,17 +40,20 @@ def make_signal(event, now=None, maximum_age=120):
     now = int(now or time.time())
     if event.get('trust') != 'A' or event.get('priority') not in {'P0','P1'}:
         return None
-    if not str(event.get('source','')).lower().startswith('sec'):
+    if str(event.get('source_id') or '') not in OFFICIAL_SOURCE_IDS:
         return None
     title = str(event.get('title',''))
-    pub = event.get('published')
-    if not pub or now-int(pub)<0 or now-int(pub)>maximum_age:
+    try:
+        pub = int(event.get('published'))
+    except (TypeError, ValueError):
+        return None
+    if now-pub<0 or now-pub>maximum_age:
         return None
     if BLOCK.search(title):
         return None
     if not (APPROVAL.search(title) and BTC.search(title) and SPOT.search(title) and ETF.search(title)):
         return None
-    return Signal(str(event['id']), 'BTC-USD', 'BUY', 'sec_spot_btc_etf_approval_v1',0.8,title,str(event['source']),int(pub))
+    return Signal(str(event['id']), 'BTC-USD', 'BUY', 'sec_spot_btc_etf_approval_v1',0.8,title,str(event.get('source') or event['source_id']),pub)
 
 
 def risk_allow(quote,limit,bid,ask,spread_bps=20):

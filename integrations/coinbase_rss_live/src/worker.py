@@ -7,7 +7,7 @@ import json,os,sqlite3,time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from core import make_signal,make_intent_id
+from core import make_signal,make_intent_id,OFFICIAL_SOURCE_IDS
 from shared import db,alert,status
 
 RSS='/rss/events.db'
@@ -28,8 +28,12 @@ def inspect_events(now):
     con=sqlite3.connect(f'file:{RSS}?mode=ro',uri=True,timeout=8)
     con.row_factory=sqlite3.Row
     try:
-        return [dict(row) for row in con.execute('''SELECT id,title,source,priority,trust,published,last_seen
-            FROM events WHERE last_seen>=? ORDER BY last_seen,id LIMIT 100''',(now-180,)).fetchall()]
+        # events.source is a display label; authority comes only from the stable
+        # article source ID (same approach as integrations/puregamma_rss/service.py).
+        marks=','.join('?'*len(OFFICIAL_SOURCE_IDS))
+        return [dict(row) for row in con.execute(f'''SELECT e.id,e.title,e.source,e.priority,e.trust,e.published,e.last_seen,
+            (SELECT a.source FROM articles a WHERE a.event_id=e.id AND a.source IN ({marks}) LIMIT 1) AS source_id
+            FROM events e WHERE e.last_seen>=? ORDER BY e.last_seen,e.id LIMIT 100''',(*sorted(OFFICIAL_SOURCE_IDS),now-180)).fetchall()]
     finally:con.close()
 
 
@@ -55,6 +59,8 @@ def handle_signal(con,env,signal,now):
     if submitted+quote>daily:
         alert(con,'risk','⛔ Coinbase LIVE 风控拒绝：策略当日总下单额上限已达到。')
         return
+    # `submitted` intents also block until fills/protection are reconciled by an
+    # operator; automatic reconciliation of submitted orders is not implemented.
     existing=con.execute("SELECT count(*) FROM intents WHERE state IN ('submitted','unknown','preparing')").fetchone()[0]
     if existing:
         alert(con,'risk','⛔ Coinbase LIVE 风控阻断：存在未完成或需对账订单，拒绝增加新敞口。')
@@ -68,6 +74,14 @@ def handle_signal(con,env,signal,now):
     con.commit()
     try:
         result=broker.submit_market_with_protection(signal,quote,client_id,Decimal('0.006'),Decimal('0.012'))
+    except coinbase_live.PreSubmitRejected as exc:
+        # Raised only before create_order was attempted: no exchange order can
+        # exist, so close the intent instead of freezing all future trading.
+        con.execute("UPDATE intents SET state='rejected',note=? WHERE event_id=?",
+                    (('pre-submit rejected: '+str(exc))[:300],signal.event_id))
+        con.commit()
+        alert(con,'risk','⛔ Coinbase LIVE 下单前检查拒绝（未提交任何委托）：'+str(exc)[:200])
+        return
     except Exception as exc:
         # No second attempt: even a network timeout can mean an exchange order filled.
         con.execute("UPDATE intents SET state='unknown',note='LIVE outcome ambiguous; manual reconciliation required' WHERE event_id=?",(signal.event_id,))
@@ -80,6 +94,20 @@ def handle_signal(con,env,signal,now):
                 ('daily_submitted:'+today,str(submitted+quote)))
     con.commit()
     alert(con,'trade',f"✅ Coinbase LIVE 已提交真实订单\n产品：{signal.product}\n数量上限：${quote}\nOrder ID：{result['order_id']}\n状态：已提交，成交与保护单仍需核对。")
+
+
+def process_rows(conn,env,armed,rows,now):
+    for item in rows:
+        # NULL columns must not crash the loop (str(None) is fine for a key).
+        fp=':'.join(str(item.get(k)) for k in ('id','priority','trust'))
+        if conn.execute('SELECT 1 FROM inspected WHERE fingerprint=?',(fp,)).fetchone():continue
+        conn.execute('INSERT OR IGNORE INTO inspected VALUES(?,?)',(fp,now))
+        conn.commit()
+        if int(item['last_seen'] or 0)<int(conn.execute("SELECT value FROM meta WHERE key='baseline'").fetchone()[0]):continue
+        signal=make_signal(item,now=now)
+        if signal:
+            alert(conn,'signal',f'🔎 已识别可信 RSS 信号：{signal.rule}\n来源：{signal.source}\n标题：{signal.title[:200]}\n交易状态：'+('LIVE已启用' if armed else 'LIVE未激活'))
+            if armed:handle_signal(conn,env,signal,now)
 
 
 def run():
@@ -100,17 +128,7 @@ def run():
             env=load_env('/run/tsy-env')
             env.update({k:v for k,v in os.environ.items() if k in {'PG_LIVE_TRADING','COINBASE_PORTFOLIO_ID','LIVE_ORDER_USD','LIVE_MAX_ORDER_USD','LIVE_MAX_DAILY_USD'}})
             armed,reason=is_armed(env)
-            rows=inspect_events(now)
-            for item in rows:
-                fp=item['id']+':'+item['priority']+':'+item['trust']
-                if conn.execute('SELECT 1 FROM inspected WHERE fingerprint=?',(fp,)).fetchone():continue
-                conn.execute('INSERT OR IGNORE INTO inspected VALUES(?,?)',(fp,now))
-                conn.commit()
-                if item['last_seen']<int(conn.execute("SELECT value FROM meta WHERE key='baseline'").fetchone()[0]):continue
-                signal=make_signal(item,now=now)
-                if signal:
-                    alert(conn,'signal',f'🔎 已识别可信 RSS 信号：{signal.rule}\n来源：{signal.source}\n标题：{signal.title[:200]}\n交易状态：'+('LIVE已启用' if armed else 'LIVE未激活'))
-                    if armed:handle_signal(conn,env,signal,now)
+            process_rows(conn,env,armed,inspect_events(now),now)
             status(conn,'coinbase_live','armed' if armed else 'not_armed',reason)
         except Exception as exc:
             # Keep credentials / SDK exceptions entirely out of alert body/logs.

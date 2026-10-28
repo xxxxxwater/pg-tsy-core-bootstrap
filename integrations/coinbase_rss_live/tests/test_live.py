@@ -8,7 +8,7 @@ from worker import is_armed
 class Tests(unittest.TestCase):
     def setUp(self):
         self.e={'id':'e1','title':'SEC approves spot Bitcoin ETF listing',
-                'source':'SEC Press Releases','trust':'A','priority':'P1','published':2000}
+                'source':'SEC Press Releases','source_id':'sec_press','trust':'A','priority':'P1','published':2000}
     def test_explicit_approval(self):
         self.assertEqual(make_signal(self.e,now=2050).product,'BTC-USD')
     def test_no_trade_on_rumor(self):
@@ -19,8 +19,17 @@ class Tests(unittest.TestCase):
     def test_stale_fails_closed(self):
         self.assertIsNone(make_signal(self.e,now=2300))
     def test_authority_required(self):
-        for key,value in [('trust','C'),('source','Watcher Guru Official'),('priority','P2')]:
+        for key,value in [('trust','C'),('source_id','watcherguru'),('source_id',None),('priority','P2')]:
             self.assertIsNone(make_signal(dict(self.e,**{key:value}),now=2050))
+    def test_spoofed_source_name_rejected(self):
+        # Display labels starting with "sec" must not confer authority.
+        for name in ('SecurityWeek','SEC Press Releases','sec_press'):
+            item=dict(self.e,source=name);item.pop('source_id')
+            self.assertIsNone(make_signal(item,now=2050),name)
+            self.assertIsNone(make_signal(dict(item,source_id='securityweek'),now=2050),name)
+    def test_uncertainty_words_blocked(self):
+        for text in ['SEC could approve spot Bitcoin ETF','SEC alleged to approve spot Bitcoin ETF']:
+            self.assertIsNone(make_signal(dict(self.e,title=text),now=2050),text)
     def test_no_keyword_false_positive(self):
         self.assertIsNone(make_signal(dict(self.e,title='SEC proposes new bitcoin spot ETF rules'),now=2050))
     def test_spread_and_cap(self):
