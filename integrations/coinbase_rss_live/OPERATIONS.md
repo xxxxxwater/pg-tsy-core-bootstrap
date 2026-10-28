@@ -20,7 +20,7 @@ curl -fsS http://127.0.0.1:8765/status
 curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-For a fresh checkout, do not use `scripts/apply_monitor_hotfix_over_ssh.sh` as an initial installer: it **only** updates an existing `pg-rss-tsy-live` directory. The initial installer requires a privately configured `secrets/chat-id` file. Use a literal, quoted `user@ssh.instabox.sh` as its first parameter to avoid hidden Unicode characters pasted into the interactive SSH login prompt.
+For a fresh checkout, do not use `scripts/apply_monitor_hotfix_over_ssh.sh` as an initial installer: it **only** updates an existing `pg-rss-tsy-live` directory. The initial installer requires `COINBASE_ENV_FILE` in `.env` (default `./secrets/coinbase.env`, created empty at 0600 if missing) and refuses to restart an armed or customized `.env`. Use a literal, quoted `user@ssh.instabox.sh` as its first parameter to avoid hidden Unicode characters pasted into the interactive SSH login prompt.
 
 ## Verified deployment log: October 23, 2026
 
@@ -46,7 +46,7 @@ These are **point-in-time observations** only. They do not prove 24/7 uptime, Co
 
 ## Security, rollback and change review
 
-Never commit `.env`, Coinbase key material, Telegram tokens, chat recipient IDs, Docker volumes, sessions, `/state`, backups or screenshots of credentials. Only the pre-existing private TSY environment is mounted read-only in the strategy container; the monitoring container receives only the RSS Bot token and the chat ID. The `README.md` in this integration explains the intentionally restricted LIVE gates.
+Never commit `.env`, Coinbase key material, Telegram tokens, chat recipient IDs, Docker volumes, sessions, `/state`, backups or screenshots of credentials. Only a dedicated Coinbase-only secret file (`COINBASE_ENV_FILE`, `COINBASE_*` keys) is mounted read-only in the strategy container; the shared TSY `.env` is never mounted. The monitoring container receives no secrets. The `README.md` in this integration explains the intentionally restricted LIVE gates.
 
 To roll back **monitor-only** edits after a failed upgrade: restore the timestamped `src/monitor.py.backup.*` captured by the operator, rebuild `health-monitor` only, and recheck `scripts/audit_status.py`. The older monitor will replay pending sidecar alerts to Telegram, so review and archive that queue before restoring its delivery code. Do not change `PG_LIVE_TRADING` during a monitoring rollback.
 

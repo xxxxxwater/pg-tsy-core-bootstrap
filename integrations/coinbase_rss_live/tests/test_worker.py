@@ -1,9 +1,14 @@
-import sys,tempfile,unittest
+import sys
+import tempfile
+import unittest
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-import shared,worker,coinbase_live
+import coinbase_live
+import shared
+import worker
 from coinbase_live import PreSubmitRejected
 from core import Signal
 
@@ -100,6 +105,25 @@ class ProcessRowsTests(Base):
                'trust':None,'published':None,'last_seen':1000}]
         worker.process_rows(self.con,{},False,rows,1000)
         self.assertEqual(self.con.execute('SELECT fingerprint FROM inspected').fetchall()[0][0],'e1:None:None')
+
+class EnvFileTests(unittest.TestCase):
+    def test_only_coinbase_keys_are_loaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            f=Path(d)/'coinbase.env'
+            f.write_text('COINBASE_API_KEY_NAME="org/key"\nexport COINBASE_API_PRIVATE_KEY=abc\n'
+                         'HYPERLIQUID_PRIVATE_KEY=0xdead\nBINANCE_API_SECRET=s\nTELEGRAM_BOT_TOKEN=t\n'
+                         'PG_LIVE_TRADING=true\n# comment\n')
+            env=worker.load_env(str(f))
+        self.assertEqual(env,{'COINBASE_API_KEY_NAME':'org/key','COINBASE_API_PRIVATE_KEY':'abc'})
+
+    def test_arming_only_from_process_environment(self):
+        with tempfile.TemporaryDirectory() as d:
+            f=Path(d)/'coinbase.env';f.write_text('COINBASE_PORTFOLIO_ID=file\n')
+            with patch.object(worker,'COINBASE_ENV',str(f)), \
+                 patch.dict(worker.os.environ,{'PG_LIVE_TRADING':'false','COINBASE_PORTFOLIO_ID':'compose'},clear=True):
+                env=worker.load_runtime_env()
+        self.assertEqual(env,{'PG_LIVE_TRADING':'false','COINBASE_PORTFOLIO_ID':'compose'})
+
 
 class InspectEventsTests(unittest.TestCase):
     def test_source_id_comes_from_official_article_only(self):

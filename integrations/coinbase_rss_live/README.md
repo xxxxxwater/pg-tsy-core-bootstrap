@@ -38,7 +38,7 @@ This is **not paper trading**. When armed it sends real Coinbase orders. It does
 1. This is a narrow experimental one-shot live RSS entry test, not an unattended production risk engine. `preparing`, `submitted` and `unknown` intents **block further orders indefinitely until manual reconciliation**. It does **not** automatically close positions. The attached stop/TP parameters are attempted through Coinbase's native order preview, but acceptance and protection must be verified against the actual portfolio/product. Stops are NOT guaranteed to fill, especially during price gaps or high volatility.
 2. `BTC-USD` only, BUY only; event rule is *direct official SEC spot BTC ETF approval*, excludes proposals/rumors/denials. It will probably fire infrequently. It will not trade arbitrary WatcherGuru headlines.
 3. No automatic order submission unless operator configures **all**: `PG_LIVE_TRADING=true`, `COINBASE_PORTFOLIO_ID`, `LIVE_ORDER_USD`, `LIVE_MAX_ORDER_USD`, `LIVE_MAX_DAILY_USD`. Defaults are all disabled / zero, and the program contains **no paper branch**.
-4. Coinbase preview / trade permissions are required; errors fail closed. Network timeout after POST freezes `unknown` intent, never resubmits automatically. Existing TSY credentials are mounted read-only, do not print/copy them.
+4. Coinbase preview / trade permissions are required; errors fail closed. Failures before `create_order` (arming, caps, preflight, spread, preview, fees, read-side SDK errors) close the intent as `rejected` and do not block later signals; any failure during/after `create_order` (e.g. a network timeout after POST) freezes an `unknown` intent and never resubmits automatically. Only a dedicated Coinbase-only secret file (`COINBASE_ENV_FILE`) is mounted read-only; the shared TSY `.env` is never mounted.
 5. No strategy performance claims; news latency, slippage, feed updating, market impact and bracket suitability have not been live-tested or measured.
 
 ## Local health checks and Telegram news
@@ -58,7 +58,7 @@ On your Mac, after downloading and unzipping this package, run:
 sh scripts/install_over_ssh.sh 'YOUR_INSTABOX_USER@ssh.instabox.sh'
 ```
 
-The script checks the exact hostname and uploads only code. On a new host, before startup create `secrets/chat-id` as a private local file containing the authorized Telegram recipient ID (no bot token); the script deliberately refuses to invent or commit a recipient ID. The existing InstaBox deployment already has this file and can be upgraded without changing it. The sidecar starts **not armed** alongside a local health monitor. Before changing `PG_LIVE_TRADING` to true, validate your Coinbase dedicated portfolio's trade permissions, preview support, and set a real order budget and fee/stop policy.
+The script checks the exact hostname and uploads only code. It creates an empty `secrets/coinbase.env` (0600) if missing and requires `COINBASE_ENV_FILE` in `.env`; it refuses to rebuild/restart (exit 3) when `.env` is armed or customized (`PG_LIVE_TRADING` not `false`). Existing deployments must add `COINBASE_ENV_FILE=./secrets/coinbase.env` and remove the obsolete `TSY_ENV_FILE`, `RSS_BOT_TOKEN_FILE` entries and `secrets/chat-id` (no longer mounted: the health monitor sends no Telegram messages). The sidecar starts **not armed** alongside a local health monitor. Before changing `PG_LIVE_TRADING` to true, validate your Coinbase dedicated portfolio's trade permissions, preview support, and set a real order budget and fee/stop policy.
 
 Inspect:
 
@@ -67,7 +67,7 @@ ssh -p 2222 YOUR_INSTABOX_USER@ssh.instabox.sh \
   'cd "$HOME/pg-rss-tsy-live" && docker compose ps && docker compose logs --tail=50'
 ```
 
-Do not paste Coinbase private keys or Telegram Bot Token into chat. If keys are in a different TSY-owned file, update `TSY_ENV_FILE` to the exact existing location without copying them.
+Do not paste Coinbase private keys or Telegram Bot Token into chat. Put **only** `COINBASE_API_KEY_NAME` and `COINBASE_API_PRIVATE_KEY` into `secrets/coinbase.env` (mode 0600) on the host; do not point `COINBASE_ENV_FILE` at the shared TSY `.env`, which also contains Hyperliquid, Binance and Telegram secrets. The worker ignores any non-`COINBASE_*` line in that file and reads arming/limits only from the sidecar's Compose environment.
 
 ## Explicit LIVE arming — only after trade key/portfolio preview is accepted
 

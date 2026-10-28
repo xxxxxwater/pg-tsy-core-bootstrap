@@ -42,8 +42,10 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(make_intent_id('e1'),make_intent_id('e2'))
     def test_hard_arm(self):
         arm={'PG_LIVE_TRADING':'true','COINBASE_PORTFOLIO_ID':'portfolio-1','LIVE_ORDER_USD':'10',
-             'LIVE_MAX_ORDER_USD':'10','LIVE_MAX_DAILY_USD':'10'}
+             'LIVE_MAX_ORDER_USD':'10','LIVE_MAX_DAILY_USD':'10',
+             'COINBASE_API_KEY_NAME':'k','COINBASE_API_PRIVATE_KEY':'p'}
         self.assertTrue(is_armed(arm)[0]);self.assertFalse(is_armed(dict(arm,PG_LIVE_TRADING='false'))[0]);
         self.assertFalse(is_armed(dict(arm,LIVE_ORDER_USD='100'))[0]);
         self.assertFalse(is_armed(dict(arm,COINBASE_PORTFOLIO_ID=''))[0]);
+        self.assertFalse(is_armed(dict(arm,COINBASE_API_PRIVATE_KEY=''))[0]);
 if __name__=='__main__':unittest.main()

@@ -11,6 +11,10 @@ from core import make_signal,make_intent_id,OFFICIAL_SOURCE_IDS
 from shared import db,alert,status
 
 RSS='/rss/events.db'
+# Dedicated Coinbase-only secret file (COINBASE_* keys). Never mount the shared
+# TSY .env here: it also holds Hyperliquid/Binance/Telegram secrets.
+COINBASE_ENV='/run/coinbase-env'
+ARM_KEYS={'PG_LIVE_TRADING','COINBASE_PORTFOLIO_ID','LIVE_ORDER_USD','LIVE_MAX_ORDER_USD','LIVE_MAX_DAILY_USD'}
 
 def load_env(path):
     items={}
@@ -19,9 +23,17 @@ def load_env(path):
         if not raw or raw.startswith('#') or '=' not in raw:continue
         k,v=raw.split('=',1)
         k=k.strip().removeprefix('export ')
-        # Support the format used by the existing TSY environment file.
+        # Defense in depth: keep only Coinbase settings even if the file has more.
+        if not k.startswith('COINBASE_'):continue
         items[k]=v.strip().strip('"').strip("'")
     return items
+
+
+def load_runtime_env():
+    env=load_env(COINBASE_ENV)
+    # Arming and limits come only from the sidecar's own Compose environment.
+    env.update({k:v for k,v in os.environ.items() if k in ARM_KEYS})
+    return env
 
 
 def inspect_events(now):
@@ -40,6 +52,8 @@ def inspect_events(now):
 def is_armed(env):
     if env.get('PG_LIVE_TRADING')!='true':return False,'PG_LIVE_TRADING is not true'
     if not env.get('COINBASE_PORTFOLIO_ID'):return False,'dedicated Coinbase portfolio not configured'
+    if not env.get('COINBASE_API_KEY_NAME') or not env.get('COINBASE_API_PRIVATE_KEY'):
+        return False,'Coinbase API credentials not configured'
     try:
         q=Decimal(env.get('LIVE_ORDER_USD','0'))
         cap=Decimal(env.get('LIVE_MAX_ORDER_USD','0'))
@@ -113,8 +127,7 @@ def process_rows(conn,env,armed,rows,now):
 def run():
     Path('/state').mkdir(exist_ok=True)
     conn=db()
-    env=load_env('/run/tsy-env')
-    env.update({k:v for k,v in os.environ.items() if k in {'PG_LIVE_TRADING','COINBASE_PORTFOLIO_ID','LIVE_ORDER_USD','LIVE_MAX_ORDER_USD','LIVE_MAX_DAILY_USD'}})
+    env=load_runtime_env()
     ok,reason=is_armed(env)
     # Initial boot is only a baseline; no retroactive trading on old articles.
     if not conn.execute("SELECT value FROM meta WHERE key='baseline'").fetchone():
@@ -125,8 +138,7 @@ def run():
     while True:
         now=int(time.time())
         try:
-            env=load_env('/run/tsy-env')
-            env.update({k:v for k,v in os.environ.items() if k in {'PG_LIVE_TRADING','COINBASE_PORTFOLIO_ID','LIVE_ORDER_USD','LIVE_MAX_ORDER_USD','LIVE_MAX_DAILY_USD'}})
+            env=load_runtime_env()
             armed,reason=is_armed(env)
             process_rows(conn,env,armed,inspect_events(now),now)
             status(conn,'coinbase_live','armed' if armed else 'not_armed',reason)

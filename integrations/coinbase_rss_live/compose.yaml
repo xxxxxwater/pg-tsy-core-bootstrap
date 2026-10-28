@@ -15,7 +15,9 @@ services:
       LIVE_MAX_DAILY_USD: ${LIVE_MAX_DAILY_USD:-0}
     volumes:
       - ${RSS_DATA_DIR:?}:/rss:ro
-      - ${TSY_ENV_FILE:?}:/run/tsy-env:ro
+      # Coinbase-only secret file (COINBASE_API_KEY_NAME / COINBASE_API_PRIVATE_KEY).
+      # Never mount the shared TSY .env (Hyperliquid/Binance/Telegram secrets).
+      - ${COINBASE_ENV_FILE:?set COINBASE_ENV_FILE to a 0600 Coinbase-only env file}:/run/coinbase-env:ro
       - ./state:/state
     read_only: true
     cap_drop: ["ALL"]
@@ -32,9 +34,8 @@ services:
     command: ["python","/app/monitor.py"]
     depends_on: [live-strategy]
     volumes:
+      # monitor.py is local-only (no Telegram delivery): no secrets mounted.
       - ./state:/state
-      - ${RSS_BOT_TOKEN_FILE:?}:/run/telegram-token:ro
-      - ./secrets/chat-id:/run/chat-id:ro
     read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
