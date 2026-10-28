@@ -79,7 +79,10 @@ class PersistenceTests(unittest.TestCase):
             c = service.open_state(str(Path(d) / "state.sqlite"))
             with patch.object(service, "new_feed_candidates", return_value=0):
                 with patch.object(service, "check_health", return_value=(["RSS down"], [])):
-                    for now in (1000, 1060, 1120, 1180):
+                    # Realistic epoch seconds: the first tick is far past
+                    # HEARTBEAT_SECONDS since the unset (0) last_heartbeat.
+                    base = 1_700_000_000
+                    for now in (base, base + 60, base + 120, base + 180):
                         service.tick(c, now)
             kinds = [row[0] for row in c.execute("SELECT kind FROM outbox").fetchall()]
             self.assertEqual(kinds.count("alert"), 1)
