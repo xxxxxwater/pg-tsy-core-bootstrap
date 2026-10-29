@@ -79,6 +79,12 @@ def handle_signal(con,env,signal,now):
     if existing:
         alert(con,'risk','⛔ Coinbase LIVE 风控阻断：存在未完成或需对账订单，拒绝增加新敞口。')
         return
+    # One intent per event (event_id is the PRIMARY KEY). A `rejected` intent does
+    # not block other events, but a priority/trust change gives the same event a
+    # new inspected fingerprint; never re-trade it or crash on the INSERT.
+    if con.execute("SELECT 1 FROM intents WHERE event_id=?",(signal.event_id,)).fetchone():
+        alert(con,'risk','⛔ Coinbase LIVE 风控拒绝：该事件已有下单意图记录，不重复下单。')
+        return
     broker=coinbase_live.LiveCoinbase(env)
     # Verify all read-side requirements before creating durable order intent.
     broker.preflight(signal.product)

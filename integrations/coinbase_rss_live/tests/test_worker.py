@@ -62,6 +62,23 @@ class SubmitOutcomeTests(Base):
         self.run_with(None)
         self.assertIsNone(self.con.execute("SELECT 1 FROM intents WHERE event_id='ev2'").fetchone())
 
+    def test_resurfaced_event_with_rejected_intent_is_not_retraded(self):
+        # A priority/trust change gives the same event a new inspected
+        # fingerprint; its earlier `rejected` intent does not block globally.
+        self.run_with(PreSubmitRejected('spread or order cap gate blocked'))
+        self.assertEqual(self.state(),'rejected')
+        calls=[]
+        class Broker:
+            def __init__(self,env):calls.append('init')
+            def preflight(self,product):calls.append('preflight')
+            def submit_market_with_protection(self,*a):
+                calls.append('submit');return {'order_id':'o2'}
+        with patch.object(coinbase_live,'LiveCoinbase',Broker):
+            worker.handle_signal(self.con,ENV,self.signal,1000)
+        self.assertEqual(calls,[])
+        self.assertEqual(self.state(),'rejected')
+        self.assertEqual(self.con.execute('SELECT count(*) FROM intents').fetchone()[0],1)
+
 
 class AdapterBoundaryTests(unittest.TestCase):
     """Only failures before create_order are PreSubmitRejected."""
