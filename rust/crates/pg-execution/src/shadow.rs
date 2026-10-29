@@ -132,6 +132,41 @@ impl ShadowBook {
         }
         self.positions.insert(asset.to_string(), position);
     }
+
+    /// Reject a reduce-only order that would increase exposure or cross through flat.
+    ///
+    /// This is a software guard with the same timing-window caveat the IBKR adapter
+    /// documents: it is not a venue-native atomic reduce-only primitive.
+    fn guard_reduce_only(
+        &self,
+        asset: &str,
+        side: Side,
+        quantity: Decimal,
+    ) -> Result<(), ExecutionError> {
+        if quantity <= Decimal::ZERO {
+            return Err(ExecutionError::Rejected(
+                "reduce-only quantity must be positive".into(),
+            ));
+        }
+        let current = self.position(asset).net_quantity;
+        if current.is_zero() {
+            return Err(ExecutionError::Rejected(format!(
+                "reduce-only order for {asset} rejected: position is flat"
+            )));
+        }
+        let delta = Self::signed(quantity, side);
+        if sign_of(current) == sign_of(delta) {
+            return Err(ExecutionError::Rejected(format!(
+                "reduce-only order for {asset} rejected: would increase exposure"
+            )));
+        }
+        if sign_of(current + delta) == sign_of(delta) {
+            return Err(ExecutionError::Rejected(format!(
+                "reduce-only order for {asset} rejected: would cross through flat"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// In-memory venue stand-in. Cloneable; clones share the same book.
@@ -271,41 +306,6 @@ impl ShadowExecutionAdapter {
             .find(|order| order.client_order_id.as_deref() == Some(client_order_id))
             .cloned()
     }
-
-    /// Reject a reduce-only order that would increase exposure or cross through flat.
-    ///
-    /// This is a software guard with the same timing-window caveat the IBKR adapter
-    /// documents: it is not a venue-native atomic reduce-only primitive.
-    fn guard_reduce_only(
-        &self,
-        asset: &str,
-        side: Side,
-        quantity: Decimal,
-    ) -> Result<(), ExecutionError> {
-        if quantity <= Decimal::ZERO {
-            return Err(ExecutionError::Rejected(
-                "reduce-only quantity must be positive".into(),
-            ));
-        }
-        let current = self.position(asset).net_quantity;
-        if current.is_zero() {
-            return Err(ExecutionError::Rejected(format!(
-                "reduce-only order for {asset} rejected: position is flat"
-            )));
-        }
-        let delta = ShadowBook::signed(quantity, side);
-        if sign_of(current) == sign_of(delta) {
-            return Err(ExecutionError::Rejected(format!(
-                "reduce-only order for {asset} rejected: would increase exposure"
-            )));
-        }
-        if sign_of(current + delta) == sign_of(delta) {
-            return Err(ExecutionError::Rejected(format!(
-                "reduce-only order for {asset} rejected: would cross through flat"
-            )));
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -322,14 +322,12 @@ impl ExecutionAdapter for ShadowExecutionAdapter {
                 "order quantity must be positive".into(),
             ));
         }
-        if intent.effect == ExposureEffect::ReduceOnly {
-            self.guard_reduce_only(&intent.asset, intent.side, intent.quantity)?;
-        }
-
         let client_order_id = intent.client_order_id();
         let mut book = self.book.lock().expect("shadow book lock poisoned");
 
         // Idempotency: a replayed intent must adopt the existing order, never duplicate it.
+        // This runs before the reduce-only guard: once a reduce-only order has filled
+        // (possibly to flat), its replay must still be adopted rather than rejected.
         if let Some(existing) = book
             .orders
             .iter()
@@ -339,6 +337,11 @@ impl ExecutionAdapter for ShadowExecutionAdapter {
                 venue_order_id: existing.venue_order_id.clone(),
                 client_order_id,
             });
+        }
+        // Checked under the same lock that applies the fill, so concurrent
+        // reduce-only submits cannot both pass against the same position.
+        if intent.effect == ExposureEffect::ReduceOnly {
+            book.guard_reduce_only(&intent.asset, intent.side, intent.quantity)?;
         }
 
         book.next_order_id = book.next_order_id.saturating_add(1);
@@ -612,6 +615,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(adapter.position("HYPE").net_quantity, Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn replayed_reduce_only_is_adopted_after_it_flattened_the_position() {
+        let adapter = adapter(ShadowFillMode::ImmediateFill);
+        adapter.set_reference_price(d(10));
+        adapter
+            .submit(&intent("HYPE", Side::Buy, d(2), ExposureEffect::Increase))
+            .await
+            .unwrap();
+        let exit = intent("HYPE", Side::Sell, d(2), ExposureEffect::ReduceOnly);
+        let first = adapter.submit(&exit).await.unwrap();
+        assert_eq!(adapter.position("HYPE").net_quantity, Decimal::ZERO);
+
+        // Crash-recovery replay of the same journaled intent: the position is now
+        // flat, but the order exists, so it must be adopted, not rejected.
+        let replay = adapter.submit(&exit).await.unwrap();
+        assert_eq!(first.venue_order_id, replay.venue_order_id);
+        assert_eq!(adapter.position("HYPE").net_quantity, Decimal::ZERO);
+        assert_eq!(adapter.filled_quantity(&first.client_order_id), d(2));
     }
 
     #[tokio::test]
