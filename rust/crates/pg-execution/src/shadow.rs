@@ -125,7 +125,18 @@ impl ShadowBook {
             (false, _) if !resulting.is_zero() && sign_of(previous) != sign_of(resulting) => price,
             _ => position.average_entry_price,
         };
-        position.filled_entries = position.filled_entries.saturating_add(1);
+        // Same semantics as the live daemon's position view: count fills that
+        // built the current position. Reductions do not add an entry, a flip
+        // starts a new position and a flat position has no entries.
+        position.filled_entries = if resulting.is_zero() {
+            0
+        } else if previous.is_zero() || sign_of(previous) == sign_of(delta) {
+            position.filled_entries.saturating_add(1)
+        } else if sign_of(previous) != sign_of(resulting) {
+            1
+        } else {
+            position.filled_entries
+        };
         position.net_quantity = resulting;
         if resulting.is_zero() {
             position.average_entry_price = None;
@@ -504,6 +515,38 @@ mod tests {
         assert_eq!(position.filled_entries, 1);
         // A filled order is no longer resting.
         assert_eq!(adapter.open_orders().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn filled_entries_count_only_fills_that_built_the_current_position() {
+        let adapter = adapter(ShadowFillMode::ImmediateFill);
+        adapter.set_reference_price(d(10));
+        let submit = |side, quantity, effect| {
+            let adapter = adapter.clone();
+            async move {
+                adapter
+                    .submit(&intent("HYPE", side, quantity, effect))
+                    .await
+                    .unwrap();
+                adapter.position("HYPE").filled_entries
+            }
+        };
+        assert_eq!(submit(Side::Buy, d(2), ExposureEffect::Increase).await, 1);
+        assert_eq!(submit(Side::Buy, d(1), ExposureEffect::Increase).await, 2);
+        // A partial exit is not an entry.
+        assert_eq!(
+            submit(Side::Sell, d(1), ExposureEffect::ReduceOnly).await,
+            2
+        );
+        // Flat has no entries, so a re-entry starts a new ladder.
+        assert_eq!(
+            submit(Side::Sell, d(2), ExposureEffect::ReduceOnly).await,
+            0
+        );
+        assert_eq!(submit(Side::Sell, d(1), ExposureEffect::Increase).await, 1);
+        // A crossing fill starts a new position on the other side.
+        assert_eq!(submit(Side::Buy, d(3), ExposureEffect::Increase).await, 1);
+        assert_eq!(adapter.position("HYPE").net_quantity, d(2));
     }
 
     #[tokio::test]
