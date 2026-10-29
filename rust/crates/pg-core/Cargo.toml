@@ -3,6 +3,9 @@ name = "pg-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# `src/bin/pg-sim.rs` adds a second binary; keep `cargo run -p pg-core` (Makefile
+# strategy-validate/strategy-replay/policy-replay and the docs) unambiguous.
+default-run = "pg-core"
 
 [features]
 default = ["hyperliquid-marketdata"]
