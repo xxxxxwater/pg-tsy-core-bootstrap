@@ -125,12 +125,58 @@ impl ShadowBook {
             (false, _) if !resulting.is_zero() && sign_of(previous) != sign_of(resulting) => price,
             _ => position.average_entry_price,
         };
-        position.filled_entries = position.filled_entries.saturating_add(1);
+        // Same semantics as the live daemon's position view: count fills that
+        // built the current position. Reductions do not add an entry, a flip
+        // starts a new position and a flat position has no entries.
+        position.filled_entries = if resulting.is_zero() {
+            0
+        } else if previous.is_zero() || sign_of(previous) == sign_of(delta) {
+            position.filled_entries.saturating_add(1)
+        } else if sign_of(previous) != sign_of(resulting) {
+            1
+        } else {
+            position.filled_entries
+        };
         position.net_quantity = resulting;
         if resulting.is_zero() {
             position.average_entry_price = None;
         }
         self.positions.insert(asset.to_string(), position);
+    }
+
+    /// Reject a reduce-only order that would increase exposure or cross through flat.
+    ///
+    /// This is a software guard with the same timing-window caveat the IBKR adapter
+    /// documents: it is not a venue-native atomic reduce-only primitive.
+    fn guard_reduce_only(
+        &self,
+        asset: &str,
+        side: Side,
+        quantity: Decimal,
+    ) -> Result<(), ExecutionError> {
+        if quantity <= Decimal::ZERO {
+            return Err(ExecutionError::Rejected(
+                "reduce-only quantity must be positive".into(),
+            ));
+        }
+        let current = self.position(asset).net_quantity;
+        if current.is_zero() {
+            return Err(ExecutionError::Rejected(format!(
+                "reduce-only order for {asset} rejected: position is flat"
+            )));
+        }
+        let delta = Self::signed(quantity, side);
+        if sign_of(current) == sign_of(delta) {
+            return Err(ExecutionError::Rejected(format!(
+                "reduce-only order for {asset} rejected: would increase exposure"
+            )));
+        }
+        if sign_of(current + delta) == sign_of(delta) {
+            return Err(ExecutionError::Rejected(format!(
+                "reduce-only order for {asset} rejected: would cross through flat"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -271,41 +317,6 @@ impl ShadowExecutionAdapter {
             .find(|order| order.client_order_id.as_deref() == Some(client_order_id))
             .cloned()
     }
-
-    /// Reject a reduce-only order that would increase exposure or cross through flat.
-    ///
-    /// This is a software guard with the same timing-window caveat the IBKR adapter
-    /// documents: it is not a venue-native atomic reduce-only primitive.
-    fn guard_reduce_only(
-        &self,
-        asset: &str,
-        side: Side,
-        quantity: Decimal,
-    ) -> Result<(), ExecutionError> {
-        if quantity <= Decimal::ZERO {
-            return Err(ExecutionError::Rejected(
-                "reduce-only quantity must be positive".into(),
-            ));
-        }
-        let current = self.position(asset).net_quantity;
-        if current.is_zero() {
-            return Err(ExecutionError::Rejected(format!(
-                "reduce-only order for {asset} rejected: position is flat"
-            )));
-        }
-        let delta = ShadowBook::signed(quantity, side);
-        if sign_of(current) == sign_of(delta) {
-            return Err(ExecutionError::Rejected(format!(
-                "reduce-only order for {asset} rejected: would increase exposure"
-            )));
-        }
-        if sign_of(current + delta) == sign_of(delta) {
-            return Err(ExecutionError::Rejected(format!(
-                "reduce-only order for {asset} rejected: would cross through flat"
-            )));
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -322,14 +333,12 @@ impl ExecutionAdapter for ShadowExecutionAdapter {
                 "order quantity must be positive".into(),
             ));
         }
-        if intent.effect == ExposureEffect::ReduceOnly {
-            self.guard_reduce_only(&intent.asset, intent.side, intent.quantity)?;
-        }
-
         let client_order_id = intent.client_order_id();
         let mut book = self.book.lock().expect("shadow book lock poisoned");
 
         // Idempotency: a replayed intent must adopt the existing order, never duplicate it.
+        // This runs before the reduce-only guard: once a reduce-only order has filled
+        // (possibly to flat), its replay must still be adopted rather than rejected.
         if let Some(existing) = book
             .orders
             .iter()
@@ -339,6 +348,11 @@ impl ExecutionAdapter for ShadowExecutionAdapter {
                 venue_order_id: existing.venue_order_id.clone(),
                 client_order_id,
             });
+        }
+        // Checked under the same lock that applies the fill, so concurrent
+        // reduce-only submits cannot both pass against the same position.
+        if intent.effect == ExposureEffect::ReduceOnly {
+            book.guard_reduce_only(&intent.asset, intent.side, intent.quantity)?;
         }
 
         book.next_order_id = book.next_order_id.saturating_add(1);
@@ -504,6 +518,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn filled_entries_count_only_fills_that_built_the_current_position() {
+        let adapter = adapter(ShadowFillMode::ImmediateFill);
+        adapter.set_reference_price(d(10));
+        let submit = |side, quantity, effect| {
+            let adapter = adapter.clone();
+            async move {
+                adapter
+                    .submit(&intent("HYPE", side, quantity, effect))
+                    .await
+                    .unwrap();
+                adapter.position("HYPE").filled_entries
+            }
+        };
+        assert_eq!(submit(Side::Buy, d(2), ExposureEffect::Increase).await, 1);
+        assert_eq!(submit(Side::Buy, d(1), ExposureEffect::Increase).await, 2);
+        // A partial exit is not an entry.
+        assert_eq!(
+            submit(Side::Sell, d(1), ExposureEffect::ReduceOnly).await,
+            2
+        );
+        // Flat has no entries, so a re-entry starts a new ladder.
+        assert_eq!(
+            submit(Side::Sell, d(2), ExposureEffect::ReduceOnly).await,
+            0
+        );
+        assert_eq!(submit(Side::Sell, d(1), ExposureEffect::Increase).await, 1);
+        // A crossing fill starts a new position on the other side.
+        assert_eq!(submit(Side::Buy, d(3), ExposureEffect::Increase).await, 1);
+        assert_eq!(adapter.position("HYPE").net_quantity, d(2));
+    }
+
+    #[tokio::test]
     async fn unmatched_test_position_has_no_order_evidence() {
         let adapter = adapter(ShadowFillMode::ImmediateFill);
         adapter.inject_unmatched_position_for_test("PG_TEST_GHOST", d(3));
@@ -612,6 +658,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(adapter.position("HYPE").net_quantity, Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn replayed_reduce_only_is_adopted_after_it_flattened_the_position() {
+        let adapter = adapter(ShadowFillMode::ImmediateFill);
+        adapter.set_reference_price(d(10));
+        adapter
+            .submit(&intent("HYPE", Side::Buy, d(2), ExposureEffect::Increase))
+            .await
+            .unwrap();
+        let exit = intent("HYPE", Side::Sell, d(2), ExposureEffect::ReduceOnly);
+        let first = adapter.submit(&exit).await.unwrap();
+        assert_eq!(adapter.position("HYPE").net_quantity, Decimal::ZERO);
+
+        // Crash-recovery replay of the same journaled intent: the position is now
+        // flat, but the order exists, so it must be adopted, not rejected.
+        let replay = adapter.submit(&exit).await.unwrap();
+        assert_eq!(first.venue_order_id, replay.venue_order_id);
+        assert_eq!(adapter.position("HYPE").net_quantity, Decimal::ZERO);
+        assert_eq!(adapter.filled_quantity(&first.client_order_id), d(2));
     }
 
     #[tokio::test]

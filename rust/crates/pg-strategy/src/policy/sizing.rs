@@ -57,12 +57,14 @@ impl DcaLadderSizing {
 
     pub fn next_quote_amount(&self, context: &StrategyContext<'_>) -> Option<Decimal> {
         self.validate().ok()?;
-        let current_return = context.position.unrealized_return?;
         let filled_entries = usize::try_from(context.position.filled_entries).ok()?;
         let remaining = self.remaining_position_quote(context)?;
         if filled_entries == 0 {
+            // A flat position has no entry price, so both daemons report no
+            // unrealized return; the first entry must not depend on it.
             return Some(self.initial_quote.min(remaining));
         }
+        let current_return = context.position.unrealized_return?;
         let trigger_index = filled_entries.checked_sub(1)?;
         let trigger = *self.triggers.get(trigger_index)?;
         if current_return > -trigger {
@@ -180,6 +182,18 @@ mod tests {
         position.net_quantity = Decimal::ZERO;
         position.average_entry_price = None;
         assert_eq!(quote_for(&ladder(), &position), Some(Decimal::from(1000)));
+    }
+
+    #[test]
+    fn dca_first_entry_on_flat_position_needs_no_unrealized_return() {
+        // What the shadow and live daemons report for a flat instrument.
+        let flat = PositionView::default();
+        assert_eq!(flat.unrealized_return, None);
+        assert_eq!(quote_for(&ladder(), &flat), Some(Decimal::from(1000)));
+        // Safety orders still require a valued return.
+        let mut held = held(10, 100, 1, -0.04);
+        held.unrealized_return = None;
+        assert_eq!(quote_for(&ladder(), &held), None);
     }
 
     #[test]
