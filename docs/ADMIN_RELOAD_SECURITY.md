@@ -28,4 +28,27 @@ Do not enable this operation on a publicly exposed plaintext HTTP listener. Pref
 
 ## Regression proof
 
+### Local management client
+
+`make reload` requires Python 3 and uses `scripts/admin_reload.py`. Provision
+`PG_ADMIN_TOKEN` into the client's environment from your protected secret manager,
+then run `make reload` without a token assignment on the command line. The client
+connects only to `127.0.0.1` on `PG_HEALTH_PORT` (default 8080); it does not use
+HTTP proxies or follow redirects. For a remote daemon, establish an approved
+local management tunnel first. This helper does not configure or enable the
+daemon's admin endpoint.
+
+The client rejects missing/invalid credentials before connecting, sends one
+Bearer header in memory, and uses a 10-second socket timeout. Credentials never
+appear in subprocess arguments, response output, or exception messages. Protect
+access to the client's environment as well as the daemon's. Only HTTP 202
+returns success: it confirms the request was accepted, not that strategy
+validation or the swap completed. Check daemon status separately. Other HTTP
+statuses and connection/protocol failures return nonzero through make.
+
+Run the offline client regressions with
+`python3 -m unittest discover -s scripts -p 'test_admin_reload.py' -v`.
+They use dummy credentials and ephemeral loopback mocks only. The
+`admin-reload-client` CI job runs them independently of the trading runtime.
+
 `health.rs` contains token validation, HTTP parser tests and loopback TCP tests asserting no control message on absent/wrong tokens, a single reload message on valid authorization, and unaffected anonymous health reads. Run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test -p pg-core --bin pg-core health::tests` from `rust/`. CI results must match the final exact merge SHA; a passing unit test does not prove external account safety or a secure network deployment.

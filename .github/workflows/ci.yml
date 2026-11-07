@@ -4,6 +4,15 @@ on:
   pull_request:
 
 jobs:
+  admin-reload-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python3 -m unittest discover -s scripts -p 'test_admin_reload.py' -v
+
   python:
     runs-on: ubuntu-latest
     defaults:
