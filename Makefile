@@ -52,7 +52,7 @@ ready:
 # Ask the running daemon to re-validate and swap strategy definitions in place.
 # The operator surface can never submit, cancel or flatten anything directly.
 reload:
-	curl --fail --silent --request POST http://127.0.0.1:$${PG_HEALTH_PORT:-8080}/admin/reload; echo
+	@python3 scripts/admin_reload.py
 
 metrics:
 	curl --fail --silent http://127.0.0.1:$${PG_HEALTH_PORT:-8080}/metrics
