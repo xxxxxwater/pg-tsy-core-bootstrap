@@ -67,7 +67,7 @@ class Signal:
         )
 
     def is_expired(self, now_ns: int | None = None) -> bool:
-        return (now_ns or time.time_ns()) >= self.expires_at_ns
+        return (time.time_ns() if now_ns is None else now_ns) >= self.expires_at_ns
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"), sort_keys=True)
