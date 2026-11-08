@@ -231,6 +231,13 @@ impl MatchingEngine {
                 ));
             }
             if !crosses {
+                if matches!(
+                    record.order.time_in_force,
+                    TimeInForce::Ioc | TimeInForce::Fok
+                ) {
+                    record.state = SimOrderState::Canceled;
+                    return Ok(MatchOutcome::Canceled);
+                }
                 return Ok(MatchOutcome::Resting);
             }
 
@@ -402,6 +409,67 @@ mod tests {
             reduce_only: false,
             display_quantity: None,
             contingency: None,
+        }
+    }
+
+    #[test]
+    fn noncrossing_immediate_orders_cancel_and_cannot_fill_later() {
+        for side in [SimSide::Buy, SimSide::Sell] {
+            for tif in [TimeInForce::Ioc, TimeInForce::Fok] {
+                let mut engine = MatchingEngine::default();
+                let price = if side == SimSide::Buy { 98 } else { 101 };
+                let order = limit(side, 1, price, tif);
+                let id = order.order_id;
+                engine.submit(order, true).unwrap();
+                assert_eq!(
+                    engine
+                        .match_once(id, market(MarketPhase::Continuous), d(0))
+                        .unwrap(),
+                    MatchOutcome::Canceled
+                );
+                assert_eq!(engine.record(id).unwrap().state, SimOrderState::Canceled);
+                assert_eq!(engine.record(id).unwrap().filled_quantity, Decimal::ZERO);
+
+                let mut later = market(MarketPhase::Continuous);
+                later.bid_price = d(price);
+                later.ask_price = d(price);
+                later.now_ns += 1;
+                assert_eq!(
+                    engine.match_once(id, later, d(0)).unwrap(),
+                    MatchOutcome::Canceled
+                );
+                assert_eq!(engine.record(id).unwrap().state, SimOrderState::Canceled);
+                assert_eq!(engine.record(id).unwrap().filled_quantity, Decimal::ZERO);
+            }
+        }
+    }
+
+    #[test]
+    fn noncrossing_gtc_orders_can_fill_later() {
+        for side in [SimSide::Buy, SimSide::Sell] {
+            let mut engine = MatchingEngine::default();
+            let price = if side == SimSide::Buy { 98 } else { 101 };
+            let order = limit(side, 1, price, TimeInForce::Gtc);
+            let id = order.order_id;
+            engine.submit(order, true).unwrap();
+            assert_eq!(
+                engine
+                    .match_once(id, market(MarketPhase::Continuous), d(0))
+                    .unwrap(),
+                MatchOutcome::Resting
+            );
+            assert_eq!(engine.record(id).unwrap().state, SimOrderState::Resting);
+            assert_eq!(engine.record(id).unwrap().filled_quantity, Decimal::ZERO);
+            let mut later = market(MarketPhase::Continuous);
+            later.bid_price = d(price);
+            later.ask_price = d(price);
+            later.now_ns += 1;
+            assert!(matches!(
+                engine.match_once(id, later, d(0)).unwrap(),
+                MatchOutcome::Filled(_)
+            ));
+            assert_eq!(engine.record(id).unwrap().state, SimOrderState::Filled);
+            assert_eq!(engine.record(id).unwrap().filled_quantity, d(1));
         }
     }
 

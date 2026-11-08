@@ -180,6 +180,27 @@ mod tests {
     }
 
     #[test]
+    fn jsonl_noncrossing_immediate_orders_are_canceled_without_fills() {
+        for (side, price) in [("Buy", "98"), ("Sell", "101")] {
+            for tif in ["Ioc", "Fok", "Gtc"] {
+                let mut input: Value = serde_json::from_str(&request()).unwrap();
+                input["order"]["side"] = json!(side);
+                input["order"]["limit_price"] = json!(price);
+                input["order"]["time_in_force"] = json!(tif);
+                let response = handle_line(&input.to_string());
+                let expected = if tif == "Gtc" { "Resting" } else { "Canceled" };
+                assert_eq!(response["request_id"], 7);
+                assert_eq!(response["result"]["ok"], true);
+                assert_eq!(response["result"]["outcome"], expected);
+                assert_eq!(response["result"]["state"], expected);
+                assert_eq!(response["result"]["filled_quantity"], "0");
+                assert_eq!(response["result"]["remaining_quantity"], "2");
+                assert!(response["result"]["fill"].is_null());
+            }
+        }
+    }
+
+    #[test]
     fn malformed_input_fails_without_inventing_a_fill() {
         let response = handle_line("not-json");
         assert_eq!(response["result"]["ok"], false);
