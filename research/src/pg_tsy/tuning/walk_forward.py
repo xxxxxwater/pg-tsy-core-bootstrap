@@ -23,6 +23,9 @@ def purged_walk_forward(
 ) -> list[WalkForwardFold]:
     if min(n_samples, train_size, test_size) <= 0 or purge_size < 0:
         raise ValueError("invalid split sizes")
+    if step_size is not None and step_size < 0:
+        raise ValueError("step_size must be non-negative")
+    # Preserve the existing zero-as-default convention.
     step = step_size or test_size
     folds: list[WalkForwardFold] = []
     train_start = 0
