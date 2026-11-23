@@ -2,6 +2,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,6 +64,10 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(service.new_feed_candidates(state, rss_db, 1010), 0)
             c = sqlite3.connect(rss_db)
             c.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?)",
+                      ("malformed", "SEC approves spot Bitcoin ETF for listing", "SEC Press Releases",
+                       "P1", "A", 1019, "not a timestamp", 1019))
+            c.execute("INSERT INTO articles VALUES (?,?)", ("malformed", "sec_press"))
+            c.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?)",
                       ("new", "SEC approves spot Bitcoin ETF for listing", "SEC Press Releases",
                        "P1", "A", 1020, 1020, 1020))
             c.execute("INSERT INTO articles VALUES (?,?)", ("new","sec_press"))
@@ -73,6 +78,53 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(state.execute("SELECT COUNT(*) FROM outbox").fetchone()[0], 1)
             self.assertEqual(state.execute("SELECT COUNT(*) FROM candidates").fetchone()[0], 1)
             state.close()
+
+    def test_candidate_retries_after_outbox_insert_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            rss_db = Path(d) / "rss.sqlite"
+            state_db = Path(d) / "state.sqlite"
+            with (
+                closing(sqlite3.connect(rss_db)) as source,
+                closing(service.open_state(state_db)) as state,
+            ):
+                source.executescript("""
+                    CREATE TABLE events(
+                        id TEXT PRIMARY KEY, title TEXT, source TEXT,
+                        priority TEXT, trust TEXT, published INTEGER,
+                        discovered INTEGER, last_seen INTEGER
+                    );
+                    CREATE TABLE articles(event_id TEXT, source TEXT);
+                """)
+                self.assertEqual(service.new_feed_candidates(state, rss_db, 1000), 0)
+                source.executescript("""
+                    INSERT INTO events VALUES (
+                        'evt', 'SEC approves spot Bitcoin ETF for listing',
+                        'SEC Press Releases', 'P1', 'A', 1010, 1010, 1010
+                    );
+                    INSERT INTO articles VALUES ('evt', 'sec_press');
+                """)
+                state.executescript("""
+                    CREATE TRIGGER fail_candidate_outbox BEFORE INSERT ON outbox
+                    WHEN NEW.kind = 'candidate'
+                    BEGIN
+                        SELECT RAISE(ABORT, 'outbox insert failed');
+                    END;
+                """)
+
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "outbox insert failed"):
+                    service.new_feed_candidates(state, rss_db, 1015)
+                self.assertFalse(state.in_transaction)
+                for table in ("seen", "candidates", "outbox"):
+                    count = state.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    self.assertEqual(count, 0, table)
+
+                state.execute("DROP TRIGGER fail_candidate_outbox")
+                self.assertEqual(service.new_feed_candidates(state, rss_db, 1016), 1)
+                self.assertEqual(service.new_feed_candidates(state, rss_db, 1017), 0)
+                with closing(sqlite3.connect(state_db)) as persisted:
+                    for table in ("seen", "candidates", "outbox"):
+                        count = persisted.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        self.assertEqual(count, 1, table)
 
     def test_health_faults_are_deduplicated(self):
         with tempfile.TemporaryDirectory() as d:

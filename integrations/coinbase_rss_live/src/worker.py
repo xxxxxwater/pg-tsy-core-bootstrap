@@ -42,11 +42,18 @@ def inspect_events(now):
     try:
         # events.source is a display label; authority comes only from the stable
         # article source ID (same approach as integrations/puregamma_rss/service.py).
-        marks=','.join('?'*len(OFFICIAL_SOURCE_IDS))
-        return [dict(row) for row in con.execute(f'''SELECT e.id,e.title,e.source,e.priority,e.trust,e.published,e.last_seen,
-            (SELECT a.source FROM articles a WHERE a.event_id=e.id AND a.source IN ({marks}) LIMIT 1) AS source_id
-            FROM events e WHERE e.last_seen>=? ORDER BY e.last_seen,e.id LIMIT 100''',(*sorted(OFFICIAL_SOURCE_IDS),now-180)).fetchall()]
-    finally:con.close()
+        marks = ','.join('?' * len(OFFICIAL_SOURCE_IDS))
+        # Read the whole recent window in one snapshot. Rows already inspected
+        # on a previous poll must not hide newer, short-lived candidates.
+        rows = con.execute(f'''
+            SELECT e.id, e.title, e.source, e.priority, e.trust, e.published, e.last_seen,
+                   (SELECT a.source FROM articles a
+                    WHERE a.event_id = e.id AND a.source IN ({marks}) LIMIT 1) AS source_id
+            FROM events e WHERE e.last_seen >= ? ORDER BY e.last_seen, e.id
+        ''', (*sorted(OFFICIAL_SOURCE_IDS), now - 180))
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
 
 
 def is_armed(env):

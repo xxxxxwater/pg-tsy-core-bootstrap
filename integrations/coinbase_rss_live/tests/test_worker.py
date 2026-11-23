@@ -1,6 +1,8 @@
+import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -106,6 +108,66 @@ class ProcessRowsTests(Base):
         worker.process_rows(self.con,{},False,rows,1000)
         self.assertEqual(self.con.execute('SELECT fingerprint FROM inspected').fetchall()[0][0],'e1:None:None')
 
+    def test_rss_burst_does_not_hide_later_signals(self):
+        now = 1000
+        path = Path(self.tmp.name) / 'events.db'
+        title = 'SEC approves spot Bitcoin ETF'
+        self.con.execute("INSERT INTO meta VALUES ('baseline', '999')")
+        self.con.commit()
+
+        with closing(sqlite3.connect(path)) as source:
+            source.execute('''CREATE TABLE events(
+                id TEXT PRIMARY KEY, title TEXT, source TEXT, priority TEXT,
+                trust TEXT, published INTEGER, last_seen INTEGER)''')
+            source.execute('CREATE TABLE articles(event_id TEXT, source TEXT)')
+            source.executemany('INSERT INTO events VALUES (?,?,?,?,?,?,?)', [
+                ('before-baseline', title, 'SEC', 'P1', 'A', now - 2, now - 2),
+                ('expired', title, 'SEC', 'P1', 'A', now - 121, now),
+                ('unofficial', title, 'SEC', 'P1', 'A', now, now),
+                ('outside-window', title, 'SEC', 'P1', 'A', now, now - 181),
+                *[(f'ordinary-{i:03d}', 'Market wrap', 'News', 'P2', 'C', now, now)
+                  for i in range(96)],
+            ])
+            source.executemany('INSERT INTO articles VALUES (?,?)', [
+                ('before-baseline', 'sec_press'), ('expired', 'sec_press'),
+                ('unofficial', 'not-sec'), ('outside-window', 'sec_press'),
+            ])
+
+            expected_titles = []
+            with (
+                patch.object(worker, 'RSS', str(path)),
+                patch.object(worker, 'handle_signal') as handle_signal,
+            ):
+                for size, event_id, noise_count in (
+                    (100, 'x-first', 0), (101, 'x-second', 0), (226, 'z-final', 124),
+                ):
+                    with self.subTest(size=size):
+                        source.executemany('INSERT INTO events VALUES (?,?,?,?,?,?,?)', (
+                            (f'y-ordinary-{i:03d}', 'Market wrap', 'News', 'P2', 'C', now, now)
+                            for i in range(noise_count)
+                        ))
+                        event_title = f'{title}: {event_id}'
+                        source.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?)',
+                                       (event_id, event_title, 'SEC', 'P1', 'A', now, now))
+                        source.execute('INSERT INTO articles VALUES (?,?)', (event_id, 'sec_press'))
+                        source.commit()
+                        expected_titles.append(event_title)
+
+                        rows = worker.inspect_events(now)
+                        worker.process_rows(self.con, {}, False, rows, now)
+                        poll_again = now + 15
+                        worker.process_rows(self.con, {}, False, worker.inspect_events(poll_again), poll_again)
+                        alerts = self.con.execute(
+                            "SELECT text FROM alerts WHERE kind='signal' ORDER BY id"
+                        ).fetchall()
+                        self.assertEqual(len(rows), size)
+                        self.assertEqual(rows[-1]['id'], event_id)
+                        self.assertEqual(len(alerts), len(expected_titles))
+                        for row, expected_title in zip(alerts, expected_titles):
+                            self.assertIn(expected_title, row['text'])
+                handle_signal.assert_not_called()
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM intents').fetchone()[0], 0)
+
 class EnvFileTests(unittest.TestCase):
     def test_only_coinbase_keys_are_loaded(self):
         with tempfile.TemporaryDirectory() as d:
@@ -127,7 +189,6 @@ class EnvFileTests(unittest.TestCase):
 
 class InspectEventsTests(unittest.TestCase):
     def test_source_id_comes_from_official_article_only(self):
-        import sqlite3
         with tempfile.TemporaryDirectory() as d:
             path=str(Path(d)/'events.db');c=sqlite3.connect(path)
             c.execute('CREATE TABLE events(id TEXT,title TEXT,source TEXT,priority TEXT,trust TEXT,published INTEGER,last_seen INTEGER)')

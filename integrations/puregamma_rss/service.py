@@ -62,12 +62,14 @@ def kv_set(con, key, val):
     con.commit()
 
 
-def enqueue(con, kind, message, now):
+def enqueue(con, kind, message, now, *, commit=True):
+    """Add a notification to the outbox, optionally within a caller's transaction."""
     con.execute(
         "INSERT INTO outbox(kind,message,due_at) VALUES (?,?,?)",
         (kind, message[:3500], now),
     )
-    con.commit()
+    if commit:
+        con.commit()
 
 
 def new_feed_candidates(con, events_db=RSS_DB, now=None):
@@ -101,34 +103,38 @@ def new_feed_candidates(con, events_db=RSS_DB, now=None):
             fingerprint = row["id"] + ":" + row["priority"] + ":" + row["trust"]
             if con.execute("SELECT 1 FROM seen WHERE fingerprint=?", (fingerprint,)).fetchone():
                 continue
-            con.execute("INSERT INTO seen VALUES (?,?)", (fingerprint, now))
-            con.commit()
-            # Filter to *newly discovered* stories; subsequent poll refreshes and
-            # non-official source labels must not create a retroactive candidate.
-            if not row["discovered"] or int(row["discovered"]) < now - 130:
-                continue
-            # Event source names are display labels, not stable IDs.
-            # Explicit whitelist avoids treating community sources as official.
-            source_id = row["official_source_id"] or ""
-            event = dict(row)
-            event["source_id"] = source_id
-            c = candidate_from_event(event, now=now)
-            if c:
-                con.execute(
+            # Persist the fingerprint, candidate and outbox row together so an
+            # outbox write failure leaves the event eligible for the next poll.
+            with con:
+                con.execute("INSERT INTO seen VALUES (?,?)", (fingerprint, now))
+                # Only inspect candidates for newly discovered stories.
+                try:
+                    discovered = int(row["discovered"] or 0)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not discovered or discovered < now - 130:
+                    continue
+                # Authority comes from the stable article source ID.
+                event = dict(row)
+                event["source_id"] = row["official_source_id"] or ""
+                candidate = candidate_from_event(event, now=now)
+                if candidate is None:
+                    continue
+                inserted = con.execute(
                     "INSERT OR IGNORE INTO candidates VALUES (?,?,?,?)",
-                    (c.event_id, now, c.rule_id, c.original_title),
+                    (candidate.event_id, now, candidate.rule_id, candidate.original_title),
                 )
-                if con.execute("SELECT changes()").fetchone()[0]:
-                    enqueue(
-                        con, "candidate",
-                        "📰 事件审核候选（不可自动下单）\n"
-                        + c.original_title[:300]
-                        + "\n产品：BTC-USD\n来源：SEC\n规则：" + c.rule_id
-                        + "\n执行状态：REVIEW_REQUIRED / 无 Coinbase 下单权限",
-                        now,
-                    )
-                    count += 1
-        con.commit()
+                if not inserted.rowcount:
+                    continue
+                enqueue(
+                    con, "candidate",
+                    "📰 事件审核候选（不可自动下单）\n"
+                    + candidate.original_title[:300]
+                    + "\n产品：BTC-USD\n来源：SEC\n规则：" + candidate.rule_id
+                    + "\n执行状态：REVIEW_REQUIRED / 无 Coinbase 下单权限",
+                    now, commit=False,
+                )
+                count += 1
         return count
     finally:
         source.close()
