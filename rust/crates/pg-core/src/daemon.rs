@@ -218,6 +218,8 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
     let mut live_policy_intents: BTreeMap<String, (Venue, String)> = BTreeMap::new();
     let mut orders_journaled: u64 = 0;
     let mut reconcile_clean = true;
+    // Keep the signal listener alive while reconciliation and other branches await.
+    let mut shutdown_signal = std::pin::pin!(tokio::signal::ctrl_c());
     let result: Result<()> = loop {
         tokio::select! {
             biased;
@@ -475,7 +477,7 @@ pub async fn serve(config: RunConfig, mut registry: StrategyRegistry) -> Result<
                     snapshot.orders_journaled_total = orders_journaled;
                 }).await;
             }
-            signal = tokio::signal::ctrl_c() => {
+            signal = &mut shutdown_signal => {
                 signal?;
                 tracing::info!("shutdown signal received");
                 break Ok(());
