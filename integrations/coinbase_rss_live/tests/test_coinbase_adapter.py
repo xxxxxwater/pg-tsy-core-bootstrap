@@ -1,8 +1,9 @@
 import sys,unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-from coinbase_live import LiveCoinbase
+from coinbase_live import LiveCoinbase, PreSubmitRejected
 from core import Signal
 
 class SDK:
@@ -44,4 +45,27 @@ class AdapterTests(unittest.TestCase):
         self.adapter.c.get_api_key_permissions=lambda:{'can_trade':True,'can_view':True,'can_transfer':True,'portfolio_uuid':'dedicated'}
         with self.assertRaisesRegex(RuntimeError,'non-transfer'):
             self.adapter.preflight('BTC-USD')
+
+    def test_requires_explicit_boolean_permissions_before_preview(self):
+        sdk = self.adapter.c
+        permissions = sdk.get_api_key_permissions()
+        sdk.preview_order = Mock()
+        sdk.create_order = Mock()
+        for field, value in (
+            ('can_transfer', None), ('can_transfer', 0),
+            ('can_trade', 'false'), ('can_view', 'false'),
+        ):
+            with self.subTest(field=field, value=value):
+                response = permissions.copy()
+                if value is None:
+                    del response[field]
+                else:
+                    response[field] = value
+                sdk.get_api_key_permissions = Mock(return_value=response)
+                with self.assertRaises(PreSubmitRejected):
+                    self.adapter.submit_market_with_protection(
+                        self.signal, '10', 'cid', Decimal('0.006'), Decimal('0.012')
+                    )
+                sdk.preview_order.assert_not_called()
+                sdk.create_order.assert_not_called()
 if __name__=='__main__':unittest.main()
