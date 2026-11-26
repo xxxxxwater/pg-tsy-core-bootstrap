@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -46,6 +47,7 @@ class RustSimClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             bufsize=1,
         )
         self._next_id = 1
@@ -90,6 +92,27 @@ class RustSimClient:
             )
         return response["result"]
 
+    def _encoded_windows(self, requests: Iterable[SimRequest]) -> Iterator[list[str]]:
+        # Each window starts with an empty input pipe and no outstanding replies.
+        # A window within PIPE_BUF fits even if the worker blocks writing its first
+        # reply. Larger individual requests and platforms without PIPE_BUF use a
+        # single request, so the worker can read the entire line before replying.
+        pipe_buf = getattr(select, "PIPE_BUF", 0)
+        lines: list[str] = []
+        size = 0
+        for request_id, request in enumerate(requests, self._next_id):
+            payload = json.dumps(request.payload(request_id), ensure_ascii=True, separators=(",", ":"))
+            # Each ASCII character is one UTF-8 byte, including the native line ending.
+            line_size = len(payload) + len(os.linesep)
+            if lines and (size + line_size > pipe_buf or len(lines) == self._BATCH_CHUNK):
+                yield lines
+                lines = []
+                size = 0
+            lines.append(payload + "\n")
+            size += line_size
+        if lines:
+            yield lines
+
     def batch(self, requests: Iterable[SimRequest]) -> list[dict[str, Any]]:
         batch = list(requests)
         if not batch:
@@ -100,15 +123,9 @@ class RustSimClient:
             raise RuntimeError("pg-sim pipes are unavailable")
 
         results: list[dict[str, Any]] = []
-        for start in range(0, len(batch), self._BATCH_CHUNK):
-            chunk = batch[start : start + self._BATCH_CHUNK]
-            request_ids = list(range(self._next_id, self._next_id + len(chunk)))
-            # A serialization error must leave the pipe at a request/response boundary.
-            lines = [
-                json.dumps(request.payload(request_id), separators=(",", ":")) + "\n"
-                for request_id, request in zip(request_ids, chunk, strict=True)
-            ]
-            self._next_id += len(chunk)
+        for lines in self._encoded_windows(batch):
+            request_ids = range(self._next_id, self._next_id + len(lines))
+            self._next_id += len(lines)
             self._process.stdin.writelines(lines)
             self._process.stdin.flush()
 
