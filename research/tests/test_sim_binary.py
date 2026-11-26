@@ -5,9 +5,14 @@ binary-specific file. The hardening workflow exports PG_SIM_BINARY and MUST run
 these tests without skips after building the real executable.
 """
 
+import multiprocessing
 import os
+import sys
+from decimal import Decimal
 from pathlib import Path
 from unittest import SkipTest
+
+import pytest
 
 from pg_tsy.sim import RustSimClient, SimRequest
 
@@ -64,3 +69,43 @@ def test_reduce_only_and_book_errors_fail_closed() -> None:
         missing_order = client.step(SimRequest(order={"base": {"quantity": "2"}}, top=TOP))
         assert missing_order["ok"] is False
         assert "invalid order" in missing_order["error"]
+
+
+@pytest.mark.parametrize("valid_count", [1, 70])
+def test_bad_batch_item_does_not_leave_an_unread_response(valid_count: int) -> None:
+    valid = SimRequest(order=ORDER, top=TOP)
+    invalid = SimRequest(order={**ORDER, "quantity": Decimal(2)}, top=TOP)
+    with RustSimClient(_binary()) as client:
+        with pytest.raises(TypeError, match="JSON serializable"):
+            client.batch([valid] * valid_count + [invalid])
+        assert client.step(valid)["state"] == "Filled"
+
+
+def _batch_with_small_pipes(binary: Path) -> None:
+    import fcntl
+
+    request = SimRequest(order=ORDER, top=TOP)
+    # The research envelope accepts metadata alongside the base order.
+    large = SimRequest(order={"base": ORDER, "note": "月" * 2000}, top=TOP)
+    with RustSimClient(binary) as client:
+        for pipe in (client._process.stdin, client._process.stdout):
+            fcntl.fcntl(pipe, fcntl.F_SETPIPE_SZ, 4096)
+        expected = client.step(request)
+        assert client.batch([request] * 70 + [large] + [request] * 70) == [expected] * 141
+        assert client.step(request) == expected
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="adjustable kernel pipe capacity requires Linux")
+def test_batch_makes_progress_with_small_pipes() -> None:
+    worker = multiprocessing.get_context("spawn").Process(
+        target=_batch_with_small_pipes, args=(_binary(),)
+    )
+    worker.start()
+    try:
+        worker.join(timeout=15)
+        assert worker.exitcode == 0, "simulator batch blocked or returned incorrect results"
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
+        worker.close()
