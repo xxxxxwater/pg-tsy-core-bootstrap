@@ -43,11 +43,11 @@ class LiveCoinbase:
         if p.get('product_id')!=product or p.get('trading_disabled') or p.get('cancel_only') or p.get('limit_only') or p.get('is_disabled'):
             raise PreSubmitRejected('product identity or trading availability check failed')
         perms=as_dict(self.c.get_api_key_permissions())
-        if not perms.get('can_trade'):
+        if perms.get('can_trade') is not True:
             raise PreSubmitRejected('Coinbase key does not report can_trade=true')
-        if not perms.get('can_view'):
+        if perms.get('can_view') is not True:
             raise PreSubmitRejected('Coinbase key does not report can_view=true')
-        if perms.get('can_transfer'):
+        if perms.get('can_transfer') is not False:
             raise PreSubmitRejected('Coinbase LIVE requires a non-transfer trading key')
         if self.env.get('COINBASE_PORTFOLIO_ID') and perms.get('portfolio_uuid') != self.env['COINBASE_PORTFOLIO_ID']:
             raise PreSubmitRejected('trading key portfolio UUID does not match configured isolated portfolio')
