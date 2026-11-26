@@ -2,7 +2,7 @@ import sys,unittest
 from pathlib import Path
 from unittest.mock import Mock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-from coinbase_live import LiveCoinbase
+from coinbase_live import LiveCoinbase, PreSubmitRejected
 from core import Signal
 
 class SDK:
@@ -44,4 +44,29 @@ class AdapterTests(unittest.TestCase):
         self.adapter.c.get_api_key_permissions=lambda:{'can_trade':True,'can_view':True,'can_transfer':True,'portfolio_uuid':'dedicated'}
         with self.assertRaisesRegex(RuntimeError,'non-transfer'):
             self.adapter.preflight('BTC-USD')
+
+    def test_unconfirmed_permissions_block_before_order_preview(self):
+        from decimal import Decimal
+
+        permissions = self.adapter.c.get_api_key_permissions()
+        self.adapter.c.preview_order = Mock(wraps=self.adapter.c.preview_order)
+        self.adapter.c.create_order = Mock(wraps=self.adapter.c.create_order)
+        for key in ('can_trade', 'can_view', 'can_transfer'):
+            missing = permissions.copy()
+            del missing[key]
+            malformed = [
+                {**permissions, key: value}
+                for value in (None, 'false', int(permissions[key]), not permissions[key])
+            ]
+            for reply in [missing, *malformed]:
+                with self.subTest(key=key, reply=reply):
+                    self.adapter.c.preview_order.reset_mock()
+                    self.adapter.c.create_order.reset_mock()
+                    self.adapter.c.get_api_key_permissions = Mock(return_value=reply)
+                    with self.assertRaises(PreSubmitRejected):
+                        self.adapter.submit_market_with_protection(
+                            self.signal, '10', 'cid', Decimal('0.006'), Decimal('0.012')
+                        )
+                    self.adapter.c.preview_order.assert_not_called()
+                    self.adapter.c.create_order.assert_not_called()
 if __name__=='__main__':unittest.main()
