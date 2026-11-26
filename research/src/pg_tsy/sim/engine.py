@@ -103,12 +103,13 @@ class RustSimClient:
         for start in range(0, len(batch), self._BATCH_CHUNK):
             chunk = batch[start : start + self._BATCH_CHUNK]
             request_ids = list(range(self._next_id, self._next_id + len(chunk)))
+            # A serialization error must leave the pipe at a request/response boundary.
+            lines = [
+                json.dumps(request.payload(request_id), separators=(",", ":")) + "\n"
+                for request_id, request in zip(request_ids, chunk, strict=True)
+            ]
             self._next_id += len(chunk)
-
-            for request_id, request in zip(request_ids, chunk, strict=True):
-                self._process.stdin.write(
-                    json.dumps(request.payload(request_id), separators=(",", ":")) + "\n"
-                )
+            self._process.stdin.writelines(lines)
             self._process.stdin.flush()
 
             for expected_id in request_ids:

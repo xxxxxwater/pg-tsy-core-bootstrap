@@ -6,8 +6,11 @@ these tests without skips after building the real executable.
 """
 
 import os
+from decimal import Decimal
 from pathlib import Path
 from unittest import SkipTest
+
+import pytest
 
 from pg_tsy.sim import RustSimClient, SimRequest
 
@@ -64,3 +67,12 @@ def test_reduce_only_and_book_errors_fail_closed() -> None:
         missing_order = client.step(SimRequest(order={"base": {"quantity": "2"}}, top=TOP))
         assert missing_order["ok"] is False
         assert "invalid order" in missing_order["error"]
+
+
+def test_bad_batch_item_does_not_leave_an_unread_response() -> None:
+    valid = SimRequest(order=ORDER, top=TOP)
+    invalid = SimRequest(order={**ORDER, "quantity": Decimal(2)}, top=TOP)
+    with RustSimClient(_binary()) as client:
+        with pytest.raises(TypeError, match="JSON serializable"):
+            client.batch([valid, invalid])
+        assert client.step(valid)["state"] == "Filled"
