@@ -721,6 +721,13 @@ fn validate_snapshot(
     {
         return Err("filled status without full quantity");
     }
+    if matches!(
+        snapshot.state,
+        VenueOrderState::Open | VenueOrderState::Rejected
+    ) && !snapshot.filled_quantity.is_zero()
+    {
+        return Err("open or rejected status contradicts cumulative fill");
+    }
     if snapshot.state == VenueOrderState::PartiallyFilled
         && (snapshot.filled_quantity <= Decimal::ZERO
             || snapshot.filled_quantity >= record.requested_quantity)

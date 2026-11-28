@@ -188,6 +188,55 @@ async fn original_fill_mismatch_survives_runtime_reconcile() {
 }
 
 #[tokio::test]
+async fn partial_fill_survives_contradictory_status_until_venue_corrects_it() {
+    for contradictory_state in [VenueOrderState::Open, VenueOrderState::Rejected] {
+        let (store, adapter, execution) = fixture();
+        let filled = Decimal::from(5);
+        store.order.lock().unwrap().apply_fill(filled).unwrap();
+        {
+            let mut remote = adapter.remote.lock().unwrap();
+            let snapshot = remote.as_mut().unwrap();
+            snapshot.filled_quantity = filled;
+            snapshot.state = contradictory_state;
+        }
+
+        let cycle = execution.reconcile_once(Venue::BinancePm).await.unwrap();
+        assert!(cycle.report.blocks(Venue::BinancePm, "BTCUSDC"));
+        assert_eq!(
+            store.order.lock().unwrap().state,
+            OrderState::PartiallyFilled
+        );
+        assert_eq!(store.order.lock().unwrap().filled_quantity, filled);
+
+        // The unfilled remainder can subsequently be canceled at the venue.
+        adapter.remote.lock().unwrap().as_mut().unwrap().state = VenueOrderState::Canceled;
+        let retry = execution.reconcile_once(Venue::BinancePm).await.unwrap();
+        assert!(retry.report.clean());
+        assert_eq!(store.order.lock().unwrap().state, OrderState::Canceled);
+        assert_eq!(store.order.lock().unwrap().filled_quantity, filled);
+    }
+}
+
+#[tokio::test]
+async fn zero_fill_open_and_rejected_snapshots_reconcile_cleanly() {
+    for (observed, expected) in [
+        (VenueOrderState::Open, OrderState::Open),
+        (VenueOrderState::Rejected, OrderState::Rejected),
+    ] {
+        let (store, adapter, execution) = fixture();
+        {
+            let mut local = store.order.lock().unwrap();
+            local.state = OrderState::PendingSubmit;
+            local.venue_order_id = None;
+        }
+        adapter.remote.lock().unwrap().as_mut().unwrap().state = observed;
+        let cycle = execution.reconcile_once(Venue::BinancePm).await.unwrap();
+        assert!(cycle.report.clean());
+        assert_eq!(store.order.lock().unwrap().state, expected);
+    }
+}
+
+#[tokio::test]
 async fn venue_order_id_mismatch_is_not_overwritten() {
     let (store, adapter, execution) = fixture();
     adapter
